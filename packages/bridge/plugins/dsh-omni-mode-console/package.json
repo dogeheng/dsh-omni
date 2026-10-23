@@ -1,0 +1,16 @@
+{
+  "name": "dsh-omni-mode-console",
+  "version": "0.1.0",
+  "description": "dsh-omni 的 DSH 控制台 bundle：在 DSH 设置页里切换 QQ 桥接的四种运行模式。",
+  "type": "module",
+  "main": "./lib/index.js",
+  "license": "MIT",
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    }
+  },
+  "dependencies": {
+    "@deepseek-ai/schemastery": "^3.18.1"
+  }
+}

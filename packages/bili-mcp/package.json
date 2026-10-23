@@ -1,0 +1,12 @@
+{
+  "name": "dsh-omni-bili-mcp",
+  "version": "0.1.0",
+  "private": true,
+  "description": "把 dsh-bili-scroll 自带的 B 站 Python MCP 挂成全局 MCP（只读：视频信息/字幕），供 dsh-omni 的 QQ 会话调用。",
+  "type": "module",
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    }
+  }
+}

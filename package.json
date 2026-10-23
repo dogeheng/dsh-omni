@@ -1,0 +1,12 @@
+{
+  "name": "dsh-omni",
+  "version": "0.1.0",
+  "private": true,
+  "license": "MIT",
+  "description": "QQ <-> DeepSeek Harness bridge with Bilibili card support, sticker tooling, and DSH UI bundles.",
+  "scripts": {
+    "start": "npm --prefix packages/bridge start",
+    "test": "npm --prefix packages/bridge run test:audit",
+    "setup": "node packages/bridge/scripts/setup-dsh.mjs"
+  }
+}

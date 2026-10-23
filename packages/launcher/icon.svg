@@ -1,0 +1,6 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 40 40" width="40" height="40" role="img" aria-label="QQ 桥接">
+  <rect width="40" height="40" rx="10" fill="#12B7F5"/>
+  <path d="M11 15.5c0-3 3.2-5.5 7.2-5.5h3.6c4 0 7.2 2.5 7.2 5.5S25.8 21 21.8 21h-1.1l-3.2 3v-3.2c-3.6-.4-6.5-2.6-6.5-5.3z" fill="#fff"/>
+  <circle cx="17" cy="15.5" r="1.5" fill="#12B7F5"/>
+  <circle cx="23" cy="15.5" r="1.5" fill="#12B7F5"/>
+</svg>

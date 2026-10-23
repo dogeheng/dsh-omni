@@ -1,0 +1,15 @@
+node_modules/
+packages/*/node_modules/
+.npm-cache/
+data/
+config.json
+.env
+*.log
+*.bak
+*.bak-*
+audio/
+.DS_Store
+
+# Personal role cards (migration may copy these locally)
+packages/bridge/roles/yuki.md
+packages/bridge/roles/猫娘.md

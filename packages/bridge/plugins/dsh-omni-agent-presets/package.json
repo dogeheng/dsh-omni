@@ -1,0 +1,15 @@
+{
+  "name": "dsh-omni-agent-presets",
+  "version": "0.1.0",
+  "description": "dsh-omni 的 DSH agent preset bundle：把 qq-chat / qq-chat-v2 作为 @deepseek-ai/dsh-agent-preset 行插入，并携带共用的 qq-tool-restrict 安全守卫",
+  "type": "module",
+  "license": "MIT",
+  "dsh": {
+    "bundle": {
+      "patch": [
+        "./presets/qq-chat.patch.yml",
+        "./presets/qq-chat-v2.patch.yml"
+      ]
+    }
+  }
+}

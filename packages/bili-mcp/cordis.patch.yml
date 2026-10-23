@@ -1,0 +1,23 @@
+# 把 dsh-bili-scroll 自带的 Python MCP（vendor/bilibili-mcp/mcp_server.py）
+# 作为全局 MCP server 挂进 profile，工具名是 mcp__bili-duty__<tool>。
+#
+# 为什么单独挂一份：dsh-bili-scroll 自己注册的 bili_* 工具只存在于它自己的
+# plugin 上下文，QQ 的 qq-chat-v2 preset 不会继承；而全局 MCP 行的工具会被
+# 所有 agent 继承（snowluma / web-search-safe 就是这么进 QQ 会话的）。
+#
+# 只下发只读工具白名单，bili_reply / bili_send_message 等写操作刻意不给。
+- insert:
+    - id: mcp-bili-duty
+      name: '@deepseek-ai/dsh-mcp-client'
+      config:
+        serverName: bili-duty
+        transport: stdio
+        command: !!js process.env.DSH_BILI_PYTHON || (dshHomePath('bili-duty') + '/.venv/bin/python')
+        args:
+          - !!js process.env.DSH_BILI_MCP_SERVER || (dshHomePath('bili-duty') + '/mcp_server.py')
+        cwd: !!js process.env.DSH_BILI_HOME || dshHomePath('bili-duty')
+        env:
+          BILI_MCP_TOOLS: 'bili_video_info,bili_subtitle'
+          PYTHONIOENCODING: 'utf-8'
+        toolCallTimeoutMs: 120000
+        failOnStartupError: false

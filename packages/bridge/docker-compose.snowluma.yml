@@ -1,0 +1,53 @@
+# SnowLuma（QQ 网关）官方镜像的 Compose 配置。
+# 基于 https://snowluma.github.io/zh/docs/guide/deploy/docker 的官方模板，
+# 只把宿主机端口收敛到 127.0.0.1（这是笔记本，不把 QQ/WebUI 暴露到局域网）。
+#
+# 用法：
+#   docker compose -f docker-compose.snowluma.yml up -d
+#   远程桌面（扫码）： http://127.0.0.1:6081
+#   SnowLuma WebUI：  http://127.0.0.1:5099
+#   OneBot HTTP/WS：  127.0.0.1:3000 / 127.0.0.1:3001
+# 三个卷不要删，登录态和配置都在里面。
+
+services:
+  snowluma:
+    image: ${SNOWLUMA_IMAGE:-motricseven7/snowluma:latest}
+    container_name: ${SNOWLUMA_CONTAINER:-snowluma}
+    restart: unless-stopped
+    shm_size: 1gb
+    ulimits:
+      nofile:
+        soft: 65536
+        hard: 1048576
+    cap_add:
+      - SYS_PTRACE
+    security_opt:
+      - seccomp=unconfined
+    environment:
+      VNC_PASSWD: ${VNC_PASSWD:-}
+      SNOWLUMA_UID: ${SNOWLUMA_UID:-1000}
+      SNOWLUMA_GID: ${SNOWLUMA_GID:-1000}
+      SNOWLUMA_WEBUI_HOST: 0.0.0.0
+      SNOWLUMA_WEBUI_PORT: 5099
+      SNOWLUMA_LOG_LEVEL: info
+      SNOWLUMA_SCREEN: 1280x800x24
+      SNOWLUMA_HOOK_AUTOLOAD: 1
+      SNOWLUMA_QQ_FLAGS: "--disable-gpu --disable-software-rasterizer --disable-gpu-compositing"
+      TZ: America/New_York
+    ports:
+      - "127.0.0.1:6081:6081"
+      - "127.0.0.1:5099:5099"
+      - "127.0.0.1:3000:3000"
+      - "127.0.0.1:3001:3001"
+    volumes:
+      - qq-gateway-data:/app/data
+      - qq-client-config:/app/.config
+      - qq-client-data:/app/.local/share
+
+volumes:
+  qq-gateway-data:
+    name: qq-gateway-data
+  qq-client-config:
+    name: qq-client-config
+  qq-client-data:
+    name: qq-client-data

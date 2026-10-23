@@ -1,0 +1,5 @@
+# dsh-omni-launcher：设置页里的「dsh-omni」入口。
+# 这行只负责把插件挂进当前 profile；页面本身由 client.js 注册到 settings.section。
+- insert:
+    - id: dsh-omni-launcher
+      name: dsh-omni-launcher
