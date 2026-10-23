@@ -2,13 +2,11 @@ MIT License
 
 Copyright (c) 2026 dogeheng and dsh-omni contributors
 
-Portions of this software are derived from qq-bridge:
+Portions derived from qq-bridge:
 Copyright (c) 2026 Derpyu520 and qq-bridge / QSH contributors
-https://github.com/Derpyu520/qq-bridge
 
-Portions of the Bilibili integration are based on dsh-bili-scroll:
+Portions derived from dsh-bili-scroll:
 Copyright (c) 2026 c1overzz
-https://github.com/c1overzz/dsh-bili-scroll
 
 dsh-bili-scroll bundles bilibili-mcp:
 Copyright (c) 2026 AGI_Ananas
