@@ -2204,7 +2204,10 @@ async function main() {
     fs.mkdirSync(dir, { recursive: true });
     const wsValue = unwrap(await api.workspace.create({ path: dir }), 'slang workspace.create');
     const workspaceTitle = cfg.slang?.workspaceTitle || 'QQ 黑话学习';
-    if (wsValue.created && workspaceTitle) {
+    // DSH may have already auto-created the workspace when the first session
+    // used this cwd, so `created` can be false. Rename whenever the title is
+    // not what we want, not only on creation.
+    if (workspaceTitle && wsValue.workspace.title !== workspaceTitle) {
       try { await api.workspace.rename({ workspaceId: wsValue.workspace.workspaceId, title: workspaceTitle }); } catch {}
     }
     const params = { workspaceId: wsValue.workspace.workspaceId };
@@ -8388,8 +8391,15 @@ async function main() {
       for (const withPreset of strictPreset ? [true] : [true, false]) {
         try {
           const wsValue = unwrap(await api.workspace.create({ path: dir }), 'workspace.create');
-          if (wsValue.created && cfg.workspaceTitle) {
-            await api.workspace.rename({ workspaceId: wsValue.workspace.workspaceId, title: cfg.workspaceTitle });
+          // Same as the slang workspace: an existing cwd may already have a
+          // workspace whose title is the directory basename ("agents"). Rename
+          // it even when `created` is false so the UI shows one QQ 聊天 entry.
+          if (cfg.workspaceTitle && wsValue.workspace.title !== cfg.workspaceTitle) {
+            try {
+              await api.workspace.rename({ workspaceId: wsValue.workspace.workspaceId, title: cfg.workspaceTitle });
+            } catch (error) {
+              log(`重命名 QQ 工作区失败（不影响会话）: ${error?.message ?? error}`);
+            }
           }
           const params = { workspaceId: wsValue.workspace.workspaceId };
           if (withPreset && preset) params.agentPreset = preset;

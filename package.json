@@ -9,6 +9,7 @@
     "test": "npm --prefix packages/bridge run test:audit",
     "setup": "node packages/bridge/scripts/setup-dsh.mjs",
     "launcher": "node packages/launcher/scripts/install.mjs",
-    "watchdog": "node packages/bridge/scripts/install-watchdog.mjs"
+    "watchdog": "node packages/bridge/scripts/install-watchdog.mjs",
+    "cleanup": "node packages/bridge/scripts/cleanup-workspaces.mjs"
   }
 }

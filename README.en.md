@@ -103,6 +103,17 @@ node packages/bridge/scripts/migrate-from-qq-bridge.mjs
 
 The script copies `config.json`, `state/` → `data/`, `roles/`, and `audio/` from `~/Documents/qq-bridge` (configurable with `--from` / `--to`). It skips `bridge.lock`, `bridge.pid`, and logs. After migrating, run `setup-dsh.mjs desktop`, restart DSH, then start the bridge.
 
+## Clean up test workspaces
+
+One-off probes/tests/sticker jobs leave temporary DSH workspaces. The cleanup script is dry-run by default; add `--apply`:
+
+```bash
+node packages/bridge/scripts/cleanup-workspaces.mjs --delete-temp --rename-qq --apply
+node packages/bridge/scripts/cleanup-workspaces.mjs --delete-obsolete --apply
+```
+
+`workspace.delete` only removes the DSH registration; files and Session logs remain. The old QQ workspace is kept as `QQ 聊天（旧）` until you decide to remove its history.
+
 ## Security
 
 - `config.json`, `data/`, `.env`, and `audio/` are gitignored; never commit them.

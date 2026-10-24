@@ -202,6 +202,20 @@ node packages/bridge/scripts/migrate-from-qq-bridge.mjs --force
 3. 重启 DSH；
 4. 用 `bash packages/bridge/start-mac.sh` 启动新桥接。
 
+## 清理测试/一次性工作区
+
+probe、preset 测试、表情标注这类一次性会话会在 DSH 里留下临时 workspace。清理命令默认 dry-run，加 `--apply` 才会执行：
+
+```bash
+# 删除 /tmp 下的 probe/preset/sticker 工作区，并把旧 QQ 工作区改名为 QQ 聊天（旧）
+node packages/bridge/scripts/cleanup-workspaces.mjs --delete-temp --rename-qq --apply
+
+# 删除旧 qq-bridge 路径下的 QQ 黑话学习工作区
+node packages/bridge/scripts/cleanup-workspaces.mjs --delete-obsolete --apply
+```
+
+`workspace.delete` 只移除 DSH 的分组注册，**不会删除文件或 Session 日志**；旧 QQ 工作区默认保留为 `QQ 聊天（旧）`，确认不需要历史后再从 UI 删除。
+
 ## 安全与隐私
 
 - `config.json`、`data/`、`.env`、`audio/` 全部在 `.gitignore` 中，**不要提交**。
