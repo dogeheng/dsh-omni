@@ -1,12 +1,8 @@
 # dsh-omni
 
-> **我想给大肥鱼完整的一生。**
->
-> 我想集众家之所长，给大肥鱼加上所有的能力，看看他能像人像到哪一步。
->
-> *大肥鱼是这个 QQ 机器人的小名。*
+> **我想给大肥鱼完整的一生！！！**
 
-**QQ ↔ DeepSeek Harness 的整合包。** 把 QQ（SnowLuma / OneBot v11）接到 DeepSeek Harness，让 DSH agent 以 QQ 会话的形式聊天、发表情、发语音、看 B 站卡片、上网查梗、记住群里的事、潜水与唤醒，并附带控制台和 DSH 设置页入口。
+**这是QQ ↔ DeepSeek Harness 的整合包。** 把 QQ（SnowLuma / OneBot v11）接到 DeepSeek Harness，让 DSH agent 以 QQ 会话的形式聊天、发表情、发语音、看 B 站卡片、上网查梗、记住群里的事、潜水与唤醒，并附带控制台和 DSH 设置页入口。
 
 这不是一个“QQ 机器人框架”，更像一次长期实验：把 QQ 当身体，把 DSH 当大脑，把表情、语音、记忆、黑话、B 站、联网搜索都接成感官，看一个 agent 能不能在真实的群聊里活得像个具体的人。
 
