@@ -40,8 +40,22 @@ if [ -f data/bridge.pid ]; then
   fi
 fi
 
-nohup node src/bridge.js >/dev/null 2>&1 &
-echo $! > data/bridge.pid
+# 用 Node 的 detached spawn 而不是 nohup：从 launchd/DSH 这类短命父进程里
+# 启动时，nohup 只能忽略 SIGHUP，子进程仍留在父进程的 process group 里，
+# 父进程退出时可能被一起杀掉。detached 会新建 session/process group，
+# unref() 后父进程退出也不影响桥接。
+node <<'NODE'
+const { spawn } = require('node:child_process');
+const fs = require('node:fs');
+const child = spawn(process.execPath, ['src/bridge.js'], {
+  cwd: process.cwd(),
+  detached: true,
+  stdio: 'ignore',
+  env: process.env,
+});
+child.unref();
+fs.writeFileSync('data/bridge.pid', String(child.pid));
+NODE
 sleep 3
 echo "桥接已启动 pid=$(cat data/bridge.pid)"
 tail -4 data/bridge.log

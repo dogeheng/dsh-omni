@@ -137,6 +137,24 @@ bash packages/bridge/start-mac.sh
 
 它会：探测当前 DSH 端口 → 写回 `config.json` → 停旧进程 → 后台启动并写 `data/bridge.pid`。
 
+### 自动跟随 DSH 重启（可选，推荐）
+
+DSH 每次重启都会换端口并带走桥接进程。装一个 per-user LaunchAgent，让桥接每 20 秒检查一次 DSH 端口，必要时自动重启：
+
+```bash
+node packages/bridge/scripts/install-watchdog.mjs
+```
+
+- 不需要 sudo；plist 在 `~/Library/LaunchAgents/com.dogeheng.dsh-omni-bridge.plist`；
+- 登录时自动运行，之后每 20 秒检查一次；
+- DSH 换端口 / 桥接退出时，自动执行 `start-mac.sh`（内部用 detached spawn，不会被 launchd 一起收掉）；
+- 日志：`packages/bridge/data/watchdog.log`；
+- 查看/卸载：
+  ```bash
+  node packages/bridge/scripts/install-watchdog.mjs --status
+  node packages/bridge/scripts/install-watchdog.mjs --uninstall
+  ```
+
 打开控制台：<http://127.0.0.1:3100/>（令牌在 `data/console-token`）。
 
 ### 6. 重启 DSH
