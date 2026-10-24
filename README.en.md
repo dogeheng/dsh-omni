@@ -116,6 +116,12 @@ The script copies `config.json`, `state/` → `data/`, `roles/`, and `audio/` fr
 - **dsh-bili-scroll** — c1overzz, MIT: <https://github.com/c1overzz/dsh-bili-scroll>
 - **bilibili-mcp** — AGI_Ananas, MIT (bundled by dsh-bili-scroll): <https://github.com/AGI-Ananas/bilibili-mcp>
 
+## Troubleshooting
+
+- **All QQ tools return "未授权：请提供控制台访问令牌"**: the MCP server could not read the console token. Check `packages/bridge/data/console-token` (legacy `state/console-token` is also accepted) and restart DSH after upgrades so the MCP process reloads.
+- **Bridge stops after a DSH restart**: run `node packages/bridge/scripts/install-watchdog.mjs`; it checks the current DSH port every 20 seconds and restarts the bridge.
+- **Console asks for a token**: read `packages/bridge/data/console-token`, or open the console through the launcher after running its install script.
+
 ## License
 
 [MIT](LICENSE). Third-party notices are in [NOTICE.md](NOTICE.md).
