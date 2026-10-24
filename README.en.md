@@ -99,7 +99,7 @@ The script copies `config.json`, `state/` → `data/`, `roles/`, and `audio/` fr
 
 - `config.json`, `data/`, `.env`, and `audio/` are gitignored; never commit them.
 - `data/` contains the console token, OneBot token, and chat history; the bridge hardens its permissions on startup.
-- The launcher contains no credentials; VNC and console tokens are entered manually.
+- The repository's launcher contains only URL placeholders. Run `node packages/launcher/scripts/install.mjs` after the bridge has generated `data/console-token`; the script reads the local `.env` and token and injects them into the installed copy, never into git.
 - Bilibili MCP is read-only; QQ write actions are not granted.
 
 ## Credits

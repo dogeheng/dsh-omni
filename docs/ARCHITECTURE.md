@@ -56,8 +56,10 @@ QQ
 
 ### `packages/launcher` (optional)
 
-A client-side DSH settings section. It opens local SnowLuma/console URLs and
-contains **no credentials**; VNC and console tokens are entered by the user.
+A client-side DSH settings section. The repository copy contains only URL
+placeholders; `scripts/install.mjs` reads the local `.env` and `data/console-token`
+and injects them into the installed copy under `~/.dsh/plugins`, so credentials
+never enter git.
 
 ### `packages/bili-mcp` (optional)
 
