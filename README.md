@@ -218,6 +218,9 @@ DSH 端口会变，桥接进程也可能随 DSH 退出。跑 `bash packages/brid
 **控制台打不开？**
 确认 `consolePort` 没被占用；令牌在 `data/console-token`。
 
+**QQ 工具全部返回「未授权：请提供控制台访问令牌」？**
+MCP 没读到控制台令牌。确认 `packages/bridge/data/console-token` 存在（旧布局 `state/console-token` 也兼容）；升级/改路径后要重启 DSH，让 MCP 进程重新加载。
+
 **B 站卡片没有解析？**
 确认消息是 QQ 小程序卡（`json` 段），且 `b23.tv` 可访问；桥接会缓存短链解析结果 24 小时。
 
