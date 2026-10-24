@@ -1,7 +1,7 @@
 // 群聊黑话/网络用语学习与迭代模块。
 //
 // 职责：
-// - state/slang.json 的读写与 CRUD
+// - data/slang.json 的读写与 CRUD
 // - 从最近群聊消息中提取“疑似黑话”候选（DSH learner 会话）
 // - 对候选生成联网搜索确认提示词（DSH agent 可调用安全 Web Search MCP）
 // - 把已确认黑话格式化成注入给 QQ 聊天 agent 的“群聊黑话表”

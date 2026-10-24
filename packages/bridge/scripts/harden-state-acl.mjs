@@ -1,4 +1,4 @@
-// state/ 目录权限收紧的「可提权」入口。
+// data/ 目录权限收紧的「可提权」入口。
 //
 // 为什么需要单独一个文件：
 //   Windows 上收紧 ACL 需要对该目录有 WRITE_DAC。**正常情况下目录属主本来就有**，
@@ -37,8 +37,8 @@ const isElevatedRun = process.argv.includes('--elevated');
 function say(msg) { if (!quiet) console.log(msg); }
 function sayAlways(msg) { console.log(msg); }
 
-// state/ 之外的凭据文件：config.json 里是真实的 SnowLuma OneBot accessToken ——
-// 拿到它等于拿到 QQ 账号的收发控制权。它跟 state/ 一样在仓库树里，继承来的 ACE 同样
+// data/ 之外的凭据文件：config.json 里是真实的 SnowLuma OneBot accessToken ——
+// 拿到它等于拿到 QQ 账号的收发控制权。它跟 data/ 一样在仓库树里，继承来的 ACE 同样
 // 对 BUILTIN\Users 可读，所以一并收紧。
 const SECRET_FILES = ['config.json']
   .map((name) => path.join(ROOT, name))
@@ -86,7 +86,7 @@ function hardenSecretFiles() {
   return stillOpen;
 }
 
-// 凭据文件放在所有 state/ 分支之前：这样即使 state/ 已经收紧、脚本原本会提前 exit，
+// 凭据文件放在所有 data/ 分支之前：这样即使 data/ 已经收紧、脚本原本会提前 exit，
 // 它们也一定会被收一遍。
 hardenSecretFiles();
 
@@ -100,7 +100,7 @@ if (isHardened(STATE_DIR)) {
   process.exit(0);
 }
 
-sayAlways('[harden-acl] state/ 权限未收紧：其中的控制台令牌、SnowLuma 令牌、各会话令牌与 QQ 聊天记录，本机任何已登录用户都可能读到。');
+sayAlways('[harden-acl] data/ 权限未收紧：其中的控制台令牌、SnowLuma 令牌、各会话令牌与 QQ 聊天记录，本机任何已登录用户都可能读到。');
 sayAlways(`[harden-acl] 正在尝试收紧：${STATE_DIR}`);
 
 let result = hardenDir(STATE_DIR);
@@ -110,12 +110,12 @@ if (!result.ok && !isElevatedRun) {
 }
 
 if (result.ok) {
-  sayAlways('[harden-acl] ✅ 已收紧 state/ 权限（只保留当前用户 / SYSTEM / Administrators）。');
+  sayAlways('[harden-acl] ✅ 已收紧 data/ 权限（只保留当前用户 / SYSTEM / Administrators）。');
   process.exit(0);
 }
 
 // 失败是**可接受**的：桥接照常启动，只是在控制台「访问与安全」页会显示告警。
-sayAlways(`[harden-acl] ⚠️ 未能收紧（${result.detail}）。桥接仍会正常启动，但这台机器上的其他登录用户可能读到 state/ 里的令牌与聊天记录。`);
+sayAlways(`[harden-acl] ⚠️ 未能收紧（${result.detail}）。桥接仍会正常启动，但这台机器上的其他登录用户可能读到 data/ 里的令牌与聊天记录。`);
 sayAlways('[harden-acl] 你可以手动执行下面这几条命令（管理员终端，一次即可）：');
 sayAlways(`             ${manualDirCommand(STATE_DIR)}`);
 process.exit(0);

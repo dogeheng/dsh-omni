@@ -1,7 +1,7 @@
 // 表情包体系（二代仿真模式）——本地表情知识库与策略提示纯函数。
 //
 // 职责：
-// - state/stickers.json 的读写与字段归一化
+// - data/stickers.json 的读写与字段归一化
 // - 把 SnowLuma `fetch_custom_face_detail` 返回的 QQ 收藏表情合并进本地库
 // - 支持按 emoji_id / md5 / url 查找、按备注/本地笔记/标签搜索
 // - 生成注入 AI 的“表情包策略/可用表情”摘要
@@ -106,7 +106,7 @@ export function saveStickerStore(file, entries) {
   fs.mkdirSync(path.dirname(file), { recursive: true });
   const tmp = `${file}.${process.pid}.${crypto.randomBytes(6).toString('hex')}.tmp`;
   // 失败时必须自己清掉临时文件（对齐 saveSlang 的写法）：写盘中途报错（磁盘满、杀软占用）
-  // 会在 state/ 里永久留下 stickers.json.<pid>.<hex>.tmp —— 名字带随机串，没人会再去清理它，
+  // 会在 data/ 里永久留下 stickers.json.<pid>.<hex>.tmp —— 名字带随机串，没人会再去清理它，
   // 而且下次排查"表情库为什么不对"时这些残留文件会让人以为写入成功了。
   try {
     fs.writeFileSync(tmp, JSON.stringify(entries, null, 2), { encoding: 'utf8', mode: 0o600 });

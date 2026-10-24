@@ -19,7 +19,7 @@
 //    `pumpMux` 的 finally 会清掉所有 per-turn Map（否则重连后回复会重复累加）。
 //    所以每条采样一到就 append 到 JSONL 日志，内存只是它的投影。
 //
-// 存储：`state/token-usage.jsonl`，两种行：
+// 存储：`data/token-usage.jsonl`，两种行：
 //   {"k":"base", t, sid, key, seq, model, provider, b:{cacheMiss,cacheHit,cacheWrite,output,reasoning}}
 //   {"k":"turn", t, sid, key, seq, turn, step, retry, model, provider, b:{...}}
 // 行数超过上限时按内存态重写（自动去重 + 丢弃被覆盖的旧采样）。

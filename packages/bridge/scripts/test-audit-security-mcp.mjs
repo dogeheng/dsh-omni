@@ -1,6 +1,7 @@
 // Exercise MCP callbacks with a fake transport: no network, config or stdio server.
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
+import os from 'node:os';
 import path from 'node:path';
 import vm from 'node:vm';
 import { test } from 'node:test';
@@ -75,12 +76,12 @@ test('empty searches are rejected without calling the transport', async () => {
  * 用假 transport 加载 mcp-snowluma-safe.js，拿到它的工具回调。
  * 只需要把 fetch（桥接 API / OneBot HTTP）、http（长轮询）、McpServer、zod、两个本地纯模块塞进上下文。
  */
-function loadSnowlumaTools(fetchImpl, fixtureConfig = null, httpImpl = null) {
+function loadSnowlumaTools(fetchImpl, fixtureConfig = null, httpImpl = null, root = null) {
   const tools = new Map();
   // vm 里没有 ESM 的 import.meta，把模块顶部的 __dirname 推导整段替换成固定值。
   const source = fs.readFileSync(new URL('../src/mcp-snowluma-safe.js', import.meta.url), 'utf8')
     .replace(/^import .*;\r?\n/gm, '')
-    .replace("const __dirname = path.dirname(fileURLToPath(import.meta.url));", "const __dirname = '/fixture/src';")
+    .replace("const __dirname = path.dirname(fileURLToPath(import.meta.url));", `const __dirname = ${JSON.stringify(path.join(root || '/fixture', 'src'))};`)
     .replace('await server.connect(new StdioServerTransport());', 'server.connect(new StdioServerTransport());');
   class McpServer {
     constructor() { this.tool = (name, description, schema, callback) => tools.set(name, { schema, callback }); }
@@ -120,6 +121,24 @@ function loadSnowlumaTools(fetchImpl, fixtureConfig = null, httpImpl = null) {
     return tool.callback(z.object(tool.schema).parse(arguments_));
   };
 }
+
+test('MCP reads the console token from data/console-token (legacy state/ fallback)', async () => {
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'mcp-console-token-'));
+  try {
+    fs.mkdirSync(path.join(tmp, 'data'));
+    fs.writeFileSync(path.join(tmp, 'data', 'console-token'), 'fixture-console-token-1234567890\n');
+    const calls = [];
+    const callTool = loadSnowlumaTools(async (url, init) => {
+      calls.push({ url, headers: init.headers });
+      return { ok: true, json: async () => ({ ok: true, key: 'group:456' }) };
+    }, null, null, tmp);
+    await callTool('qq_get_prompt', { key: 'group:456', token: 'fixture-agent-token' });
+    assert.equal(calls.length, 1);
+    assert.equal(calls[0].headers['x-console-token'], 'fixture-console-token-1234567890');
+  } finally {
+    fs.rmSync(tmp, { recursive: true, force: true });
+  }
+});
 
 // 回归（issue #24）：`qq_wait_for_messages` 以前走全局 fetch（undici 自带 300s headersTimeout），
 // 而沉睡前观察的预算就是 300s —— 第 301 秒必然 `fetch failed`，桥接侧却还在跑满预算占着

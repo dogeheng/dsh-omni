@@ -81,7 +81,7 @@ const BRIDGE_LOG = path.join(STATE_DIR, 'bridge.log');
  * 判断遍布发送闸门、定时器与 preset 解析，把规范名直接塞进 `currentMode` 会让它们全部变成假。
  *
  * 旧写法是 `VALID_MODES = ['chat','closed-agent','reserved','reserved2']`，控制台那处还抄了
- * 一份同样的字面量数组。后果是：在 DSH 设置或 `state/mode.json` 里写 `simulation` 会被**静默
+ * 一份同样的字面量数组。后果是：在 DSH 设置或 `data/mode.json` 里写 `simulation` 会被**静默
  * 忽略**，`currentMode` 保持上一次的值（进程刚起来时是 `chat`，即一代仿真 —— preset 与工具面
  * 都和二代不同，`v2ToolEnabled` 之类的闸门也不生效）。用户以为切到了仿真，实际跑的是另一套，
  * 而且没有任何日志。规范名与历史名必须在这里收敛成同一个内部值。
@@ -184,7 +184,7 @@ function atomicWriteJson(file, obj) {
     fs.writeFileSync(tmp, JSON.stringify(obj, null, 2) + '\n', { encoding: 'utf8', mode: 0o600 });
     renameWithRetry(tmp, file);
   } catch (error) {
-    // 失败时别把随机名临时文件留在 state/ 里当垃圾。
+    // 失败时别把随机名临时文件留在 data/ 里当垃圾。
     try { fs.unlinkSync(tmp); } catch {}
     throw error;
   }
@@ -203,7 +203,7 @@ function atomicWriteText(file, text) {
   }
 }
 
-// 控制台鉴权 token：未配置时自动生成并持久化到 state/console-token，避免默认无鉴权。
+// 控制台鉴权 token：未配置时自动生成并持久化到 data/console-token，避免默认无鉴权。
 function loadOrCreateConsoleToken() {
   const tokenFile = path.join(STATE_DIR, 'console-token');
   try {
@@ -216,18 +216,18 @@ function loadOrCreateConsoleToken() {
 }
 
 /**
- * 收紧 state/ 的访问权限。
+ * 收紧 data/ 的访问权限。
  *
  * **Windows 上 `mode: 0o600` 是空操作**（实测：chmod 之后 ACL 不变），文件继承父目录 ACL ——
- * 本机 state/console-token 实测为 `NT AUTHORITY\Authenticated Users:(M)`，也就是任何能登录
+ * 本机 data/console-token 实测为 `NT AUTHORITY\Authenticated Users:(M)`，也就是任何能登录
  * 这台机器的用户都能读走控制台令牌、Snowluma accessToken、各会话 agentToken 和全部 QQ 聊天记录。
- * 这里用 icacls 切断 state/ 的继承链，只保留「当前用户 + SYSTEM + Administrators」。
+ * 这里用 icacls 切断 data/ 的继承链，只保留「当前用户 + SYSTEM + Administrators」。
  *
  * ⚠️ 具体实现已抽到 `src/state-acl.mjs`（与 scripts/harden-state-acl.mjs 共用同一份）。
  * 这里原本自带一份**会破坏数据**的实现：
  *   · `icacls DIR /inheritance:r /grant:r "u:(OI)(CI)F" /T` —— (OI)(CI) 是目录专用标志，
  *     套到 /T 展开的文件上会失败，而 /inheritance:r 已摘掉文件的继承 ACE，净结果是
- *     **子文件 DACL 被清空、连属主都读不了**（实测 state/ 下 50 个文件变空，桥接读不到
+ *     **子文件 DACL 被清空、连属主都读不了**（实测 data/ 下 50 个文件变空，桥接读不到
  *     自己的控制台令牌）；启动日志只报「未能收紧」，看不出已经造成破坏。
  *   · 回读自检用 `/\(I\)/` 扫全文，而 DSH 沙箱的 Low 完整性标签行永远带 (I) ——
  *     于是「已收紧」被误判成「未收紧」，**每次启动都重跑一遍那个破坏性命令**。
@@ -243,10 +243,10 @@ function hardenStateDirAcl() {
   }
   stateDirHardened = false;
   if (process.platform !== 'win32') {
-    log(`⚠️ 收紧 state/ 权限失败（chmod 700）：${result.detail}`);
+    log(`⚠️ 收紧 data/ 权限失败（chmod 700）：${result.detail}`);
     return;
   }
-  log('⚠️ 未能收紧 state/ 目录权限：本机任何已登录用户都可能读到控制台令牌与 QQ 聊天记录。');
+  log('⚠️ 未能收紧 data/ 目录权限：本机任何已登录用户都可能读到控制台令牌与 QQ 聊天记录。');
   log(`   原因：${String(result.detail).slice(0, 300)}`);
   log('   改 ACL 需要管理员权限。请用**管理员身份**打开终端后执行下面这几条命令（或在控制台「访问与安全」页点按钮）：');
   log(`   ${manualDirCommand(STATE_DIR)}`);
@@ -670,7 +670,7 @@ function loadConfig() {
       ...(file.dsh ?? {})
     },
     snowluma: { wsUrl: 'ws://127.0.0.1:3001', accessToken: '', ...(file.snowluma ?? {}) },
-    // 空 => 每个会话在 state/agents/<key> 下建独立工作目录
+    // 空 => 每个会话在 data/agents/<key> 下建独立工作目录
     sessionCwd: file.sessionCwd ?? '',
     agentPreset: file.agentPreset ?? 'qq-chat',
     workspaceTitle: file.workspaceTitle ?? 'QQ 聊天',
@@ -1161,7 +1161,7 @@ function releaseLock() {
 }
 
 // ── 工具 ────────────────────────────────────────────────────────────────────
-// 日志同时输出到 stdout 与 state/bridge.log（守护窗口不可见时也能排查）
+// 日志同时输出到 stdout 与 data/bridge.log（守护窗口不可见时也能排查）
 
 /** 单条日志的最大长度：一条异常巨大的错误对象不能把整个日志文件变成 5MB。 */
 const LOG_LINE_MAX = 1000;
@@ -1460,7 +1460,7 @@ function canonicalV2Key(key) {
 const APPROVE_WORDS = new Set(['通过', '同意', '允许', '批准', 'yes', 'y', 'approve', 'ok']);
 const REJECT_WORDS = new Set(['拒绝', '不同意', '不允许', '驳回', 'no', 'n', 'reject', 'deny']);
 
-// state/ 的 ACL 是否已收紧（hardenStateDirAcl 的结果；控制台「访问与安全」页会显示，
+// data/ 的 ACL 是否已收紧（hardenStateDirAcl 的结果；控制台「访问与安全」页会显示，
 // 未收紧时给出可复制的提权命令）。null = 还没跑/平台不适用。
 let stateDirHardened = null;
 
@@ -2664,7 +2664,7 @@ async function main() {
   let dshReady = false;
   let dshCheckStarted = false;
   let snowlumaWatchStarted = false; // SnowLuma 上游健康探测只启动一次（见 startSnowlumaWatch）
-  let currentMode = 'chat'; // chat | closed-agent | reserved（仿真模式，由 DSH settings / state/mode.json 驱动）
+  let currentMode = 'chat'; // chat | closed-agent | reserved（仿真模式，由 DSH settings / data/mode.json 驱动）
   let lastMode = currentMode;
   // closed-agent 模式使用的 DSH agent preset：留空表示「用 DSH 自己声明的默认 preset」。
   // 旧版本这里硬编码 'router-standard'，但 DSH 0.1.5 已移除该 preset，硬编码会导致
@@ -2696,7 +2696,7 @@ async function main() {
     setTimeout(() => { flushQueue(); }, 3000);
   };
 
-  // 从 DSH settings 读取桥接模式；命名空间未注册时回退本地 state/mode.json
+  // 从 DSH settings 读取桥接模式；命名空间未注册时回退本地 data/mode.json
   async function refreshMode() {
     try {
       const s = unwrap(await api.settings.describe({}), 'settings.describe');
@@ -2731,7 +2731,7 @@ async function main() {
           }
         }
         // DSH 的 qq-mode schema 只有 mode / ownerQQ 两个字段，没有 closedAgentPreset；
-        // 该值仍以本地 state/mode.json 为准（用 typeof 判断，允许用空串显式清空），
+        // 该值仍以本地 data/mode.json 为准（用 typeof 判断，允许用空串显式清空），
         // 否则这里提前 return 会让控制台的 preset 下拉变成永远不生效的死设置。
         const localPreset = readJsonSafe(path.join(STATE_DIR, 'mode.json'), null);
         if (typeof localPreset?.closedAgentPreset === 'string') {
@@ -3281,7 +3281,7 @@ async function main() {
   }
 
   // ── 本地控制台（独立 Web 面板，不依赖 DSH WebUI） ───────────────────────────
-  // 模式/角色/静默状态都存 state/*.json，桥接即时感知；此服务只读写这些文件。
+  // 模式/角色/静默状态都存 data/*.json，桥接即时感知；此服务只读写这些文件。
   function v2ToolEnabled(flag) {
     return cfg.socialV2?.tools?.[flag] !== false;
   }
@@ -3300,7 +3300,7 @@ async function main() {
     // 挡不住本机进程。这里改成失败关闭：宁可启动时报错，也不要静默开着一个无鉴权的管理 API。
     if (!consoleToken) throw new Error('控制台令牌为空：拒绝以无鉴权方式启动控制台 API');
     if (!tokenValid && configuredToken) log(`控制台 config.consoleToken 长度/字符不合法，已忽略并回退到自动生成令牌`);
-    if (!configuredToken) log(`控制台未配置 consoleToken，已自动生成：${String(consoleToken).slice(0, 6)}…（完整值保存在 state/console-token）`);
+    if (!configuredToken) log(`控制台未配置 consoleToken，已自动生成：${String(consoleToken).slice(0, 6)}…（完整值保存在 data/console-token）`);
     // 二代会话级隔离：MCP 工具调用时若带 x-agent-token，则必须匹配该会话的 agentToken。
     // 控制台/管理端请求不带此头，仍走 consoleToken 管理通道。
     //
@@ -3570,7 +3570,7 @@ async function main() {
               || url.pathname === '/api/socialV2/collect-sticker')) ? '表情库'
               : '';
           if (readonlyStore) {
-            sendJson({ ok: false, error: `${readonlyStore}处于只读降级状态（启动时加载失败，未覆盖原文件），本次修改不会落盘；请修复 state/ 下的对应文件后重启桥接` }, 503);
+            sendJson({ ok: false, error: `${readonlyStore}处于只读降级状态（启动时加载失败，未覆盖原文件），本次修改不会落盘；请修复 data/ 下的对应文件后重启桥接` }, 503);
             return;
           }
         }
@@ -3648,7 +3648,7 @@ async function main() {
           // 用字符串判断而非真值判断：空串是「显式清空 preset」，也要生效。
           closedAgentPreset = next.closedAgentPreset;
           // 写穿到 DSH 设置。refreshMode() 每 5 秒跑一次且以 DSH 的值为准（插件的 base 保证
-          // 该命名空间永远有值），所以只写本地 state/mode.json 会在下一次轮询时被静默回滚。
+          // 该命名空间永远有值），所以只写本地 data/mode.json 会在下一次轮询时被静默回滚。
           // 写穿的是**内部拼写**（`simulation` 会写成 `reserved2`）：DSH 里那份值会被 refreshMode
           // 读回来当 `currentMode` 用，存规范名会让下游那些 `=== 'reserved2'` 判断失效。
           let dshSynced = false;
@@ -4316,10 +4316,10 @@ async function main() {
         if (req.method === 'GET' && url.pathname === '/api/security') {
           sendJson({
             security: cfg.security ?? { interceptNotify: true },
-            // state/ 的 ACL 收紧结果：Windows 上改 ACL 需要管理员权限，未提权时会失败。
+            // data/ 的 ACL 收紧结果：Windows 上改 ACL 需要管理员权限，未提权时会失败。
             // 控制台据此显示警告与可复制的命令（而不是让用户以为已经安全）。
             // 命令必须取自 state-acl 的**安全**版本：把 (OI)(CI) 授权和 /T 混在一句里
-            // 会把子文件 DACL 清空，用户照抄就会把自己的 state/ 弄坏。
+            // 会把子文件 DACL 清空，用户照抄就会把自己的 data/ 弄坏。
             stateDir: {
               hardened: stateDirHardened,
               path: STATE_DIR,
@@ -4332,7 +4332,7 @@ async function main() {
         }
         if (req.method === 'POST' && url.pathname === '/api/security') {
           const body = await readBody();
-          // 支持从控制台**重试**收紧 state/ 权限（用户在管理员终端里配好了权限/换了启动方式后）。
+          // 支持从控制台**重试**收紧 data/ 权限（用户在管理员终端里配好了权限/换了启动方式后）。
           if (body.rehardenStateDir === true) {
             stateDirHardened = null;
             hardenStateDirAcl();
@@ -4373,7 +4373,7 @@ async function main() {
           }
           const configFile = path.join(ROOT, 'config.json');
           const file = readConfigObject(configFile);
-          // 手动令牌写入 config.json（用户可见、可再改）；随机令牌写入 state/console-token 并清空 config 中的手动值。
+          // 手动令牌写入 config.json（用户可见、可再改）；随机令牌写入 data/console-token 并清空 config 中的手动值。
           file.consoleToken = generated ? '' : newToken;
           atomicWriteJson(configFile, file);
           cfg.consoleToken = generated ? '' : newToken;
@@ -7361,7 +7361,7 @@ async function main() {
           let stoppedCount = 0;
           try {
             // 新版 DSH 不再提供 workspace.list；改为扫描本桥接创建的会话目录并归档。
-            // 只处理 cwd 位于 dsh-omni state/ 下的根会话；子代理会话由父会话管理，不能误归档。
+            // 只处理 cwd 位于 dsh-omni data/ 下的根会话；子代理会话由父会话管理，不能误归档。
             const list = unwrap(await withTimeout(api.sessions.list({}), DSH_CONTROL_TIMEOUT_MS, 'sessions.list'), 'session.list');
             const stateDir = path.resolve(STATE_DIR);
             const statePrefix = path.normalize(stateDir + path.sep);
@@ -8806,7 +8806,7 @@ async function main() {
           }
         })();
         if (fileStamp !== null && nowStamp !== null && fileStamp !== nowStamp) {
-          log('⚠️ state/social-v2.json 在本次加载期间被其它进程改写，跳过回写以免覆盖更新的状态（是否误开了第二个桥接实例？）');
+          log('⚠️ data/social-v2.json 在本次加载期间被其它进程改写，跳过回写以免覆盖更新的状态（是否误开了第二个桥接实例？）');
         } else {
           saveSocialV2State();
         }
@@ -8878,7 +8878,7 @@ async function main() {
   }
 
   /**
-   * 读取 state/initial-prompts.json。
+   * 读取 data/initial-prompts.json。
    * 读不动/读坏时降级为「只读不写」（与 sessions.json、表情库、黑话库同一口径）：
    * 否则内存里的空映射会在下一次保存时把原文件覆盖掉，操作者写的内容永久丢失。
    */
@@ -8968,7 +8968,7 @@ async function main() {
       initialPrompts.delete(canonical);
       if (!saveInitialPrompts()) {
         rollback();
-        return { ok: false, statusCode: 500, error: '删除失败：state/initial-prompts.json 写入失败，已回滚' };
+        return { ok: false, statusCode: 500, error: '删除失败：data/initial-prompts.json 写入失败，已回滚' };
       }
       return { ok: true, key: canonical, deleted: true, chars: 0, entry: null };
     }
@@ -8977,7 +8977,7 @@ async function main() {
     initialPrompts.set(canonical, entry);
     if (!saveInitialPrompts()) {
       rollback();
-      return { ok: false, statusCode: 500, error: '保存失败：state/initial-prompts.json 写入失败，已回滚' };
+      return { ok: false, statusCode: 500, error: '保存失败：data/initial-prompts.json 写入失败，已回滚' };
     }
     return { ok: true, key: canonical, deleted: false, chars: text.length, entry };
   }
@@ -9666,7 +9666,7 @@ async function main() {
     startSocialLoop();
   }
 
-  // 当前角色扮演提示：读 state/current-role.json + roles/<角色>.md，
+  // 当前角色扮演提示：读 data/current-role.json + roles/<角色>.md，
   // 由桥接注入到 QQ 群消息（群友无法通过对话修改，只能由管理端写该文件）。
   // 缓存 key 为两个文件的 mtime，mtime 未变时直接返回，避免每次同步读文件。
   let roleHintCache = { key: '', raw: '' };
@@ -9676,7 +9676,7 @@ async function main() {
       const rs = readRoleState();
       if (!rs.role) return '';
       // 读取点也必须校验人格名：写入点（控制台 /role 命令）都过 sanitizeRoleName，
-      // 但 state/current-role.json 是**用户可直接编辑**的文件。没有这道校验时，
+      // 但 data/current-role.json 是**用户可直接编辑**的文件。没有这道校验时，
       // {"role":"../../../../Users/Public/x"} 会让 roles/ 之外的文件被读进来并注入每一条提示词。
       const safeName = sanitizeRoleName(rs.role);
       if (!safeName || safeName.includes('..')) return '';

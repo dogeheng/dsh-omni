@@ -1,4 +1,4 @@
-// state/ 目录 ACL 收紧的**唯一实现**。
+// data/ 目录 ACL 收紧的**唯一实现**。
 //
 // 为什么单独成模块：这套逻辑原本在桥接进程（`src/bridge.js` 的 hardenStateDirAcl）和
 // 安装脚本（`scripts/harden-state-acl.mjs`）里各写了一份，两份带着**同一个** bug：
@@ -7,12 +7,12 @@
 //
 // `(OI)(CI)` 是**目录专用**的继承标志。icacls 把它套到 `/T` 展开出来的**文件**上会失败，
 // 而同一句里的 `/inheritance:r` 已经把文件原有的继承 ACE 摘掉了 —— 净结果是**子文件
-// DACL 被清空，连属主自己都读不了**。实测后果：state/ 下 50 个子文件变成空 DACL，
+// DACL 被清空，连属主自己都读不了**。实测后果：data/ 下 50 个子文件变成空 DACL，
 // 桥接读不到自己的控制台令牌（"Access to the path ... is denied"），而启动日志只报
 // 「未能收紧权限」，完全看不出已经造成了破坏。
 //
 // 第二个 bug 让第一个 bug 反复发生：回读自检用 `/\(I\)/.test(整段输出)` 判断「继承链是否
-// 断干净」。但 DSH 的 ACL 沙箱会把工作区（含 state/）标记为 Low 完整性，而
+// 断干净」。但 DSH 的 ACL 沙箱会把工作区（含 data/）标记为 Low 完整性，而
 // `Mandatory Label\Low Mandatory Level:(I)(OI)(CI)(NW)` 这一行**永远**带 (I) ——
 // 于是「已收紧」被误判成「未收紧」，**每次启动都重跑一遍那个破坏性命令**。
 //

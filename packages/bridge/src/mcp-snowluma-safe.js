@@ -108,12 +108,14 @@ function agentApiBase() {
   const port = Number(getConfig().consolePort) || 3100;
   return `http://127.0.0.1:${port}`;
 }
+let warnedMissingConsoleToken = false;
+
 function readConsoleToken() {
-  // 每次请求都重新读取，优先 config.json 里的 consoleToken，其次 state/console-token，
+  // 每次请求都重新读取，优先 config.json 里的 consoleToken，其次 data/console-token，
   // 避免 token 变化后 MCP 仍使用启动时缓存的旧值导致一直 401。
   //
   // 必须与桥接的校验口径**完全一致**（bridge.js 的 startConsoleServer：长度 16~128、
-  // 只允许 [A-Za-z0-9_-]，不合法就忽略并回退 state/console-token）。否则用户手填一个
+  // 只允许 [A-Za-z0-9_-]，不合法就忽略并回退 data/console-token）。否则用户手填一个
   // 短令牌时桥接会正常运行，而 MCP 拿着这个桥接根本不认的值去请求 —— 每个工具都 401，
   // 且错误信息里看不出原因是"config.json 里的令牌格式不合法"。
   try {
@@ -121,12 +123,19 @@ function readConsoleToken() {
     const configured = String(c.consoleToken ?? '').trim();
     if (/^[A-Za-z0-9_-]{16,128}$/.test(configured)) return configured;
   } catch {}
-  try {
-    const tokenFile = path.join(ROOT, 'state', 'console-token');
-    return fs.readFileSync(tokenFile, 'utf8').trim();
-  } catch {
-    return '';
+  // data/ 是当前布局；state/ 是 qq-bridge 旧布局，保留一段时间方便迁移期间回滚。
+  for (const dir of ['data', 'state']) {
+    try {
+      const tokenFile = path.join(ROOT, dir, 'console-token');
+      const token = fs.readFileSync(tokenFile, 'utf8').trim();
+      if (token) return token;
+    } catch {}
   }
+  if (!warnedMissingConsoleToken) {
+    warnedMissingConsoleToken = true;
+    console.error('[mcp-snowluma] console token not found under data/ or state/; token-bearing tools will be rejected');
+  }
+  return '';
 }
 
 /**
@@ -1071,7 +1080,7 @@ if (cfg.socialV2?.sticker?.enabled !== false && cfg.socialV2?.tools?.listSticker
     async ({ key, token, query, count, refresh }) => {
       try {
         // 强制同步走 POST：GET 上的 refresh 参数会让「读接口」产生写副作用
-        // （真的去问 OneBot 拉收藏表情并落盘 state/stickers.json），
+        // （真的去问 OneBot 拉收藏表情并落盘 data/stickers.json），
         // 从而绕开控制台对所有非 GET 请求的 CSRF 防护（一个 <img src=...> 就能触发）。
         const data = await agentApi('/api/socialV2/sticker-list', {
           method: 'POST',
