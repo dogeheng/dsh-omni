@@ -85,6 +85,16 @@ window.__ModuleLoader__.load({
       );
     }
 
+    function displayUrl(raw) {
+      try {
+        const u = new URL(raw);
+        for (const k of ['token', 'password']) if (u.searchParams.has(k)) u.searchParams.set(k, '••••');
+        return u.toString();
+      } catch {
+        return raw;
+      }
+    }
+
     function Card({ item }) {
       const [copied, setCopied] = useState(false);
       const open = () => {
@@ -101,7 +111,7 @@ window.__ModuleLoader__.load({
         h('div', { className: 'qqb-main' },
           h('div', { className: 'qqb-card-title' }, item.title, h('span', { className: 'qqb-port' }, ':' + item.port)),
           h('p', { className: 'qqb-desc' }, item.desc),
-          h('p', { className: 'qqb-url' }, item.url),
+          h('p', { className: 'qqb-url' }, displayUrl(item.url)),
         ),
         h('div', { className: 'qqb-actions' },
           h('button', { type: 'button', className: 'qqb-btn', onClick: open }, '打开'),
@@ -115,14 +125,14 @@ window.__ModuleLoader__.load({
         h('div', { className: 'qqb-head' },
           h('div', { className: 'qqb-logo' }, h(Logo)),
           h('div', null,
-            h('h3', { className: 'qqb-title' }, 'QQ 桥接'),
-            h('p', { className: 'qqb-sub' }, '本机的三个入口：扫码登录、SnowLuma 管理面板、桥接控制台。凭据已内置，点「打开」即可。'),
+            h('h3', { className: 'qqb-title' }, 'dsh-omni'),
+            h('p', { className: 'qqb-sub' }, '本机的三个入口：扫码登录、SnowLuma 管理面板、桥接控制台。凭据由安装脚本注入到本机副本，点「打开」即可。'),
           ),
         ),
         h('div', { className: 'qqb-list' }, ITEMS.map((item) => h(Card, { key: item.id, item }))),
         h('p', { className: 'qqb-note' },
           '三个服务都只监听 ', h('code', null, '127.0.0.1'), '，这个页面只提供快捷入口，不代理任何请求。',
-          '地址或密码变了，改插件 ', h('code', null, 'client.js'), ' 顶部的三个常量即可。',
+          '地址或密码变了，改 ', h('code', null, 'packages/bridge/.env'), ' 或 ', h('code', null, 'data/console-token'), '，然后重跑 ', h('code', null, 'node packages/launcher/scripts/install.mjs'), '。',
         ),
       );
     }
