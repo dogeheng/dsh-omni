@@ -1,5 +1,7 @@
 # Architecture
 
+> *I want to give Big Fat Fish a complete life — gather the best of every world, give him every ability, and see how human he can become.*
+
 `dsh-omni` is a monorepo with three independently loadable pieces. Only the
 bridge is required for QQ ↔ DSH; the launcher and Bilibili MCP are optional.
 

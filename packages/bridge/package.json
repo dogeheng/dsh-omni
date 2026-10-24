@@ -3,7 +3,7 @@
   "version": "0.1.0",
   "private": true,
   "license": "MIT",
-  "description": "dsh-omni bridge: SnowLuma (OneBot v11 / QQ) <-> DeepSeek Harness; QQ messages become DSH agent prompts and replies go back to QQ. Includes the DSH agent presets and mode console bundles.",
+  "description": "dsh-omni bridge：把 QQ（SnowLuma / OneBot）接到 DeepSeek Harness，让大肥鱼能聊天、发表情、发语音、看 B 站、联网查梗、记住群里的事，并自主潜水/唤醒。",
   "type": "module",
   "engines": {
     "node": ">=22.13.0"

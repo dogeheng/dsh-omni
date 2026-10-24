@@ -1,6 +1,14 @@
 # dsh-omni
 
-**QQ ↔ DeepSeek Harness 的整合包。** 把 QQ（SnowLuma / OneBot v11）接到 DeepSeek Harness，让 DSH agent 以 QQ 会话的形式聊天、发表情、看 B 站卡片、潜水与唤醒，并附带控制台和 DSH 设置页入口。
+> **我想给大肥鱼完整的一生。**
+>
+> 我想集众家之所长，给大肥鱼加上所有的能力，看看他能像人像到哪一步。
+>
+> *大肥鱼是这个 QQ 机器人的小名。*
+
+**QQ ↔ DeepSeek Harness 的整合包。** 把 QQ（SnowLuma / OneBot v11）接到 DeepSeek Harness，让 DSH agent 以 QQ 会话的形式聊天、发表情、发语音、看 B 站卡片、上网查梗、记住群里的事、潜水与唤醒，并附带控制台和 DSH 设置页入口。
+
+这不是一个“QQ 机器人框架”，更像一次长期实验：把 QQ 当身体，把 DSH 当大脑，把表情、语音、记忆、黑话、B 站、联网搜索都接成感官，看一个 agent 能不能在真实的群聊里活得像个具体的人。
 
 > 本仓库基于 [qq-bridge](https://github.com/Derpyu520/qq-bridge)（Derpyu520，MIT）做整合与二次开发；B 站能力复用 [dsh-bili-scroll](https://github.com/c1overzz/dsh-bili-scroll)（c1overzz，MIT）。署名与许可证见 [NOTICE.md](NOTICE.md)。
 
@@ -12,12 +20,17 @@
 
 - **QQ ↔ DSH 会话桥接**：群聊/私聊消息进入独立 DSH 会话，agent 的回复通过工具发回 QQ。
 - **四种模式**：`chat`、`reserved`、`reserved2`（仿真）、`closed-agent`，可在控制台切换。
+- **大功能开关**：控制台「运行总览」一页开关一代/二代仿真、B 站卡片、联网搜索、语音、表情包、黑话学习、主动机会、看图与长期记忆；细粒度工具开关在「二代仿真」页。
 - **reserved2 仿真**：分条发送、引用、唤醒/潜水、拍一拍、主动机会、回复检查、长期记忆。
 - **表情包**：同步 QQ 收藏表情、AI 看图标注、按情绪搜索、按语义自检、可配置发送概率与“发完文字后提醒补一张”。
 - **B 站卡片**：解析 QQ 小程序卡（`b23.tv` → `BV...`），把标题/BV 注入消息；AI 可按需调用 `bili_video_info` / `bili_subtitle`，再决定回复还是安静。
 - **Web 控制台**：白名单、唤醒参数、人格卡、表情参数、令牌与花费看板。
 - **DSH 集成**：两个 agent preset（`qq-chat` / `qq-chat-v2`）、模式控制台 bundle、可选的设置页入口 launcher。
 - **可迁移**：从 qq-bridge 的 `state/` + `config.json` 一键复制到本项目的 `data/`。
+
+### 功能开关
+
+控制台「运行总览 → 大功能开关」是跨模式总闸：一代/二代仿真、B 站卡片、联网搜索、语音、表情包、黑话学习、主动机会、看图与长期记忆。每个开关都写回 `config.json` 原本的配置段（不是第二份状态）；标 ⚠ 的项要重启 DSH 才会刷新工具清单或重载 MCP 代码，细粒度工具开关在「二代仿真 → 工具开关」。
 
 ## 架构
 

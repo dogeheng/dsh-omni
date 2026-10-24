@@ -2,7 +2,7 @@
   "name": "dsh-omni-launcher",
   "version": "0.1.0",
   "private": true,
-  "description": "DSH 设置页里的「dsh-omni」入口：打开扫码桌面、SnowLuma 管理面板和桥接控制台。",
+  "description": "给大肥鱼开的 DSH 设置页入口：打开扫码桌面、SnowLuma 管理面板和桥接控制台。",
   "type": "module",
   "main": "index.js",
   "exports": {

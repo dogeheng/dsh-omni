@@ -1,6 +1,14 @@
 # dsh-omni
 
-**An integrated QQ ↔ DeepSeek Harness package.** Connect QQ (SnowLuma / OneBot v11) to DeepSeek Harness so a DSH agent can chat in QQ, send stickers, read Bilibili cards, nap/wake, and expose a local console plus a DSH settings entry.
+> **I want to give Big Fat Fish a complete life.**
+>
+> I want to gather the best of every world, give him every ability, and see how human he can become.
+>
+> *Big Fat Fish (大肥鱼) is the nickname of this QQ bot.*
+
+**An integrated QQ ↔ DeepSeek Harness package.** Connect QQ (SnowLuma / OneBot v11) to DeepSeek Harness so a DSH agent can chat in QQ, send stickers and voice, read Bilibili cards, search the web, remember the group, nap/wake, and expose a local console plus a DSH settings entry.
+
+This is less a “QQ bot framework” than a long-running experiment: QQ as the body, DSH as the brain, and stickers, voice, memory, slang, Bilibili and web search wired in as senses — to see how much like a specific person an agent can become inside a real group chat.
 
 > Based on [qq-bridge](https://github.com/Derpyu520/qq-bridge) by Derpyu520 (MIT), with Bilibili capabilities from [dsh-bili-scroll](https://github.com/c1overzz/dsh-bili-scroll) by c1overzz (MIT). See [NOTICE.md](NOTICE.md).
 
@@ -10,12 +18,17 @@
 
 - QQ ↔ DSH session bridge (private chats and groups).
 - Four modes: `chat`, `reserved`, `reserved2` (simulation), `closed-agent`.
+- Big-feature switches on the console overview: V1/V2 simulation, Bilibili cards, web search, voice, stickers, slang learning, proactive chances, image understanding and long-term memory; per-tool switches live on the V2 page.
 - reserved2: multi-bubble sends, quoting, wake/sleep, pokes, proactive opportunities, reply checks, long-term memory.
 - Stickers: sync QQ favourites, AI annotation, emotion search, semantic self-check, configurable send probability and a post-reply nudge.
 - Bilibili cards: parse QQ mini-app cards (`b23.tv` → `BV...`), inject title/BV, then let the agent call `bili_video_info` / `bili_subtitle` and decide whether to reply or stay silent.
 - Web console: allowlists, wake settings, personas, sticker settings, token/cost dashboard.
 - DSH integration: `qq-chat` / `qq-chat-v2` presets, mode console bundle, optional settings-page launcher.
 - Migration helper from qq-bridge (`state/` + `config.json` → `data/`).
+
+### Feature switches
+
+The console overview has a cross-mode “big features” panel: V1/V2 simulation, Bilibili cards, web search, voice, stickers, slang learning, proactive chances, image understanding and long-term memory. Each switch writes the original `config.json` section, not a second state store. Items marked ⚠ need a DSH restart to refresh the tool list or reload MCP code; per-tool switches stay on the V2 page.
 
 ## Architecture
 
