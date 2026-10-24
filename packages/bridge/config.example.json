@@ -136,9 +136,11 @@
       "listStickers": true,
       "getStickerImage": true,
       "sendSticker": true,
+      "sendImage": true,
       "setStickerRemark": false,
       "stickerNote": true,
       "collectSticker": true,
+      "addSticker": true,
       "getSelfImage": true,
       "sendVoice": false
     },
@@ -260,7 +262,11 @@
       "maxCount": 5
     }
   },
+  "features": {
+    "biliCard": true
+  },
   "webSearch": {
+    "enabled": true,
     "provider": "auto",
     "apiKey": "",
     "apiKeyEnv": "DEEPSEEK_API_KEY",

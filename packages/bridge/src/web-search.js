@@ -41,6 +41,7 @@ const CACHE_MAX_ENTRIES = 64;
 const SEARCH_TOOL_TYPE = 'web_search_20250305';
 
 const defaultConfig = Object.freeze({
+  enabled: true,
   provider: 'auto',
   apiKey: '',
   apiKeyEnv: DEFAULT_API_KEY_ENV,
@@ -69,6 +70,7 @@ export function loadSearchConfig(root) {
   const provider = raw.provider === 'deepseek' || raw.provider === 'bing' ? raw.provider : 'auto';
   return {
     ...defaultConfig,
+    enabled: raw.enabled !== false,
     provider,
     apiKey: typeof raw.apiKey === 'string' ? raw.apiKey.trim() : '',
     apiKeyEnv: typeof raw.apiKeyEnv === 'string' && raw.apiKeyEnv.trim() ? raw.apiKeyEnv.trim() : DEFAULT_API_KEY_ENV,

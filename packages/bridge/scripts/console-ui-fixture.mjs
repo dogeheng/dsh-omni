@@ -318,7 +318,11 @@ export function makeFixtureState() {
       proactiveCheckMaxMs: 900000, proactiveProbability: 0.2,
     },
     socialStates: { 'group:123456789': { phase: 'active' }, 'group:100003': { phase: 'idle' } },
-    v2: { enabled: true, agentPreset: 'qq-chat-v2', provideRecommendations: true, tools: {} },
+    features: {
+      social: true, socialV2: true, biliCard: true, webSearch: true, voice: false,
+      sticker: true, slang: true, proactive: true, images: true, memory: true,
+    },
+    v2: { enabled: true, agentPreset: 'qq-chat-v2', provideRecommendations: true, tools: {}, voice: { enabled: false, autoReadback: true } },
     // 会话初始提示词（离线示例）：整段内容都是虚构的演示文本。
     initPrompt: '离线示例：这是一个演示用的群聊环境说明，不会写进任何真实配置。',
     slangConfig: { enabled: true, extractMinMessages: 10, extractCooldownMs: 300000, inferenceThresholds: [2, 4, 8], injectMax: 8, learnerPreset: 'qq-chat', workspaceTitle: 'QQ 黑话学习', autoResearch: true },
@@ -450,6 +454,7 @@ export async function startConsoleFixture({ port = 0, original = false, htmlPath
           case '/api/sessions': return json({ sessions: state.sessions });
           case '/api/pending': return json({ pending: [{ key: 'group:123456789', kind: 'approval', toolName: '演示工具', reason: '等待管理员确认（离线示例）' }] });
           case '/api/social': return json({ config: state.social, states: state.socialStates, pendingSummaries: { 'group:123456789': 2 } });
+          case '/api/features': return json({ ok: true, features: state.features });
           case '/api/socialV2/config': return json({ ok: true, config: state.v2 });
           case '/api/socialV2/activity': return json({ ok: true, paused: state.paused });
           case '/api/socialV2/tool-log': return json({ ok: true, entries: state.toolLog });
@@ -545,6 +550,7 @@ export async function startConsoleFixture({ port = 0, original = false, htmlPath
           case '/api/role-mode': state.roleMode = body.mode; return json({ ok: true });
           case '/api/whitelist': state.whitelist = body; return json({ ok: true });
           case '/api/social': state.social = body; return json({ ok: true });
+          case '/api/features': state.features = { ...state.features, ...body }; return json({ ok: true, features: state.features });
           case '/api/social/state': state.socialStates[body.key] = { phase: body.phase }; return json({ ok: true });
           case '/api/socialV2/config': state.v2 = body; return json({ ok: true });
           case '/api/socialV2/activity': state.paused = body.paused; return json({ ok: true });

@@ -1811,6 +1811,26 @@ button:active:not(:disabled) {
       </div>
       <div class="meta">切换后即时保存。仿真参数可在左侧对应页面调整；封闭 Agent 仅允许管理员私聊。</div>
     </section>
+<section id="section-features" data-page="overview" class="card span-all">
+      <h2>大功能开关</h2>
+      <div class="meta">跨模式的“总闸”，写入 <code>config.json</code>；关掉后对应能力整体停用。细粒度工具开关仍在「二代仿真 → 工具开关」。标 <b>⚠</b> 的项要重启 DSH 才完全生效（刷新工具清单 / 重载 MCP 代码）。</div>
+      <div class="v2-tool-list" id="featureGrid" style="margin-top:8px">
+        <label class="v2-tool-item"><input type="checkbox" data-feature="social"> <span><strong>一代仿真</strong><span class="meta">reserved：按策略参与群聊</span></span></label>
+        <label class="v2-tool-item"><input type="checkbox" data-feature="socialV2"> <span><strong>二代仿真</strong><span class="meta">reserved2：自主阅读、发言、潜水</span></span></label>
+        <label class="v2-tool-item"><input type="checkbox" data-feature="biliCard"> <span><strong>B 站卡片解析</strong><span class="meta">b23.tv → BV，并把标题 / BV 注入消息</span></span></label>
+        <label class="v2-tool-item"><input type="checkbox" data-feature="webSearch"> <span><strong>联网搜索 ⚠</strong><span class="meta">web_search / web_fetch / 图片搜索</span></span></label>
+        <label class="v2-tool-item"><input type="checkbox" data-feature="voice"> <span><strong>语音发送 ⚠</strong><span class="meta">qq_send_voice / qq_list_voices</span></span></label>
+        <label class="v2-tool-item"><input type="checkbox" data-feature="sticker"> <span><strong>表情包体系</strong><span class="meta">同步、收藏、标注、发送（即时生效）</span></span></label>
+        <label class="v2-tool-item"><input type="checkbox" data-feature="slang"> <span><strong>黑话学习</strong><span class="meta">自动提取、研究、注入</span></span></label>
+        <label class="v2-tool-item"><input type="checkbox" data-feature="proactive"> <span><strong>主动机会</strong><span class="meta">群安静时主动冒泡（V2）</span></span></label>
+        <label class="v2-tool-item"><input type="checkbox" data-feature="images"> <span><strong>图片理解 ⚠</strong><span class="meta">qq_get_message_images</span></span></label>
+        <label class="v2-tool-item"><input type="checkbox" data-feature="memory"> <span><strong>长期记忆 ⚠</strong><span class="meta">qq_memory_*</span></span></label>
+      </div>
+      <div class="row" style="margin-top:10px">
+        <button id="featureSave" style="font-weight:bold;padding:6px 14px">保存功能开关</button>
+        <span class="meta" id="featureMsg"></span>
+      </div>
+    </section>
 <section id="section-sessions" data-page="sessions" class="card span-all">
       <h2>会话映射</h2>
       <div id="sessionList">加载中…</div>
@@ -1900,6 +1920,9 @@ button:active:not(:disabled) {
       <h2>一代仿真模式（reserved）</h2>
       <div class="meta" id="socialStatus">加载中…</div>
 
+      <div class="row" style="margin-top:10px">
+        <label style="flex:1">启用一代仿真</label><input type="checkbox" id="sEnabled" style="width:auto">
+      </div>
       <div class="row" style="margin-top:10px">
         <label style="flex:1">普通消息触发概率（观望期）</label><input type="number" id="sTrigger" step="0.05" min="0" max="1" style="width:80px">
       </div>
@@ -2045,7 +2068,9 @@ button:active:not(:disabled) {
         <label class="v2-tool-item"><input type="checkbox" data-v2-tool="listStickers"> <span><b>qq_list_stickers</b><span class="meta">查看/搜索 QQ 收藏表情（含备注和本地笔记）</span></span></label>
         <label class="v2-tool-item"><input type="checkbox" data-v2-tool="getStickerImage"> <span><b>qq_get_sticker_image</b><span class="meta">看图理解没有备注的收藏表情</span></span></label>
         <label class="v2-tool-item"><input type="checkbox" data-v2-tool="sendSticker"> <span><b>qq_send_sticker</b><span class="meta">发送收藏表情（一条消息只能一张，不能带文字）</span></span></label>
+        <label class="v2-tool-item"><input type="checkbox" data-v2-tool="sendImage"> <span><b>qq_send_image</b><span class="meta">发送网络图片/表情包（桥接做 SSRF / 体积 / 格式校验）</span></span></label>
         <label class="v2-tool-item"><input type="checkbox" data-v2-tool="collectSticker"> <span><b>qq_collect_sticker</b><span class="meta">AI 偶尔收藏别人发的表情并写简短备注</span></span></label>
+        <label class="v2-tool-item"><input type="checkbox" data-v2-tool="addSticker"> <span><b>qq_add_sticker</b><span class="meta">把网络图片收藏进 QQ 收藏表情（需表情包体系开启）</span></span></label>
         <label class="v2-tool-item"><input type="checkbox" data-v2-tool="getSelfImage"> <span><b>qq_get_self_image</b><span class="meta">查看自己的默认 Q 版形象图片</span></span></label>
         <label class="v2-tool-item"><input type="checkbox" data-v2-tool="stickerNote"> <span><b>qq_sticker_note</b><span class="meta">给表情记录本地含义/标签/用法</span></span></label>
         <label class="v2-tool-item"><input type="checkbox" data-v2-tool="setStickerRemark"> <span><b>qq_set_sticker_remark</b><span class="meta">修改 QQ 官方表情备注（默认禁用，慎用）</span></span></label>
@@ -2059,6 +2084,11 @@ button:active:not(:disabled) {
         语音库目录：<code>dsh-omni/audio/</code>（改 <code>socialV2.voice.dir</code> 可换）。把音频文件丢进去即可被 AI 用 <code>qq_send_voice</code> 发出；
         本面板用于调试与试发 —— 试发走的是与 AI 通道相同的解析/校验/限流路径（<code>/api/voice/send</code>），只是由你在控制台触发。
       </div>
+      <div class="row" style="margin-bottom:8px">
+        <label style="flex:1">允许 AI 发送语音（总开关）</label><input type="checkbox" id="v2VoiceEnabled" style="width:auto">
+        <label style="flex:1">发完语音自动读回</label><input type="checkbox" id="v2VoiceAutoReadback" style="width:auto">
+      </div>
+      <div class="meta" style="margin-bottom:8px">还需在「工具开关」里启用 <code>qq_send_voice</code>；「运行总览 → 大功能开关」的语音开关会把两者一起打开。</div>
       <div class="row" style="flex-wrap:wrap;gap:8px;align-items:center">
         <button id="voiceRefreshBtn" type="button" class="btn-secondary">刷新语音库</button>
         <label style="flex:0 0 auto">发送目标</label>
@@ -3345,6 +3375,9 @@ async function loadV2Config() {
     document.getElementById('v2StickerCollectPerMin').value = stkCollect.maxPerMinute ?? 2;
     document.getElementById('v2StickerCollectPerHour').value = stkCollect.maxPerHour ?? 10;
     document.getElementById('v2StickerCollectRemarkMax').value = stkCollect.maxRemarkChars ?? 20;
+    const v = c.voice || {};
+    document.getElementById('v2VoiceEnabled').checked = v.enabled === true;
+    document.getElementById('v2VoiceAutoReadback').checked = v.autoReadback !== false;
     const ctx = c.context || {};
     document.getElementById('v2ContextRecentLimit').value = ctx.recentLimit ?? 100;
     document.getElementById('v2ContextUnreadLimit').value = ctx.unreadLimit ?? 30;
@@ -3416,6 +3449,10 @@ async function saveV2Config() {
       idleThresholdMs: Math.round(Number(document.getElementById('v2ProactiveIdleThreshold').value) || 15) * 60000,
       probability: Number(document.getElementById('v2ProactiveProbability').value) || 0
     },
+    voice: {
+      enabled: document.getElementById('v2VoiceEnabled').checked,
+      autoReadback: document.getElementById('v2VoiceAutoReadback').checked
+    },
     sticker: {
       enabled: document.getElementById('v2StickerEnabled').checked,
       syncTtlMs: Math.max(1000, Math.round(Number(document.getElementById('v2StickerSyncTtlSec').value) || 60) * 1000),
@@ -3446,8 +3483,44 @@ async function saveV2Config() {
   const msg = document.getElementById('v2ConfigMsg');
   msg.textContent = r.ok ? '✅ 已保存' : ('❌ ' + (r.error || '失败'));
   msg.className = r.ok ? 'meta ok' : 'meta err';
-  if (r.ok) loadV2Config();
+  if (r.ok) { loadV2Config(); loadFeatures(); }
 }
+
+// ── 大功能开关（运行总览） ───────────────────────────────────────────────────
+// 总览页只写布尔值；每一项都回落到它原本的配置段，不是第二份状态。
+async function loadFeatures() {
+  try {
+    const r = await api('/api/features');
+    if (!r || r.ok !== true || !r.features) return;
+    const f = r.features;
+    document.querySelectorAll('[data-feature]').forEach(el => {
+      el.checked = f[el.dataset.feature] !== false;
+    });
+  } catch {}
+}
+
+async function saveFeatures() {
+  const body = {};
+  document.querySelectorAll('[data-feature]').forEach(el => { body[el.dataset.feature] = el.checked; });
+  const msg = document.getElementById('featureMsg');
+  try {
+    const r = await api('/api/features', 'POST', body);
+    msg.textContent = r.ok ? '✅ 已保存' : ('❌ ' + (r.error || '失败'));
+    msg.className = r.ok ? 'meta ok' : 'meta err';
+    if (r.ok) {
+      loadFeatures();
+      loadSocialForm();
+      loadV2Config();
+      loadSlangConfig();
+      refreshSlang();
+      showConsoleToast('功能开关已保存');
+    }
+  } catch (error) {
+    msg.textContent = '❌ ' + (error?.message || '失败');
+    msg.className = 'meta err';
+  }
+}
+document.getElementById('featureSave').addEventListener('click', saveFeatures);
 
 async function viewV2State() {
   const key = document.getElementById('v2StateKey').value.trim();
@@ -3927,6 +4000,7 @@ async function loadSocialForm() {
   try {
     const s = await api('/api/social');
     const c = s.config;
+    document.getElementById('sEnabled').checked = c.enabled !== false;
     document.getElementById('sTrigger').value = c.triggerProbability;
     document.getElementById('sCheckMin').value = Math.round((c.activeCheckMinMs || 0) / 1000);
     document.getElementById('sCheckMax').value = Math.round((c.activeCheckMaxMs || 0) / 1000);
@@ -3987,6 +4061,7 @@ async function refreshSocialStatus() {
 document.getElementById('socialSave').addEventListener('click', async () => {
   const n = (id) => Number(document.getElementById(id).value);
   const r = await api('/api/social', 'POST', {
+    enabled: document.getElementById('sEnabled').checked,
     triggerProbability: Math.min(1, Math.max(0, n('sTrigger'))),
     activeCheckMinMs: Math.max(5, n('sCheckMin')) * 1000,
     activeCheckMaxMs: Math.max(5, n('sCheckMax')) * 1000,
@@ -4017,7 +4092,7 @@ document.getElementById('socialSave').addEventListener('click', async () => {
   });
   document.getElementById('socialMsg').textContent = r.ok ? '✅ 已保存' : ('❌ ' + (r.error || '失败'));
   document.getElementById('socialMsg').className = r.ok ? 'meta ok' : 'meta err';
-  if (r.ok) { loadSocialForm(); refreshSocialStatus(); }
+  if (r.ok) { loadSocialForm(); refreshSocialStatus(); loadFeatures(); }
 });
 document.getElementById('socialFlush').addEventListener('click', async () => {
   const r = await api('/api/social/flush', 'POST', {});
@@ -4378,7 +4453,7 @@ document.getElementById('slangConfigSave').addEventListener('click', async () =>
   const msg = document.getElementById('slangConfigMsg');
   msg.textContent = r.ok ? '✅ 已保存' : ('❌ ' + (r.error || '失败'));
   msg.className = r.ok ? 'meta ok' : 'meta err';
-  if (r.ok) loadSlangConfig();
+  if (r.ok) { loadSlangConfig(); loadFeatures(); }
 });
 
 function loadSecurity() {
@@ -4553,7 +4628,7 @@ document.querySelectorAll('input,select,textarea').forEach(input => {
     input.setAttribute('aria-label', names[input.id] || input.placeholder || input.closest('section')?.querySelector('h2')?.textContent || '设置');
   }
 });
-const primaryActions = ['roleSet','roleCreate','socialSave','v2ConfigSave','v2ConfigSaveTop','wlSave','secSave','consoleTokenSave','tsSend','aiNotifySend','slangAdd','slangConfigSave','slangModalDirectConfirm'];
+const primaryActions = ['roleSet','roleCreate','socialSave','v2ConfigSave','v2ConfigSaveTop','featureSave','wlSave','secSave','consoleTokenSave','tsSend','aiNotifySend','slangAdd','slangConfigSave','slangModalDirectConfirm'];
 primaryActions.forEach(id => document.getElementById(id)?.classList.add('primary'));
 document.querySelectorAll('.meta[id$="Msg"], .meta[id$="Msg2"]').forEach(el => el.setAttribute('role','status'));
 document.getElementById('section-mode').querySelector('h2').dataset.note = '选择后即时生效';
@@ -5062,7 +5137,7 @@ document.getElementById('usageClear').addEventListener('click', async () => {
 
 setConsolePage(location.hash.slice(1), { updateHash:false });
 
-refresh(); refreshRoles(); refreshWhitelist(); refreshSessions(); refreshPending(); refreshPresets(); loadSocialForm(); loadV2Config(); refreshV2Activity(); loadV2ToolLog(); loadV2SessionOptions(); refreshSocialStatus(); refreshSlang(); loadSlangConfig(); loadSecurity(); refreshSimPrompt(); refreshDshModel(); refreshUsage(); refreshUsageChart(); refreshUsageRecent();
+refresh(); refreshRoles(); refreshWhitelist(); refreshSessions(); refreshPending(); refreshPresets(); loadFeatures(); loadSocialForm(); loadV2Config(); refreshV2Activity(); loadV2ToolLog(); loadV2SessionOptions(); refreshSocialStatus(); refreshSlang(); loadSlangConfig(); loadSecurity(); refreshSimPrompt(); refreshDshModel(); refreshUsage(); refreshUsageChart(); refreshUsageRecent();
 setInterval(() => { refresh(); refreshSessions(); refreshPending(); refreshSocialStatus(); refreshSlang(); }, 3000);
 // 用量看板只在本页可见时轮询：既保证「实时」，又不让其它页白白多打两份接口。
 setInterval(() => { if (currentConsolePage !== 'usage') return; refreshUsage(); refreshUsageChart(); refreshUsageRecent(); }, 3000);

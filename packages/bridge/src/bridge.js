@@ -696,6 +696,16 @@ function loadConfig() {
       interceptNotify: true,
       ...(file.security ?? {})
     },
+    // 跨模式的功能总闸（控制台「运行总览 → 大功能开关」）。
+    // biliCard=false 只停用 B 站短链/BV 解析，卡片本身仍以普通卡片文本注入。
+    features: {
+      ...(file.features && typeof file.features === 'object' && !Array.isArray(file.features) ? file.features : {}),
+      biliCard: file.features?.biliCard !== false
+    },
+    // 联网搜索总开关（web-search-safe MCP 在启动/调用时读取；这里保留运行时视图供控制台展示）。
+    webSearch: {
+      enabled: file.webSearch?.enabled !== false
+    },
     slang: {
       enabled: true,
       extractMinMessages: 10,
@@ -903,9 +913,11 @@ function loadConfig() {
     listStickers: true,
     getStickerImage: true,
     sendSticker: true,
+    sendImage: true,
     setStickerRemark: false,
     stickerNote: true,
     collectSticker: true,
+    addSticker: true,
     getSelfImage: true,
     sendVoice: false,
     ...(cfg.socialV2.tools ?? {})
@@ -1285,9 +1297,9 @@ async function resolveBiliBvid(url) {
   }
 }
 
-async function cardToText(card) {
+async function cardToText(card, biliCard = true) {
   const isBili = /b23\.tv|bilibili\.com/i.test(card.url) || /哔哩哔哩|bilibili/i.test(card.title);
-  if (isBili) {
+  if (isBili && biliCard) {
     const bvid = card.url ? await resolveBiliBvid(card.url) : '';
     const label = (card.desc || card.title || 'B站视频').slice(0, 120);
     return `[B站卡片] ${label}${bvid ? `（${bvid}）` : card.url ? `（${card.url}）` : ''}`;
@@ -1298,7 +1310,7 @@ async function cardToText(card) {
 }
 
 async function segmentsToText(segments, options = {}) {
-  const { resolveAtName, resolveReply, includeReply = true } = options ?? {};
+  const { resolveAtName, resolveReply, includeReply = true, biliCard = true } = options ?? {};
   // 有些 OneBot 实现直接把纯文本消息放在 message 字段里（string）
   if (typeof segments === 'string') return segments.trim();
   const out = [];
@@ -1345,7 +1357,7 @@ async function segmentsToText(segments, options = {}) {
       }
       case 'json': {
         const card = parseCardPayload(d.data);
-        out.push(card ? await cardToText(card) : '[卡片消息]');
+        out.push(card ? await cardToText(card, biliCard) : '[卡片消息]');
         break;
       }
       // markdown：SnowLuma 1.14.9 的线上段落是 `{type:'markdown',data:{content}}`。
@@ -3289,6 +3301,47 @@ async function main() {
     return cfg.socialV2?.tools?.[flag] !== false;
   }
 
+  // 「运行总览 → 大功能开关」的单一读写口径：控制台只提交这些布尔值，桥接把它们
+  // 合并回各自原本的配置段（social / socialV2 / slang / features / webSearch）。
+  // 这样总览页不是第二份状态，只是同一批开关的快捷入口。
+  function readFeatureFlags() {
+    return {
+      social: cfg.social?.enabled !== false,
+      socialV2: cfg.socialV2?.enabled !== false,
+      biliCard: cfg.features?.biliCard !== false,
+      webSearch: cfg.webSearch?.enabled !== false,
+      // 语音是「总闸 + 工具开关」两道：只开 enabled 而 qq_send_voice 没注册，AI 仍然发不出去。
+      // 总览页把两者当成一个开关，避免出现「显示已开、实际不可用」。
+      voice: cfg.socialV2?.voice?.enabled === true && cfg.socialV2?.tools?.sendVoice !== false,
+      sticker: cfg.socialV2?.sticker?.enabled !== false,
+      slang: cfg.slang?.enabled !== false,
+      proactive: cfg.socialV2?.proactive?.enabled !== false,
+      images: cfg.socialV2?.tools?.getImages !== false,
+      memory: cfg.socialV2?.tools?.memory !== false
+    };
+  }
+
+  function applyFeatureFlags(next, touched = new Set()) {
+    const touchVoice = touched.has('voice');
+    cfg.social = { ...(cfg.social ?? {}), enabled: next.social };
+    cfg.socialV2 = {
+      ...(cfg.socialV2 ?? {}),
+      enabled: next.socialV2,
+      voice: { ...(cfg.socialV2?.voice ?? {}), ...(touchVoice ? { enabled: next.voice } : {}) },
+      sticker: { ...(cfg.socialV2?.sticker ?? {}), enabled: next.sticker },
+      proactive: { ...(cfg.socialV2?.proactive ?? {}), enabled: next.proactive },
+      tools: {
+        ...(cfg.socialV2?.tools ?? {}),
+        getImages: next.images,
+        memory: next.memory,
+        ...(touchVoice ? { sendVoice: next.voice } : {})
+      }
+    };
+    cfg.slang = { ...(cfg.slang ?? {}), enabled: next.slang };
+    cfg.features = { ...(cfg.features ?? {}), biliCard: next.biliCard };
+    cfg.webSearch = { ...(cfg.webSearch ?? {}), enabled: next.webSearch };
+  }
+
   function startConsoleServer() {
     const port = cfg.consolePort ?? 3100;
     // 控制台鉴权：优先用 config.consoleToken，未配置则自动生成并持久化，不再默认无鉴权。
@@ -3620,6 +3673,66 @@ async function main() {
             snowluma: snowlumaHealthSnapshot(),
             activity: readActivityTail(100)
           });
+          return;
+        }
+        if (req.method === 'GET' && url.pathname === '/api/features') {
+          sendJson({ ok: true, features: readFeatureFlags() });
+          return;
+        }
+        if (req.method === 'POST' && url.pathname === '/api/features') {
+          const body = await readBody();
+          if (!body || typeof body !== 'object' || Array.isArray(body)) {
+            sendJson({ ok: false, error: '请求体必须是对象' }, 400);
+            return;
+          }
+          const current = readFeatureFlags();
+          const next = { ...current };
+          const touched = new Set();
+          for (const key of Object.keys(next)) {
+            if (typeof body[key] === 'boolean') { next[key] = body[key]; touched.add(key); }
+          }
+          const configFile = path.join(ROOT, 'config.json');
+          const file = readConfigObject(configFile);
+          const fileV2 = (file.socialV2 && typeof file.socialV2 === 'object' && !Array.isArray(file.socialV2))
+            ? file.socialV2
+            : {};
+          const section = (value) => (value && typeof value === 'object' && !Array.isArray(value) ? value : {});
+          const touchVoice = touched.has('voice');
+          file.social = { ...section(file.social), enabled: next.social };
+          file.socialV2 = {
+            ...fileV2,
+            enabled: next.socialV2,
+            voice: { ...section(fileV2.voice), ...(touchVoice ? { enabled: next.voice } : {}) },
+            sticker: { ...section(fileV2.sticker), enabled: next.sticker },
+            proactive: { ...section(fileV2.proactive), enabled: next.proactive },
+            tools: {
+              ...section(fileV2.tools),
+              getImages: next.images,
+              memory: next.memory,
+              ...(touchVoice ? { sendVoice: next.voice } : {})
+            }
+          };
+          file.slang = { ...section(file.slang), enabled: next.slang };
+          file.features = { ...section(file.features), biliCard: next.biliCard };
+          file.webSearch = { ...section(file.webSearch), enabled: next.webSearch };
+          atomicWriteJson(configFile, file);
+          applyFeatureFlags(next, touched);
+          // 总闸关掉时把已有定时器收掉；重新打开时按会话状态补回，
+          // 否则「关一次再开」会静默丢掉这一轮唤醒/主动机会。
+          if (touched.has('socialV2')) {
+            if (next.socialV2) {
+              for (const key of socialV2.conversations.keys()) {
+                setupSleepTimerV2(key);
+                scheduleProactiveCheckV2(key);
+              }
+            } else {
+              clearAllSocialV2Timers();
+            }
+          } else if (touched.has('proactive') && next.proactive) {
+            for (const key of socialV2.conversations.keys()) scheduleProactiveCheckV2(key);
+          }
+          log('控制台：大功能开关已更新');
+          sendJson({ ok: true, features: next });
           return;
         }
         if (req.method === 'GET' && url.pathname === '/api/presets') {
@@ -4473,6 +4586,8 @@ async function main() {
           for (const k of ['activeDurationEnabled', 'proactiveEnabled', 'burstEnabled']) {
             if (merged[k] !== undefined) merged[k] = Boolean(merged[k]);
           }
+          // 一代仿真总开关：只接受真正的 true，避免 "false" 字符串被 Boolean() 当成开启。
+          if (merged.enabled !== undefined) merged.enabled = merged.enabled === true;
           // 范围字段保证 min <= max
           for (const [minK, maxK] of [['activeCheckMinMs', 'activeCheckMaxMs'], ['activeReplyDelayMinMs', 'activeReplyDelayMaxMs'], ['activeDurationMinMs', 'activeDurationMaxMs'], ['proactiveCheckMinMs', 'proactiveCheckMaxMs'], ['burstIntervalMinMs', 'burstIntervalMaxMs'], ['longGapMinMs', 'longGapMaxMs']]) {
             if (merged[minK] !== undefined && merged[maxK] !== undefined && Number(merged[minK]) > Number(merged[maxK])) {
@@ -4587,7 +4702,7 @@ async function main() {
           const current = fileV2 ?? ((cfg.socialV2 && typeof cfg.socialV2 === 'object') ? cfg.socialV2 : {});
           const merged = { ...current, ...body };
           // 子对象必须是非 null 对象；null/数组/基本类型会覆盖默认值导致工具开关被绕过，这里直接保留当前值。
-          for (const sub of ['tools', 'wake', 'send', 'wait', 'proactive', 'sticker', 'feedback', 'context']) {
+          for (const sub of ['tools', 'wake', 'send', 'wait', 'proactive', 'sticker', 'voice', 'feedback', 'context']) {
             if (body[sub] !== undefined && (body[sub] === null || typeof body[sub] !== 'object' || Array.isArray(body[sub]))) {
               merged[sub] = current[sub] ?? {};
             }
@@ -4597,7 +4712,7 @@ async function main() {
             merged.autoReplyCheckMs = Number.isFinite(n) ? Math.max(1000, Math.round(n)) : (current.autoReplyCheckMs ?? 30000);
           }
           // tools：只接受布尔开关
-          const toolFlags = ['getPrompt', 'getUnread', 'getRecent', 'socialState', 'sendGroup', 'sendPrivate', 'reply', 'sendBurst', 'sendMessage', 'waitMessages', 'feedback', 'getMyRecent', 'getMessageDetail', 'getActiveMembers', 'setWakeConfig', 'markRead', 'memory', 'slangQuery', 'slangSubmit', 'getImages', 'getForwardMsg', 'sendPoke', 'listStickers', 'getStickerImage', 'sendSticker', 'setStickerRemark', 'stickerNote', 'collectSticker', 'getSelfImage', 'sendVoice'];
+          const toolFlags = ['getPrompt', 'getUnread', 'getRecent', 'socialState', 'sendGroup', 'sendPrivate', 'reply', 'sendBurst', 'sendMessage', 'waitMessages', 'feedback', 'getMyRecent', 'getMessageDetail', 'getActiveMembers', 'setWakeConfig', 'markRead', 'memory', 'slangQuery', 'slangSubmit', 'getImages', 'getForwardMsg', 'sendPoke', 'listStickers', 'getStickerImage', 'sendSticker', 'sendImage', 'setStickerRemark', 'stickerNote', 'collectSticker', 'addSticker', 'getSelfImage', 'sendVoice'];
           if (body.tools && typeof body.tools === 'object') {
             merged.tools = { ...(current.tools ?? {}), ...body.tools };
             for (const k of toolFlags) {
@@ -4687,6 +4802,12 @@ async function main() {
                 }
               }
             }
+          }
+          // voice：语音总开关与自动读回。只接受布尔值，其余参数（目录/时长/音量）沿用当前配置。
+          if (body.voice && typeof body.voice === 'object' && !Array.isArray(body.voice)) {
+            merged.voice = { ...(current.voice ?? {}), ...body.voice };
+            if (merged.voice.enabled !== undefined) merged.voice.enabled = merged.voice.enabled === true;
+            if (merged.voice.autoReadback !== undefined) merged.voice.autoReadback = merged.voice.autoReadback === true;
           }
           // feedback：数值/布尔归一化
           if (body.feedback && typeof body.feedback === 'object') {
@@ -4855,9 +4976,11 @@ async function main() {
             listStickers: 'qq_list_stickers',
             getStickerImage: 'qq_get_sticker_image',
             sendSticker: 'qq_send_sticker',
+            sendImage: 'qq_send_image',
             setStickerRemark: 'qq_set_sticker_remark',
             stickerNote: 'qq_sticker_note',
             collectSticker: 'qq_collect_sticker',
+            addSticker: 'qq_add_sticker',
             getSelfImage: 'qq_get_self_image',
             sendVoice: 'qq_send_voice / qq_list_voices'
           };
@@ -8155,7 +8278,8 @@ async function main() {
 
   function mediaHintFor(key, messageRef, mediaList) {
     if (!Array.isArray(mediaList) || mediaList.length === 0 || !messageRef) return '';
-    if (currentMode === 'reserved2') {
+    // 图片查看工具被控制台关掉时，只告诉 AI「有图」，不再让它去调一个已经不在工具清单里的工具。
+    if (currentMode === 'reserved2' && cfg.socialV2?.tools?.getImages !== false) {
       return `\n【图片/表情】本条消息包含 ${mediaList.length} 个图片/表情（消息ID=${messageRef}）。如需要查看/识别，请调用 mcp__snowluma__qq_get_message_images，参数 key="${key}", messageId="${messageRef}"。`;
     }
     return `\n【图片/表情】本条消息包含 ${mediaList.length} 个图片/表情（消息ID=${messageRef}）。`;
@@ -9979,7 +10103,8 @@ async function main() {
       const sender = raw.sender?.card || raw.sender?.nickname || String(raw.sender?.user_id ?? raw.user_id ?? '未知');
       const text = await segmentsToText(raw.message ?? [], {
         resolveAtName: kind === 'group' ? (qq) => resolveGroupMemberName(convId, qq) : null,
-        includeReply: false
+        includeReply: false,
+        biliCard: cfg.features?.biliCard !== false
       });
       const senderUserId = raw.sender?.user_id ?? raw.user_id ?? null;
       const info = {
@@ -11017,8 +11142,9 @@ async function main() {
     const resolveReply = (messageId) => resolveReplyInfo(kind, id, messageId, event.self_id);
     // textContent 带引用对象信息，供 DSH 判断“这句话在对谁说”；
     // plainContent 只保留当前消息自己的文字，用于命令/指向性判断，避免被引用原文干扰。
-    const textContent = await segmentsToText(event.message ?? [], { resolveAtName, resolveReply });
-    const plainContent = await segmentsToText(event.message ?? [], { resolveAtName, includeReply: false });
+    const biliCard = cfg.features?.biliCard !== false;
+    const textContent = await segmentsToText(event.message ?? [], { resolveAtName, resolveReply, biliCard });
+    const plainContent = await segmentsToText(event.message ?? [], { resolveAtName, includeReply: false, biliCard });
     const mediaList = extractMediaFromSegments(event.message ?? []);
     const messageRef = String(event.message_id ?? event.msg_id ?? event.message_seq ?? '');
     const seqRef = event.message_seq != null ? String(event.message_seq) : '';
