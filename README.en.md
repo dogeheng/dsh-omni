@@ -80,6 +80,14 @@ Restart DSH after installing presets/MCP. The console is at <http://127.0.0.1:31
 
 `start-mac.sh` discovers the current DSH port, updates `config.json`, stops the old bridge, and starts a new one. Do not replace it with a bare `npm start` if DSH restarts often.
 
+### Auto-follow DSH restarts (optional, recommended)
+
+```bash
+node packages/bridge/scripts/install-watchdog.mjs
+```
+
+Installs a per-user macOS LaunchAgent that checks the DSH port every 20 seconds and runs `start-mac.sh` when the bridge is missing or points at an old port. It starts at login, needs no sudo, and logs to `packages/bridge/data/watchdog.log`. Use `--status` or `--uninstall` to inspect/remove it.
+
 ## Bilibili integration
 
 Install dsh-bili-scroll separately, then mount the optional `packages/bili-mcp` bundle. It points at `~/.dsh/bili-duty` by default; override with `DSH_BILI_HOME`, `DSH_BILI_PYTHON`, or `DSH_BILI_MCP_SERVER`.
