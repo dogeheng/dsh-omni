@@ -7,6 +7,7 @@
   "scripts": {
     "start": "npm --prefix packages/bridge start",
     "test": "npm --prefix packages/bridge run test:audit",
-    "setup": "node packages/bridge/scripts/setup-dsh.mjs"
+    "setup": "node packages/bridge/scripts/setup-dsh.mjs",
+    "launcher": "node packages/launcher/scripts/install.mjs"
   }
 }

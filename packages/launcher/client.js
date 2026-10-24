@@ -17,9 +17,11 @@ window.__ModuleLoader__.load({
     const { useState } = React;
 
     // ── 入口常量（改这里就行）──────────────────────────────────────────────
-    const VNC_URL = 'http://127.0.0.1:6081/?autoconnect=1&resize=scale';
+    // 安装脚本（scripts/install.mjs）会把这两个占位符替换成本机实际地址。
+    // 仓库里永远不写死密码/token。
+    const VNC_URL = '__DSH_OMNI_VNC_URL__';
     const SNOWLUMA_URL = 'http://127.0.0.1:5099/';
-    const CONSOLE_URL = 'http://127.0.0.1:3100/';
+    const CONSOLE_URL = '__DSH_OMNI_CONSOLE_URL__';
 
     const ITEMS = [
       {
@@ -62,7 +64,7 @@ window.__ModuleLoader__.load({
       '.qqb-desc{color:var(--dsw-alias-label-secondary,#6b7280);line-height:1.6;margin:0 0 6px}',
       '.qqb-url{font:11px/1.5 ui-monospace,SFMono-Regular,Menlo,monospace;color:var(--dsw-alias-label-secondary,#6b7280);word-break:break-all;margin:0}',
       '.qqb-actions{display:flex;flex-direction:column;gap:6px;flex:0 0 auto}',
-      '.qqb-btn{border:0;border-radius:8px;padding:7px 14px;font-size:13px;font-weight:500;cursor:pointer;background:var(--dsw-alias-brand-primary,#2563eb);color:#fff;white-space:nowrap}',
+      '.qqb-btn{border:0;border-radius:8px;padding:7px 14px;font-size:13px;font-weight:500;cursor:pointer;background:var(--dsw-alias-brand-primary,#2563eb);color:var(--dsw-alias-bg-base,#fff);white-space:nowrap}',
       '.qqb-btn:hover{filter:brightness(1.06)}',
       '.qqb-btn.qqb-ghost{background:transparent;color:var(--dsw-alias-label-secondary,#6b7280);border:1px solid var(--dsw-alias-border-l1,#e5e7eb)}',
       '.qqb-note{margin-top:16px;color:var(--dsw-alias-label-secondary,#6b7280);line-height:1.75;font-size:12px}',

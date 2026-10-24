@@ -147,7 +147,14 @@ preset / MCP / bundle 安装后需要重启 DSH 才生效。之后在允许的�
 
 `packages/launcher` 和 `packages/bili-mcp` 是标准 DSH bundle，但不是桥接运行的必需项：
 
-- **launcher**：在 DSH 设置页加一个「dsh-omni」入口，一键打开扫码桌面、SnowLuma WebUI、桥接控制台。它不含任何凭据，VNC 密码/控制台令牌需要你手动输入一次。
+- **launcher**：在 DSH 设置页加一个「dsh-omni」入口，一键打开扫码桌面、SnowLuma WebUI、桥接控制台。仓库里的 `client.js` 只有 URL 占位符；安装时由脚本读取本机配置并注入，不会把凭据写进仓库：
+
+  ```bash
+  # 先启动一次桥接，确保 data/console-token 已生成
+  node packages/launcher/scripts/install.mjs
+  ```
+
+  脚本会读取 `packages/bridge/.env` 的 `VNC_PASSWD`、`packages/bridge/data/console-token` 和 `config.json` 的 `consolePort`，把 launcher 复制到 `~/.dsh/plugins/dsh-omni-launcher` 并替换占位符；如果 profile 里还没有，会自动注册。之后刷新 DSH 页面即可。密码/token 改了要重跑一次。
 - **bili-mcp**：把 `dsh-bili-scroll` 安装的只读 Python MCP（`bili_video_info` / `bili_subtitle`）挂成全局 MCP，供 QQ 会话使用。
   - 先安装 dsh-bili-scroll；
   - 默认路径是 `~/.dsh/bili-duty`；可用 `DSH_BILI_HOME`、`DSH_BILI_PYTHON`、`DSH_BILI_MCP_SERVER` 覆盖；
