@@ -1,10 +1,6 @@
 # dsh-omni
 
-> **I want to give Big Fat Fish a complete life.**
->
-> I want to gather the best of every world, give him every ability, and see how human he can become.
->
-> *Big Fat Fish (大肥鱼) is the nickname of this QQ bot.*
+> **I want to give Big Fat Fish a complete life!!!**
 
 **An integrated QQ ↔ DeepSeek Harness package.** Connect QQ (SnowLuma / OneBot v11) to DeepSeek Harness so a DSH agent can chat in QQ, send stickers and voice, read Bilibili cards, search the web, remember the group, nap/wake, and expose a local console plus a DSH settings entry.
 
