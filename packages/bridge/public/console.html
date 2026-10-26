@@ -1820,6 +1820,8 @@ button:active:not(:disabled) {
         <label class="v2-tool-item"><input type="checkbox" data-feature="biliCard"> <span><strong>B 站卡片解析</strong><span class="meta">b23.tv → BV，并把标题 / BV 注入消息</span></span></label>
         <label class="v2-tool-item"><input type="checkbox" data-feature="webSearch"> <span><strong>联网搜索 ⚠</strong><span class="meta">web_search / web_fetch / 图片搜索</span></span></label>
         <label class="v2-tool-item"><input type="checkbox" data-feature="voice"> <span><strong>语音发送 ⚠</strong><span class="meta">qq_send_voice / qq_list_voices</span></span></label>
+        <label class="v2-tool-item"><input type="checkbox" data-feature="asr"> <span><strong>听懂语音</strong><span class="meta">群友语音转文字（本地 SenseVoice，按需加载，即时生效）</span></span></label>
+        <label class="v2-tool-item"><input type="checkbox" data-feature="speak"> <span><strong>开口说话 ⚠</strong><span class="meta">qq_speak + 短句随机转语音（需配置服务商 Key）</span></span></label>
         <label class="v2-tool-item"><input type="checkbox" data-feature="sticker"> <span><strong>表情包体系</strong><span class="meta">同步、收藏、标注、发送（即时生效）</span></span></label>
         <label class="v2-tool-item"><input type="checkbox" data-feature="slang"> <span><strong>黑话学习</strong><span class="meta">自动提取、研究、注入</span></span></label>
         <label class="v2-tool-item"><input type="checkbox" data-feature="proactive"> <span><strong>主动机会</strong><span class="meta">群安静时主动冒泡（V2）</span></span></label>
@@ -2075,6 +2077,7 @@ button:active:not(:disabled) {
         <label class="v2-tool-item"><input type="checkbox" data-v2-tool="stickerNote"> <span><b>qq_sticker_note</b><span class="meta">给表情记录本地含义/标签/用法</span></span></label>
         <label class="v2-tool-item"><input type="checkbox" data-v2-tool="setStickerRemark"> <span><b>qq_set_sticker_remark</b><span class="meta">修改 QQ 官方表情备注（默认禁用，慎用）</span></span></label>
         <label class="v2-tool-item"><input type="checkbox" data-v2-tool="sendVoice"> <span><b>qq_send_voice / qq_list_voices</b><span class="meta">发送语音条（只能发语音库里的音频；偶然而为的强表达）</span></span></label>
+        <label class="v2-tool-item"><input type="checkbox" data-v2-tool="speak"> <span><b>qq_speak</b><span class="meta">把一句话合成成语音条发出（还需「开口说话」总开关；改后重启 DSH 刷新工具清单）</span></span></label>
       </div>
       <div class="meta" style="margin-top:6px">二代黑话学习：AI 可用 <code>qq_slang_submit</code> 提交陌生词，也可由桥接自动提取；管理员在「黑话词库」页面筛选确认后，词条会自动写入黑话提示词并注入 <code>qq_get_prompt</code> 与后续唤醒。</div>
 
@@ -2102,6 +2105,234 @@ button:active:not(:disabled) {
         上限：时长 <code>maxSeconds</code>、体积 <code>maxBytes</code>、频率 <code>maxPerMinute</code>/<code>maxPerHour</code>（见下方配置区）。
         命令行等价工具：<code>node scripts/send-voice.mjs list-voice</code>（经桥接）或 <code>node voice-cli.mjs</code>（独立工具，在上级 <code>voice-tool/</code> 里直连 SnowLuma）。
       </div>
+
+      </div></details>
+<details class="settings-group" id="v2VoiceIoGroup"><summary>听懂语音 / 开口说话（ASR · TTS）</summary><div class="settings-content">
+      <div class="meta" style="margin-bottom:8px">
+        <b>听懂语音</b>：群友发来的 QQ 语音会先转成「[语音 6秒·语气开心] 原话」再交给 AI。默认用本地 SenseVoice-Small（免费）。模型<b>按需加载</b>：第一条语音到来时才启动识别进程，闲置一段时间后自动结束，约 850MB 内存归还系统。<br>
+        <b>开口说话</b>：AI 可以用 <code>qq_speak</code> 把一句话合成成语音条发出，也可以把短句随机转成语音（MaiBot 生态的 random 模式）。<br>
+        这里的参数随页面上的「保存当前参数」一起保存，保存后即时生效。<code>qq_speak</code> 工具要打开总开关并<b>重启 DSH</b> 后才会出现在 AI 的工具清单里。完整说明见 <code>docs/VOICE_IO.md</code>。
+      </div>
+
+      <h3>听懂语音（ASR）</h3>
+      <div class="row">
+        <label style="flex:1">启用语音识别</label><input type="checkbox" id="v2AsrEnabled" style="width:auto">
+        <label style="flex:1">识别引擎</label>
+        <select id="v2AsrEngine" style="width:230px">
+          <option value="sensevoice">本地 SenseVoice（推荐，免费）</option>
+          <option value="openai">云端（OpenAI 兼容接口）</option>
+          <option value="qq">QQ 自带转写（无语气标注）</option>
+          <option value="off">关闭</option>
+        </select>
+      </div>
+      <div class="row">
+        <label style="flex:1">启动时预加载模型</label><input type="checkbox" id="v2AsrPreload" style="width:auto">
+        <label style="flex:1">闲置多久释放（分钟，0 = 一直常驻）</label><input type="number" id="v2AsrIdleUnloadMin" min="0" step="0.5" style="width:90px">
+        <label style="flex:1">识别线程数</label><input type="number" id="v2AsrThreads" min="1" max="8" style="width:80px">
+      </div>
+      <div class="row">
+        <label style="flex:1">最长转写（秒）</label><input type="number" id="v2AsrMaxSeconds" min="1" max="600" style="width:80px">
+        <label style="flex:1">单条超时（秒）</label><input type="number" id="v2AsrTimeoutSec" min="1" max="120" style="width:80px">
+        <label style="flex:1">同时识别条数</label><input type="number" id="v2AsrMaxConcurrent" min="1" max="8" style="width:80px">
+      </div>
+      <div class="row">
+        <label style="flex:1">标注语气（开心 / 难过…）</label><input type="checkbox" id="v2AsrShowEmotion" style="width:auto">
+        <label style="flex:1">标注声学事件（笑声 / 掌声…）</label><input type="checkbox" id="v2AsrShowEvent" style="width:auto">
+        <label style="flex:1">识别失败时用 QQ 自带转写兜底</label><input type="checkbox" id="v2AsrQqFallback" style="width:auto">
+      </div>
+      <div class="row">
+        <label style="flex:1">识别语言</label>
+        <select id="v2AsrLanguage" style="width:150px">
+          <option value="auto">自动</option><option value="zh">中文</option><option value="en">英文</option>
+          <option value="ja">日语</option><option value="ko">韩语</option><option value="yue">粤语</option>
+        </select>
+        <label style="flex:1">输出标点与数字（ITN）</label><input type="checkbox" id="v2AsrUseItn" style="width:auto">
+        <label style="flex:1">转写最多保留字数</label><input type="number" id="v2AsrMaxTextChars" min="20" max="2000" style="width:80px">
+      </div>
+      <div class="row">
+        <label style="flex:1">模型目录（相对 bridge 目录）</label><input type="text" id="v2AsrModelDir" style="flex:2">
+        <label style="flex:1">原始语音下载上限（MB）</label><input type="number" id="v2AsrMaxBytesMb" min="0.1" max="32" step="0.5" style="width:80px">
+        <label style="flex:1">转写缓存条数</label><input type="number" id="v2AsrCacheSize" min="10" max="5000" style="width:80px">
+      </div>
+      <div id="v2AsrOpenaiBox" style="display:none">
+        <div class="row">
+          <label style="flex:1">云端接口地址</label><input type="text" id="v2AsrOpenaiBaseUrl" placeholder="https://api.siliconflow.cn/v1" style="flex:2">
+          <label style="flex:1">模型</label><input type="text" id="v2AsrOpenaiModel" placeholder="FunAudioLLM/SenseVoiceSmall" style="flex:2">
+        </div>
+        <div class="row">
+          <label style="flex:1">API Key</label><input type="password" id="v2AsrOpenaiApiKey" autocomplete="off" style="flex:2">
+          <label style="flex:1">或从环境变量读取</label><input type="text" id="v2AsrOpenaiApiKeyEnv" placeholder="SILICONFLOW_API_KEY" style="flex:2">
+        </div>
+        <div class="meta" style="margin-bottom:6px">云端识别会把群友的语音上传给服务商，不占本机内存。</div>
+      </div>
+      <div class="row" style="flex-wrap:wrap;gap:8px;align-items:center">
+        <button id="asrStatusBtn" type="button" class="btn-secondary">刷新识别状态</button>
+        <button id="asrLoadBtn" type="button" class="btn-secondary">立即加载模型</button>
+        <button id="asrUnloadBtn" type="button" class="btn-secondary">立即释放内存</button>
+        <span id="asrMsg" class="meta"></span>
+      </div>
+      <div id="asrStatus" class="meta" style="margin:6px 0 4px">点「刷新识别状态」查看模型是否已加载…</div>
+
+      <h3>开口说话（TTS）</h3>
+      <div class="row">
+        <label style="flex:1">允许 AI 开口说话（总开关）</label><input type="checkbox" id="v2SpeakEnabled" style="width:auto">
+        <label style="flex:1">语音合成服务商</label>
+        <select id="v2SpeakProvider" style="width:260px">
+          <option value="mimo">小米 MiMo（默认，目前限时免费）</option>
+          <option value="doubao">火山引擎豆包语音</option>
+          <option value="openai">OpenAI 兼容（硅基流动 / mlx-audio 等）</option>
+          <option value="gptsovits">GPT-SoVITS（本地 api_v2）</option>
+          <option value="feiyu">FeiyuVoice（肥鱼声线，需单独服务）</option>
+        </select>
+      </div>
+      <div class="row">
+        <label style="flex:1">单条最多字数</label><input type="number" id="v2SpeakMaxChars" min="5" max="500" style="width:80px">
+        <label style="flex:1">单条最长（秒）</label><input type="number" id="v2SpeakMaxSeconds" min="2" max="120" style="width:80px">
+        <label style="flex:1">合成超时（秒）</label><input type="number" id="v2SpeakTimeoutSec" min="3" max="120" style="width:80px">
+      </div>
+      <div class="row">
+        <label style="flex:1">每分钟最多（条）</label><input type="number" id="v2SpeakPerMin" min="0" max="60" style="width:80px">
+        <label style="flex:1">每小时最多（条）</label><input type="number" id="v2SpeakPerHour" min="0" max="1000" style="width:80px">
+        <label style="flex:1">每日合成字数上限（0 = 不限）</label><input type="number" id="v2SpeakDailyBudget" min="0" style="width:100px">
+      </div>
+      <div class="row">
+        <label style="flex:1">裁掉首尾静音</label><input type="checkbox" id="v2SpeakTrim" style="width:auto">
+        <label style="flex:1">允许 AI 指定情绪</label><input type="checkbox" id="v2SpeakAllowEmotion" style="width:auto">
+        <span class="meta" style="flex:2">每分钟 / 每小时上限与「语音发送」共用同一套限流，防止 QQ 风控。</span>
+      </div>
+      <div class="meta" style="margin:8px 0 4px"><b>短句随机转语音</b>：AI 发文字时，按概率把短句改成语音条发出（借鉴 MaiBot 插件的 random 模式与 AstrBot 的 trigger_probability）。</div>
+      <div class="row">
+        <label style="flex:1">启用随机转语音</label><input type="checkbox" id="v2SpeakAutoEnabled" style="width:auto">
+        <label style="flex:1">转换概率（%）</label><input type="number" id="v2SpeakAutoProb" min="0" max="100" step="1" style="width:80px">
+        <label style="flex:1">对方刚发过语音时的概率（%）</label><input type="number" id="v2SpeakAutoMirrorProb" min="0" max="100" step="1" style="width:80px">
+      </div>
+      <div class="row">
+        <label style="flex:1">「刚发过语音」的时间窗（分钟）</label><input type="number" id="v2SpeakAutoMirrorMin" min="0" max="1440" style="width:80px">
+        <label style="flex:1">同一会话冷却（分钟）</label><input type="number" id="v2SpeakAutoCooldownMin" min="0" max="1440" step="0.5" style="width:80px">
+        <label style="flex:1">随机转换的合成超时（秒）</label><input type="number" id="v2SpeakAutoTimeoutSec" min="2" max="60" style="width:80px">
+      </div>
+      <div class="row">
+        <label style="flex:1">只转换至少多少字</label><input type="number" id="v2SpeakAutoMinChars" min="1" max="200" style="width:80px">
+        <label style="flex:1">只转换至多多少字</label><input type="number" id="v2SpeakAutoMaxChars" min="2" max="500" style="width:80px">
+        <label style="flex:1">只在私聊里随机转换</label><input type="checkbox" id="v2SpeakAutoPrivateOnly" style="width:auto">
+      </div>
+
+      <div id="v2SpeakMimoBox" data-speak-provider="mimo">
+        <div class="meta" style="margin:8px 0 4px"><b>小米 MiMo 参数</b>：预置音色有冰糖、茉莉（女声），苏打、白桦（男声），以及英文 Mia、Chloe、Milo、Dean。填了参考音频或音色描述后会自动改用音色克隆，保证每次是同一个声音。</div>
+        <div class="row">
+          <label style="flex:1">接口地址</label><input type="text" id="v2MimoBaseUrl" placeholder="https://api.xiaomimimo.com/v1" style="flex:2">
+          <label style="flex:1">模型</label><input type="text" id="v2MimoModel" placeholder="mimo-v2.5-tts" style="flex:2">
+        </div>
+        <div class="row">
+          <label style="flex:1">音色</label><input type="text" id="v2MimoVoice" list="mimoVoiceList" placeholder="冰糖" style="width:140px">
+          <datalist id="mimoVoiceList"><option value="冰糖"></option><option value="茉莉"></option><option value="苏打"></option><option value="白桦"></option><option value="Mia"></option><option value="Chloe"></option><option value="Milo"></option><option value="Dean"></option></datalist>
+          <label style="flex:1">音频格式</label><select id="v2MimoFormat" style="width:100px"><option value="wav">wav</option><option value="mp3">mp3</option></select>
+        </div>
+        <div class="row">
+          <label style="flex:1">API Key</label><input type="password" id="v2MimoApiKey" autocomplete="off" style="flex:2">
+          <label style="flex:1">或从环境变量读取</label><input type="text" id="v2MimoApiKeyEnv" placeholder="MIMO_API_KEY" style="flex:2">
+        </div>
+        <div class="row">
+          <label style="flex:1">风格指令（放在 user 消息里，稳定音高）</label><textarea id="v2MimoStyle" rows="2" style="flex:3"></textarea>
+        </div>
+        <div class="row">
+          <label style="flex:1">克隆参考音频（本机路径，mp3/wav ≤7MB）</label><input type="text" id="v2MimoCloneAudio" placeholder="留空 = 用预置音色" style="flex:3">
+        </div>
+        <div class="row">
+          <label style="flex:1">音色描述（voicedesign，生成一次后缓存复用）</label><textarea id="v2MimoVoiceDesign" rows="2" placeholder="例：二十岁出头的女生，声音清亮带点慵懒，说话轻快" style="flex:3"></textarea>
+        </div>
+        <div class="row">
+          <label style="flex:1">音色描述的试读文本</label><input type="text" id="v2MimoDesignSample" style="flex:3">
+        </div>
+      </div>
+      <div id="v2SpeakDoubaoBox" data-speak-provider="doubao" style="display:none">
+        <div class="meta" style="margin:8px 0 4px"><b>豆包语音参数</b>：预置音色用 <code>seed-tts-2.0</code>；复刻音色（S_ 开头）用 <code>seed-icl-2.0</code>。</div>
+        <div class="row">
+          <label style="flex:1">接口地址</label><input type="text" id="v2DoubaoUrl" placeholder="https://openspeech.bytedance.com/api/v3/tts/unidirectional" style="flex:3">
+        </div>
+        <div class="row">
+          <label style="flex:1">资源 ID（Resource-Id）</label><input type="text" id="v2DoubaoResourceId" placeholder="seed-tts-2.0" style="flex:2">
+          <label style="flex:1">音色（speaker）</label><input type="text" id="v2DoubaoSpeaker" placeholder="zh_female_vv_uranus_bigtts" style="flex:2">
+        </div>
+        <div class="row">
+          <label style="flex:1">音频格式</label><select id="v2DoubaoFormat" style="width:110px"><option value="mp3">mp3</option><option value="wav">wav</option><option value="ogg_opus">ogg_opus</option><option value="pcm">pcm</option></select>
+          <label style="flex:1">采样率</label><input type="number" id="v2DoubaoSampleRate" min="8000" max="48000" step="1000" style="width:90px">
+        </div>
+        <div class="row">
+          <label style="flex:1">语速（-50 ~ 100）</label><input type="number" id="v2DoubaoSpeechRate" min="-50" max="100" style="width:80px">
+          <label style="flex:1">情感强度（1 ~ 5）</label><input type="number" id="v2DoubaoEmotionScale" min="1" max="5" step="0.5" style="width:80px">
+        </div>
+        <div class="row">
+          <label style="flex:1">API Key</label><input type="password" id="v2DoubaoApiKey" autocomplete="off" style="flex:2">
+          <label style="flex:1">或从环境变量读取</label><input type="text" id="v2DoubaoApiKeyEnv" placeholder="DOUBAO_TTS_API_KEY" style="flex:2">
+        </div>
+      </div>
+      <div id="v2SpeakOpenaiBox" data-speak-provider="openai" style="display:none">
+        <div class="meta" style="margin:8px 0 4px"><b>OpenAI 兼容参数</b>：任何实现了 <code>/audio/speech</code> 的服务都可以，例如硅基流动的 CosyVoice2 / IndexTTS2、本地 mlx-audio、OpenAI 官方。</div>
+        <div class="row">
+          <label style="flex:1">接口地址</label><input type="text" id="v2OaiTtsBaseUrl" placeholder="https://api.siliconflow.cn/v1" style="flex:2">
+          <label style="flex:1">模型</label><input type="text" id="v2OaiTtsModel" placeholder="FunAudioLLM/CosyVoice2-0.5B" style="flex:2">
+        </div>
+        <div class="row">
+          <label style="flex:1">音色（voice）</label><input type="text" id="v2OaiTtsVoice" placeholder="FunAudioLLM/CosyVoice2-0.5B:anna" style="flex:2">
+          <label style="flex:1">音频格式</label><select id="v2OaiTtsFormat" style="width:100px"><option value="wav">wav</option><option value="mp3">mp3</option><option value="opus">opus</option><option value="flac">flac</option><option value="aac">aac</option><option value="pcm">pcm</option></select>
+          <label style="flex:1">语速</label><input type="number" id="v2OaiTtsSpeed" min="0.25" max="4" step="0.05" style="width:80px">
+        </div>
+        <div class="row">
+          <label style="flex:1">API Key</label><input type="password" id="v2OaiTtsApiKey" autocomplete="off" style="flex:2">
+          <label style="flex:1">或从环境变量读取</label><input type="text" id="v2OaiTtsApiKeyEnv" placeholder="SILICONFLOW_API_KEY" style="flex:2">
+        </div>
+        <div class="row">
+          <label style="flex:1">情绪模板（可选，含 {emotion} 与 {text}）</label><input type="text" id="v2OaiTtsInstruct" placeholder="用{emotion}的语气说&lt;|endofprompt|&gt;{text}" style="flex:3">
+        </div>
+      </div>
+      <div id="v2SpeakFeiyuBox" data-speak-provider="feiyu" style="display:none">
+        <div class="meta" style="margin:8px 0 4px"><b>FeiyuVoice 参数</b>：独立的 Python/GPU 声音服务（CosyVoice3 <code>cute</code> / <code>gentle</code>），不是 OpenAI 兼容接口。本仓库只带 HTTP 客户端，<b>不复制它的源码和模型</b>；需要按上游文档单独部署（推荐 WSL + NVIDIA/AMD GPU，macOS 官方未提供运行时）。</div>
+        <div class="row">
+          <label style="flex:1">服务地址</label><input type="text" id="v2FeiyuBaseUrl" placeholder="http://127.0.0.1:9880" style="flex:2">
+          <label style="flex:1">Voice</label><input type="text" id="v2FeiyuVoice" placeholder="feiyu" style="width:100px">
+        </div>
+        <div class="row">
+          <label style="flex:1">API Key</label><input type="password" id="v2FeiyuApiKey" autocomplete="off" style="flex:2">
+          <label style="flex:1">或从环境变量读取</label><input type="text" id="v2FeiyuApiKeyEnv" placeholder="FEIYU_VOICE_API_KEY" style="flex:2">
+        </div>
+        <div class="row">
+          <label style="flex:1">默认声线</label>
+          <select id="v2FeiyuStyle" style="width:140px"><option value="cute">cute（可爱，默认）</option><option value="gentle">gentle（温柔）</option></select>
+          <span class="meta" style="flex:2">API Key 在服务端的 <code>.runtime/voice-service/api_key.txt</code>；服务未启动时试听会报连接失败。</span>
+        </div>
+      </div>
+      <div id="v2SpeakGsvBox" data-speak-provider="gptsovits" style="display:none">
+        <div class="meta" style="margin:8px 0 4px"><b>GPT-SoVITS 参数</b>：按情绪切换参考音频（做法参考 xuqian13/tts_voice_plugin）。至少要配 <code>default</code>。</div>
+        <div class="row">
+          <label style="flex:1">api_v2 地址</label><input type="text" id="v2GsvBaseUrl" placeholder="http://127.0.0.1:9880" style="flex:2">
+          <label style="flex:1">文本语言</label><input type="text" id="v2GsvTextLang" placeholder="zh" style="width:80px">
+          <label style="flex:1">音频格式</label><select id="v2GsvFormat" style="width:90px"><option value="wav">wav</option><option value="ogg">ogg</option><option value="aac">aac</option><option value="raw">raw</option></select>
+        </div>
+        <div class="row">
+          <label style="flex:1">参考音频（JSON）</label><textarea id="v2GsvRefs" rows="4" style="flex:3;font-family:monospace" placeholder='{"default": {"audio": "/绝对路径/ref.wav", "text": "参考音频的原文", "lang": "zh"}, "开心": {"audio": "...", "text": "..."}}'></textarea>
+        </div>
+      </div>
+      <div class="meta" style="margin:6px 0">API Key 输入框留空表示保持已保存的值不变；推荐用环境变量提供 Key，不写进 config.json。</div>
+
+      <div class="meta" style="margin:10px 0 4px"><b>试听与试发</b>：用的是<b>已保存</b>的参数，改完先点「保存当前参数」。试听不受「允许 AI 开口说话」总开关限制，方便先调好音色再开放给 AI。</div>
+      <div class="row" style="flex-wrap:wrap;gap:8px;align-items:center">
+        <input type="text" id="ttsPreviewText" placeholder="试听文本，例如：嗯嗯，我听到啦，等我一下下。" style="flex:3;min-width:240px">
+        <label style="flex:0 0 auto">情绪</label>
+        <select id="ttsPreviewEmotion" style="width:110px">
+          <option value="">不指定</option><option>开心</option><option>难过</option><option>生气</option><option>惊讶</option><option>害怕</option><option>温柔</option><option>撒娇</option><option>无奈</option><option>委屈</option><option>兴奋</option><option>慵懒</option><option>俏皮</option><option>平静</option><option>嫌弃</option><option>小声</option>
+        </select>
+        <button id="ttsPreviewBtn" type="button">合成试听</button>
+      </div>
+      <audio id="ttsPreviewAudio" controls preload="none" style="display:none;width:100%;margin:6px 0"></audio>
+      <div class="row" style="flex-wrap:wrap;gap:8px;align-items:center">
+        <label style="flex:0 0 auto">发到</label>
+        <input type="text" id="ttsSendTarget" placeholder="group:群号 或 private:QQ号" style="width:210px">
+        <button id="ttsSendBtn" type="button" class="btn-secondary">合成并发到 QQ</button>
+        <button id="ttsStatusBtn" type="button" class="btn-secondary">刷新合成状态</button>
+        <span id="ttsMsg" class="meta"></span>
+      </div>
+      <div id="ttsStatus" class="meta" style="margin-top:6px">点「刷新合成状态」查看服务商是否就绪与今日用量…</div>
 
       </div></details>
 <details class="settings-group"><summary>唤醒推荐值（仅参考，AI 可不遵守）</summary><div class="settings-content">
@@ -3378,6 +3609,7 @@ async function loadV2Config() {
     const v = c.voice || {};
     document.getElementById('v2VoiceEnabled').checked = v.enabled === true;
     document.getElementById('v2VoiceAutoReadback').checked = v.autoReadback !== false;
+    fillVoiceIoForm(c.asr || {}, c.speak || {});
     const ctx = c.context || {};
     document.getElementById('v2ContextRecentLimit').value = ctx.recentLimit ?? 100;
     document.getElementById('v2ContextUnreadLimit').value = ctx.unreadLimit ?? 30;
@@ -3391,6 +3623,13 @@ async function loadV2Config() {
 async function saveV2Config() {
   const tools = {};
   document.querySelectorAll('[data-v2-tool]').forEach(el => { tools[el.dataset.v2Tool] = el.checked; });
+  const voiceIo = collectVoiceIoForm();
+  if (voiceIo.error) {
+    const m = document.getElementById('v2ConfigMsg');
+    m.textContent = '❌ ' + voiceIo.error;
+    m.className = 'meta err';
+    return;
+  }
   const body = {
     enabled: document.getElementById('v2Enabled').checked,
     agentPreset: document.getElementById('v2AgentPreset').value.trim(),
@@ -3453,6 +3692,8 @@ async function saveV2Config() {
       enabled: document.getElementById('v2VoiceEnabled').checked,
       autoReadback: document.getElementById('v2VoiceAutoReadback').checked
     },
+    asr: voiceIo.asr,
+    speak: voiceIo.speak,
     sticker: {
       enabled: document.getElementById('v2StickerEnabled').checked,
       syncTtlMs: Math.max(1000, Math.round(Number(document.getElementById('v2StickerSyncTtlSec').value) || 60) * 1000),
@@ -3485,6 +3726,353 @@ async function saveV2Config() {
   msg.className = r.ok ? 'meta ok' : 'meta err';
   if (r.ok) { loadV2Config(); loadFeatures(); }
 }
+
+// ── 听懂语音 / 开口说话（socialV2.asr / socialV2.speak）──────────────────────────
+// GET /api/socialV2/config 返回「补全默认值 + 脱敏」后的配置：API Key 只回 '********' 与 apiKeySet。
+// Key 输入框留空保存时回传 '********'，后端据此保留原值（bridge.js 中 socialV2/config 的合并逻辑）。
+const voiceIoKeySaved = {};
+function vioEl(id) { return document.getElementById(id); }
+function vioNum(id, fallback) {
+  const raw = vioEl(id).value;
+  const n = Number(raw);
+  return raw !== '' && Number.isFinite(n) ? n : fallback;
+}
+function vioStr(id) { return vioEl(id).value.trim(); }
+function vioSetKey(id, section) {
+  const el = vioEl(id);
+  voiceIoKeySaved[id] = section?.apiKeySet === true || (typeof section?.apiKey === 'string' && section.apiKey.length > 0);
+  el.value = '';
+  el.placeholder = voiceIoKeySaved[id] ? '已保存（留空 = 不修改）' : '未设置';
+}
+function vioGetKey(id) {
+  const v = vioEl(id).value.trim();
+  if (v) return v;
+  return voiceIoKeySaved[id] ? '********' : '';
+}
+function syncVoiceIoBoxes() {
+  vioEl('v2AsrOpenaiBox').style.display = vioEl('v2AsrEngine').value === 'openai' ? '' : 'none';
+  const p = vioEl('v2SpeakProvider').value;
+  document.querySelectorAll('[data-speak-provider]').forEach(el => { el.style.display = el.dataset.speakProvider === p ? '' : 'none'; });
+}
+const round1 = (x) => Math.round(x * 10) / 10;
+
+function fillVoiceIoForm(a, s) {
+  vioEl('v2AsrEnabled').checked = a.enabled !== false;
+  vioEl('v2AsrEngine').value = ['sensevoice', 'openai', 'qq', 'off'].includes(a.engine) ? a.engine : 'sensevoice';
+  vioEl('v2AsrPreload').checked = a.preload === true;
+  const idle = Number.isFinite(Number(a.idleUnloadMs)) ? Number(a.idleUnloadMs) : 600000;
+  vioEl('v2AsrIdleUnloadMin').value = round1(idle / 60000);
+  vioEl('v2AsrThreads').value = a.numThreads ?? 2;
+  vioEl('v2AsrMaxSeconds').value = a.maxSeconds ?? 60;
+  vioEl('v2AsrTimeoutSec').value = round1((a.timeoutMs ?? 15000) / 1000);
+  vioEl('v2AsrMaxConcurrent').value = a.maxConcurrent ?? 2;
+  vioEl('v2AsrShowEmotion').checked = a.showEmotion !== false;
+  vioEl('v2AsrShowEvent').checked = a.showEvent !== false;
+  vioEl('v2AsrQqFallback').checked = a.qqFallback !== false;
+  vioEl('v2AsrLanguage').value = ['auto', 'zh', 'en', 'ja', 'ko', 'yue'].includes(a.language) ? a.language : 'auto';
+  vioEl('v2AsrUseItn').checked = a.useItn !== false;
+  vioEl('v2AsrMaxTextChars').value = a.maxTextChars ?? 300;
+  vioEl('v2AsrModelDir').value = a.modelDir || 'data/models/sherpa-onnx-sense-voice-zh-en-ja-ko-yue-int8-2024-07-17';
+  vioEl('v2AsrMaxBytesMb').value = round1((a.maxBytes ?? 4194304) / 1048576);
+  vioEl('v2AsrCacheSize').value = a.cacheSize ?? 500;
+  const ao = a.openai || {};
+  vioEl('v2AsrOpenaiBaseUrl').value = ao.baseUrl || '';
+  vioEl('v2AsrOpenaiModel').value = ao.model || '';
+  vioEl('v2AsrOpenaiApiKeyEnv').value = ao.apiKeyEnv || '';
+  vioSetKey('v2AsrOpenaiApiKey', ao);
+
+  vioEl('v2SpeakEnabled').checked = s.enabled === true;
+  vioEl('v2SpeakProvider').value = ['mimo', 'doubao', 'openai', 'gptsovits'].includes(s.provider) ? s.provider : 'mimo';
+  vioEl('v2SpeakMaxChars').value = s.maxChars ?? 80;
+  vioEl('v2SpeakMaxSeconds').value = s.maxSeconds ?? 30;
+  vioEl('v2SpeakTimeoutSec').value = round1((s.timeoutMs ?? 30000) / 1000);
+  vioEl('v2SpeakPerMin').value = s.maxPerMinute ?? 2;
+  vioEl('v2SpeakPerHour').value = s.maxPerHour ?? 20;
+  vioEl('v2SpeakDailyBudget').value = s.dailyCharBudget ?? 0;
+  vioEl('v2SpeakTrim').checked = s.trimSilence !== false;
+  vioEl('v2SpeakAllowEmotion').checked = s.allowEmotion !== false;
+  const ac = s.autoConvert || {};
+  vioEl('v2SpeakAutoEnabled').checked = ac.enabled === true;
+  vioEl('v2SpeakAutoProb').value = round1((ac.probability ?? 0.05) * 100);
+  vioEl('v2SpeakAutoMirrorProb').value = round1((ac.mirrorProbability ?? 0.35) * 100);
+  vioEl('v2SpeakAutoMirrorMin').value = round1((ac.mirrorWindowMs ?? 600000) / 60000);
+  vioEl('v2SpeakAutoCooldownMin').value = round1((ac.cooldownMs ?? 180000) / 60000);
+  vioEl('v2SpeakAutoTimeoutSec').value = round1((ac.timeoutMs ?? 15000) / 1000);
+  vioEl('v2SpeakAutoMinChars').value = ac.minChars ?? 2;
+  vioEl('v2SpeakAutoMaxChars').value = ac.maxChars ?? 40;
+  vioEl('v2SpeakAutoPrivateOnly').checked = ac.privateOnly === true;
+  const m = s.mimo || {};
+  vioEl('v2MimoBaseUrl').value = m.baseUrl || '';
+  vioEl('v2MimoModel').value = m.model || '';
+  vioEl('v2MimoVoice').value = m.voice || '';
+  vioEl('v2MimoFormat').value = m.format === 'mp3' ? 'mp3' : 'wav';
+  vioEl('v2MimoApiKeyEnv').value = m.apiKeyEnv || '';
+  vioSetKey('v2MimoApiKey', m);
+  vioEl('v2MimoStyle').value = typeof m.styleInstruction === 'string' ? m.styleInstruction : '';
+  vioEl('v2MimoCloneAudio').value = m.cloneAudio || '';
+  vioEl('v2MimoVoiceDesign').value = m.voiceDesign || '';
+  vioEl('v2MimoDesignSample').value = m.designSampleText || '';
+  const d = s.doubao || {};
+  vioEl('v2DoubaoUrl').value = d.url || '';
+  vioEl('v2DoubaoResourceId').value = d.resourceId || '';
+  vioEl('v2DoubaoSpeaker').value = d.speaker || '';
+  vioEl('v2DoubaoFormat').value = ['mp3', 'wav', 'ogg_opus', 'pcm'].includes(d.format) ? d.format : 'mp3';
+  vioEl('v2DoubaoSampleRate').value = d.sampleRate ?? 24000;
+  vioEl('v2DoubaoSpeechRate').value = d.speechRate ?? 0;
+  vioEl('v2DoubaoEmotionScale').value = d.emotionScale ?? 3;
+  vioEl('v2DoubaoApiKeyEnv').value = d.apiKeyEnv || '';
+  vioSetKey('v2DoubaoApiKey', d);
+  const o = s.openai || {};
+  vioEl('v2OaiTtsBaseUrl').value = o.baseUrl || '';
+  vioEl('v2OaiTtsModel').value = o.model || '';
+  vioEl('v2OaiTtsVoice').value = o.voice || '';
+  vioEl('v2OaiTtsFormat').value = ['wav', 'mp3', 'opus', 'flac', 'aac', 'pcm'].includes(o.format) ? o.format : 'wav';
+  vioEl('v2OaiTtsSpeed').value = o.speed ?? 1;
+  vioEl('v2OaiTtsApiKeyEnv').value = o.apiKeyEnv || '';
+  vioSetKey('v2OaiTtsApiKey', o);
+  vioEl('v2OaiTtsInstruct').value = o.instructTemplate || '';
+  const fy = s.feiyu || {};
+  vioEl('v2FeiyuBaseUrl').value = fy.baseUrl || '';
+  vioEl('v2FeiyuVoice').value = fy.voice || '';
+  vioEl('v2FeiyuApiKeyEnv').value = fy.apiKeyEnv || '';
+  vioEl('v2FeiyuStyle').value = fy.style === 'gentle' ? 'gentle' : 'cute';
+  vioSetKey('v2FeiyuApiKey', fy);
+  const g = s.gptsovits || {};
+  vioEl('v2GsvBaseUrl').value = g.baseUrl || '';
+  vioEl('v2GsvTextLang').value = g.textLang || '';
+  vioEl('v2GsvFormat').value = ['wav', 'ogg', 'aac', 'raw'].includes(g.format) ? g.format : 'wav';
+  vioEl('v2GsvRefs').value = g.refs && typeof g.refs === 'object' && Object.keys(g.refs).length ? JSON.stringify(g.refs, null, 2) : '';
+  syncVoiceIoBoxes();
+}
+
+/** 收集表单；GPT-SoVITS 参考音频 JSON 写错时返回 { error }，不发请求。 */
+function collectVoiceIoForm() {
+  let refs = {};
+  const refsRaw = vioStr('v2GsvRefs');
+  if (refsRaw) {
+    try {
+      refs = JSON.parse(refsRaw);
+      if (!refs || typeof refs !== 'object' || Array.isArray(refs)) throw new Error('需要是 {"default": {...}} 这样的对象');
+    } catch (e) {
+      return { error: 'GPT-SoVITS 参考音频不是合法 JSON：' + e.message };
+    }
+  }
+  const pct = (id, fb) => Math.min(100, Math.max(0, vioNum(id, fb))) / 100;
+  const ms = (id, unit, fb) => Math.max(0, Math.round(vioNum(id, fb) * unit));
+  const asr = {
+    enabled: vioEl('v2AsrEnabled').checked,
+    engine: vioEl('v2AsrEngine').value,
+    preload: vioEl('v2AsrPreload').checked,
+    idleUnloadMs: ms('v2AsrIdleUnloadMin', 60000, 10),
+    numThreads: Math.round(vioNum('v2AsrThreads', 2)),
+    maxSeconds: vioNum('v2AsrMaxSeconds', 60),
+    timeoutMs: ms('v2AsrTimeoutSec', 1000, 15),
+    maxConcurrent: Math.round(vioNum('v2AsrMaxConcurrent', 2)),
+    showEmotion: vioEl('v2AsrShowEmotion').checked,
+    showEvent: vioEl('v2AsrShowEvent').checked,
+    qqFallback: vioEl('v2AsrQqFallback').checked,
+    language: vioEl('v2AsrLanguage').value,
+    useItn: vioEl('v2AsrUseItn').checked,
+    maxTextChars: Math.round(vioNum('v2AsrMaxTextChars', 300)),
+    modelDir: vioStr('v2AsrModelDir'),
+    maxBytes: ms('v2AsrMaxBytesMb', 1048576, 4),
+    cacheSize: Math.round(vioNum('v2AsrCacheSize', 500)),
+    openai: {
+      baseUrl: vioStr('v2AsrOpenaiBaseUrl'),
+      model: vioStr('v2AsrOpenaiModel'),
+      apiKey: vioGetKey('v2AsrOpenaiApiKey'),
+      apiKeyEnv: vioStr('v2AsrOpenaiApiKeyEnv')
+    }
+  };
+  const speak = {
+    enabled: vioEl('v2SpeakEnabled').checked,
+    provider: vioEl('v2SpeakProvider').value,
+    maxChars: Math.round(vioNum('v2SpeakMaxChars', 80)),
+    maxSeconds: vioNum('v2SpeakMaxSeconds', 30),
+    timeoutMs: ms('v2SpeakTimeoutSec', 1000, 30),
+    maxPerMinute: Math.round(vioNum('v2SpeakPerMin', 2)),
+    maxPerHour: Math.round(vioNum('v2SpeakPerHour', 20)),
+    dailyCharBudget: Math.max(0, Math.round(vioNum('v2SpeakDailyBudget', 0))),
+    trimSilence: vioEl('v2SpeakTrim').checked,
+    allowEmotion: vioEl('v2SpeakAllowEmotion').checked,
+    autoConvert: {
+      enabled: vioEl('v2SpeakAutoEnabled').checked,
+      probability: pct('v2SpeakAutoProb', 5),
+      mirrorProbability: pct('v2SpeakAutoMirrorProb', 35),
+      mirrorWindowMs: ms('v2SpeakAutoMirrorMin', 60000, 10),
+      cooldownMs: ms('v2SpeakAutoCooldownMin', 60000, 3),
+      timeoutMs: ms('v2SpeakAutoTimeoutSec', 1000, 15),
+      minChars: Math.round(vioNum('v2SpeakAutoMinChars', 2)),
+      maxChars: Math.round(vioNum('v2SpeakAutoMaxChars', 40)),
+      privateOnly: vioEl('v2SpeakAutoPrivateOnly').checked
+    },
+    mimo: {
+      baseUrl: vioStr('v2MimoBaseUrl'),
+      model: vioStr('v2MimoModel'),
+      voice: vioStr('v2MimoVoice'),
+      format: vioEl('v2MimoFormat').value,
+      apiKey: vioGetKey('v2MimoApiKey'),
+      apiKeyEnv: vioStr('v2MimoApiKeyEnv'),
+      styleInstruction: vioEl('v2MimoStyle').value.trim(),
+      cloneAudio: vioStr('v2MimoCloneAudio'),
+      voiceDesign: vioStr('v2MimoVoiceDesign'),
+      designSampleText: vioStr('v2MimoDesignSample')
+    },
+    doubao: {
+      url: vioStr('v2DoubaoUrl'),
+      resourceId: vioStr('v2DoubaoResourceId'),
+      speaker: vioStr('v2DoubaoSpeaker'),
+      format: vioEl('v2DoubaoFormat').value,
+      sampleRate: Math.round(vioNum('v2DoubaoSampleRate', 24000)),
+      speechRate: Math.round(vioNum('v2DoubaoSpeechRate', 0)),
+      emotionScale: vioNum('v2DoubaoEmotionScale', 3),
+      apiKey: vioGetKey('v2DoubaoApiKey'),
+      apiKeyEnv: vioStr('v2DoubaoApiKeyEnv')
+    },
+    openai: {
+      baseUrl: vioStr('v2OaiTtsBaseUrl'),
+      model: vioStr('v2OaiTtsModel'),
+      voice: vioStr('v2OaiTtsVoice'),
+      format: vioEl('v2OaiTtsFormat').value,
+      speed: vioNum('v2OaiTtsSpeed', 1),
+      apiKey: vioGetKey('v2OaiTtsApiKey'),
+      apiKeyEnv: vioStr('v2OaiTtsApiKeyEnv'),
+      instructTemplate: vioStr('v2OaiTtsInstruct')
+    },
+    gptsovits: {
+      baseUrl: vioStr('v2GsvBaseUrl'),
+      textLang: vioStr('v2GsvTextLang'),
+      format: vioEl('v2GsvFormat').value,
+      refs
+    },
+    feiyu: {
+      baseUrl: vioStr('v2FeiyuBaseUrl'),
+      apiKey: vioGetKey('v2FeiyuApiKey'),
+      apiKeyEnv: vioStr('v2FeiyuApiKeyEnv'),
+      voice: vioStr('v2FeiyuVoice') || 'feiyu',
+      style: vioEl('v2FeiyuStyle').value === 'gentle' ? 'gentle' : 'cute'
+    }
+  };
+  return { asr, speak };
+}
+
+const VOICE_ENGINE_NAMES = { sensevoice: '本地 SenseVoice', openai: '云端（OpenAI 兼容）', qq: 'QQ 自带转写', off: '关闭' };
+const SPEAK_PROVIDER_NAMES = { mimo: '小米 MiMo', doubao: '火山豆包', openai: 'OpenAI 兼容', gptsovits: 'GPT-SoVITS', feiyu: 'FeiyuVoice（肥鱼声线）' };
+function vioDur(ms) { return ms >= 60000 ? `${round1(ms / 60000)} 分钟` : `${Math.round(ms / 1000)} 秒`; }
+
+async function refreshVoiceIoStatus() {
+  let r;
+  try { r = await api('/api/voice/io-status'); } catch (e) {
+    vioEl('asrStatus').textContent = '读取失败：' + e.message;
+    return;
+  }
+  if (!r || r.ok !== true) { vioEl('asrStatus').textContent = '读取失败：' + (r?.error || '未知错误'); return; }
+  const a = r.asr || {};
+  const ap = [];
+  ap.push(`引擎：${a.enabled === false ? '已关闭' : (VOICE_ENGINE_NAMES[a.engine] || a.engine)}`);
+  if (a.engine === 'sensevoice' && a.enabled !== false) {
+    ap.push(`模型文件：${a.modelReady ? '✅ 已就绪' : '❌ 缺失（在 bridge 目录运行 npm run setup:asr）'}；sherpa-onnx-node：${a.sherpaInstalled ? '✅' : '❌ 未安装'}；silk-wasm：${a.silkInstalled ? '✅' : '未安装（可选）'}`);
+    const state = a.loaded
+      ? `✅ 已加载（识别子进程 ${a.workerPid}，加载耗时 ${a.lastLoadMs}ms，约占 850MB 内存）`
+      : a.loading ? '加载中…' : '未加载（不占内存；下一条语音到来时自动加载，约 0.5–1 秒）';
+    ap.push(`当前：${state}`);
+    ap.push(`加载方式：${a.loadMode === 'preload' ? '启动时预加载' : '按需加载'}，${a.idleUnloadMs > 0 ? `闲置 ${vioDur(a.idleUnloadMs)}后自动释放` : '加载后一直常驻'}`);
+    if (a.loaded && a.idleUnloadAt) ap.push(`若没有新语音，将在 ${new Date(a.idleUnloadAt).toLocaleTimeString()} 释放`);
+    ap.push(`累计加载 ${a.loads || 0} 次、释放 ${a.unloads || 0} 次${a.crashes ? `、异常退出 ${a.crashes} 次` : ''}${a.lastUnloadReason ? `（上次释放原因：${a.lastUnloadReason}）` : ''}`);
+  }
+  ap.push(`已转写 ${a.transcribed || 0} 条（失败 ${a.failed || 0}，QQ 兜底 ${a.fallbackQq || 0}）${a.lastMs ? `，最近一条耗时 ${a.lastMs}ms` : ''}`);
+  if (a.unavailable) ap.push(`❌ 不可用：${a.unavailable}`);
+  else if (a.lastError) ap.push(`最近错误：${a.lastError}`);
+  vioEl('asrStatus').innerHTML = ap.map(esc).join('<br>');
+
+  const s = r.speak || {};
+  const sp = [];
+  sp.push(`AI 开口说话：${s.enabled ? '✅ 已允许' : '未开启（总开关关闭；试听不受影响）'}`);
+  sp.push(`服务商：${SPEAK_PROVIDER_NAMES[s.provider] || s.provider || '—'}，${s.ready?.ok ? '✅ 已就绪' : '❌ ' + (s.ready?.reason || '未就绪')}${s.ready?.note ? `（${s.ready.note}）` : ''}`);
+  sp.push(`今日已合成 ${s.todayChars || 0} 字${s.dailyCharBudget ? ` / 上限 ${s.dailyCharBudget} 字` : '（不限）'}；累计成功 ${s.synthesized || 0} 条，失败 ${s.failed || 0} 条${s.lastMs ? `，最近一次耗时 ${s.lastMs}ms` : ''}`);
+  if (s.lastError) sp.push(`最近错误：${s.lastError}`);
+  vioEl('ttsStatus').innerHTML = sp.map(esc).join('<br>');
+}
+
+async function asrControl(action) {
+  const msg = vioEl('asrMsg');
+  msg.textContent = action === 'load' ? '加载中…' : '释放中…';
+  msg.className = 'meta';
+  try {
+    const r = await api('/api/voice/asr', 'POST', { action });
+    if (r.ok) {
+      msg.textContent = action === 'load' ? '✅ 模型已加载（之后仍按「闲置多久释放」自动释放）' : (r.released ? '✅ 已释放，内存已归还系统' : '模型本来就没有加载');
+      msg.className = 'meta ok';
+    } else {
+      msg.textContent = '❌ ' + (r.error || '失败');
+      msg.className = 'meta err';
+    }
+  } catch (e) {
+    msg.textContent = '❌ ' + e.message;
+    msg.className = 'meta err';
+  }
+  refreshVoiceIoStatus();
+}
+
+function ttsResultText(r) {
+  const notes = Array.isArray(r.notes) && r.notes.length ? `（${r.notes.join('；')}）` : '';
+  return `${SPEAK_PROVIDER_NAMES[r.provider] || r.provider} · ${r.chars} 字 · ${Number(r.seconds || 0).toFixed(1)} 秒 · 合成耗时 ${r.ms}ms${notes}`;
+}
+
+async function previewTts() {
+  const msg = vioEl('ttsMsg');
+  const text = vioStr('ttsPreviewText') || '嗯嗯，我听到啦，等我一下下。';
+  const emotion = vioEl('ttsPreviewEmotion').value;
+  msg.textContent = '合成中…';
+  msg.className = 'meta';
+  try {
+    const r = await api('/api/voice/speak', 'POST', { text, dryRun: true, ...(emotion ? { emotion } : {}) });
+    if (!r.ok) { msg.textContent = '❌ ' + (r.error || '合成失败'); msg.className = 'meta err'; return; }
+    // 控制台 CSP 是 default-src 'self'：不能用 data:/blob: 播放，改走同源 URL（<audio> 不能带请求头，令牌放查询参数）
+    const token = localStorage.getItem('consoleToken') || '';
+    const audio = vioEl('ttsPreviewAudio');
+    audio.src = (r.previewUrl || '/api/voice/preview-audio') + '?t=' + Date.now() + (token ? '&token=' + encodeURIComponent(token) : '');
+    audio.style.display = '';
+    audio.play().catch(() => {});
+    msg.textContent = '✅ ' + ttsResultText(r);
+    msg.className = 'meta ok';
+  } catch (e) {
+    msg.textContent = '❌ ' + e.message;
+    msg.className = 'meta err';
+  }
+  refreshVoiceIoStatus();
+}
+
+async function sendTtsFromConsole() {
+  const msg = vioEl('ttsMsg');
+  const target = vioStr('ttsSendTarget');
+  const text = vioStr('ttsPreviewText');
+  const emotion = vioEl('ttsPreviewEmotion').value;
+  if (!/^(group|private):\d+$/.test(target)) { msg.textContent = '❌ 发送目标格式：group:群号 或 private:QQ号'; msg.className = 'meta err'; return; }
+  if (!text) { msg.textContent = '❌ 先在上面的试听文本框里写要说的话'; msg.className = 'meta err'; return; }
+  if (!confirm(`确定把「${text.slice(0, 40)}」合成成语音，发到 ${target}？`)) return;
+  msg.textContent = '合成并发送中…';
+  msg.className = 'meta';
+  try {
+    const r = await api('/api/voice/speak', 'POST', { text, target, ...(emotion ? { emotion } : {}) });
+    msg.textContent = r.ok ? `✅ 已发到 ${r.key}：${ttsResultText(r)}` : ('❌ ' + (r.error || '发送失败'));
+    msg.className = r.ok ? 'meta ok' : 'meta err';
+  } catch (e) {
+    msg.textContent = '❌ ' + e.message;
+    msg.className = 'meta err';
+  }
+  refreshVoiceIoStatus();
+}
+
+vioEl('v2AsrEngine').addEventListener('change', syncVoiceIoBoxes);
+vioEl('v2SpeakProvider').addEventListener('change', syncVoiceIoBoxes);
+vioEl('asrStatusBtn').addEventListener('click', () => refreshVoiceIoStatus());
+vioEl('asrLoadBtn').addEventListener('click', () => asrControl('load'));
+vioEl('asrUnloadBtn').addEventListener('click', () => asrControl('unload'));
+vioEl('ttsPreviewBtn').addEventListener('click', previewTts);
+vioEl('ttsSendBtn').addEventListener('click', sendTtsFromConsole);
+vioEl('ttsStatusBtn').addEventListener('click', () => refreshVoiceIoStatus());
+vioEl('v2VoiceIoGroup').addEventListener('toggle', (e) => { if (e.currentTarget.open) refreshVoiceIoStatus(); });
 
 // ── 大功能开关（运行总览） ───────────────────────────────────────────────────
 // 总览页只写布尔值；每一项都回落到它原本的配置段，不是第二份状态。

@@ -24,6 +24,9 @@ import { compactModelMessage } from './qq-model-view.js';
 import { safeFetch, safeFetchBuffer, looksLikeImageBuffer } from './safe-fetch.js';
 import { AUDIO_EXTS, cleanupTemp, describeAudio, formatBytes, formatDuration, inspectAudio, listAudioFiles, parseTargetKey, processAudioVolume, resolveAudioProcessing, resolveAudioSource, safeJoinLibrary } from './send-voice-lib.js';
 import { discoverSnowLumaConnection, persistSnowLumaEndpoint, persistToken } from './snowluma-conn.js';
+// 听懂语音（ASR）与开口说话（TTS）。策略与出处见 docs/VOICE_IO.md。
+import { createAsrService, formatVoiceText, normalizeAsrConfig, redactAsrConfig } from './voice-asr.js';
+import { autoSpeakable, createTtsService, normalizeSpeakConfig, redactSpeakConfig, SPEAK_EMOTIONS } from './voice-tts.js';
 import { hardenDir, manualDirCommand } from './state-acl.mjs';
 import { extractForwardIds, forwardIdFromData, sanitizeForwardId, formatForwardResponse } from './forward.js';
 import { resolvePriceTable } from './model-prices.js';
@@ -920,6 +923,8 @@ function loadConfig() {
     addSticker: true,
     getSelfImage: true,
     sendVoice: false,
+    // qq_speak（开口说话）：工具开关默认开，但真正可用还要 socialV2.speak.enabled=true 且服务商就绪。
+    speak: true,
     ...(cfg.socialV2.tools ?? {})
   };
 
@@ -946,6 +951,10 @@ function loadConfig() {
     autoReadback: true,
     ...(cfg.socialV2?.voice ?? {})
   };
+
+  // socialV2.asr（听懂语音，默认开启本地 SenseVoice-Small）与 socialV2.speak（开口说话，默认关闭）
+  // 在这里保持文件原样：每次读取时由 normalizeAsrConfig / normalizeSpeakConfig（src/voice-asr.js、
+  // src/voice-tts.js）与默认值合并，所以旧 config.json 缺字段、控制台改了配置都能即时生效。
 
   // socialV2.sticker.collect 也需要深度合并，避免旧配置缺失 collect 子项时丢默认值。
   cfg.socialV2.sticker = {
@@ -1310,7 +1319,8 @@ async function cardToText(card, biliCard = true) {
 }
 
 async function segmentsToText(segments, options = {}) {
-  const { resolveAtName, resolveReply, includeReply = true, biliCard = true } = options ?? {};
+  // resolveVoice(data) → Promise<string|null>：把 record 段转写成「[语音 6秒] 原话」，拿不到就回退为「[语音]」。
+  const { resolveAtName, resolveReply, resolveVoice, includeReply = true, biliCard = true } = options ?? {};
   // 有些 OneBot 实现直接把纯文本消息放在 message 字段里（string）
   if (typeof segments === 'string') return segments.trim();
   const out = [];
@@ -1333,7 +1343,14 @@ async function segmentsToText(segments, options = {}) {
       // 市场表情（mface）在部分网关实现里出现：有 summary 就用它，别让模型只看到 "[mface]"。
       case 'mface': out.push(`[表情${d.summary ? `:${d.summary}` : ''}]`); break;
       case 'image': out.push('[图片]'); break;
-      case 'record': out.push('[语音]'); break;
+      case 'record': {
+        let voiceText = null;
+        if (resolveVoice) {
+          try { voiceText = await resolveVoice(d); } catch { voiceText = null; }
+        }
+        out.push(voiceText || '[语音]');
+        break;
+      }
       case 'video': out.push('[视频]'); break;
       case 'file': out.push(`[文件${d.name ?? ''}]`); break;
       case 'reply': {
@@ -1965,6 +1982,159 @@ async function main() {
     const wantVerify = verify === true || (verify !== false && vc.autoReadback);
     const verification = wantVerify ? await verifyVoiceMessageSent(sent.messageId) : null;
     return { ...sent, key, file: resolved.path, via: resolved.via, verification, readback: readbackText };
+  }
+
+  // ── 听懂语音（ASR）与开口说话（TTS）──────────────────────────────────────────
+  //
+  // 算法与服务商调用在 src/voice-asr.js / src/voice-tts.js；这里只负责会话闸门、限流、发送与记账。
+  // 触发策略借鉴 MaiBot 生态的语音插件（出处与对照表见 docs/VOICE_IO.md「致谢与引用」）：
+  //   1. 工具主动说：模型自己判断这句适合说出口，调用 qq_speak
+  //      （Liccsu/maibot-mimotts-voice、ZhaoCang-QWQ/doubao-tts、SengokuCola/aliyun-tts-plugin 的 LLM 调用模式）；
+  //   2. 随机短句转语音：模型照常打字，系统按小概率把单条短句改成语音条发出
+  //      （SoulString-Dev/maibot-mimo-voice、Ling-LA/ling-tts-bot 的 random / random_llm 模式；AstrBot 的 trigger_probability）；
+  //   3. 对方刚发过语音时提高回语音的概率（CowAgent voice_reply_voice 的思路，做成概率而不是硬开关）。
+  const lastInboundVoiceAt = new Map(); // key → 最近一次收到别人语音的时间
+  const lastAutoSpeakAt = new Map();    // key → 最近一次随机语音的时间（冷却用）
+
+  function speakCfg() {
+    return normalizeSpeakConfig(cfg.socialV2?.speak);
+  }
+
+  /** 调 SnowLuma 的 OneBot HTTP 动作，返回原始 body（附 httpStatus）。不抛业务错误，由调用方判断 status/retcode。 */
+  async function snowLumaAction(action, params, timeoutMs = 15000) {
+    const httpUrl = String(cfg.snowluma?.httpUrl || 'http://127.0.0.1:3000').replace(/\/+$/, '');
+    const res = await fetch(`${httpUrl}/${action}`, {
+      method: 'POST',
+      headers: {
+        'content-type': 'application/json',
+        ...(cfg.snowluma?.accessToken ? { authorization: `Bearer ${cfg.snowluma.accessToken}` } : {})
+      },
+      body: JSON.stringify(params ?? {}),
+      signal: AbortSignal.timeout(timeoutMs)
+    });
+    const body = await res.json().catch(() => ({}));
+    return { ...body, httpStatus: res.status };
+  }
+
+  const asrService = createAsrService({ getConfig: () => cfg.socialV2?.asr, root: ROOT, oneBot: snowLumaAction, log });
+  const ttsService = createTtsService({ getConfig: () => cfg.socialV2?.speak, root: ROOT, log });
+  // 按需加载：SenseVoice 跑在独立子进程里（加载后约占 850MB），默认第一条语音到来时才启动，
+  // 闲置 socialV2.asr.idleUnloadMs（默认 10 分钟）后结束子进程、内存归还系统。
+  // 只有配置了 socialV2.asr.preload=true 才会在启动 2 秒后预加载；模型缺失时只打一行提示。
+  setTimeout(() => { asrService.warmup().catch(() => {}); }, 2000).unref?.();
+  // 退出时顺手结束识别子进程（即使漏掉，子进程也会在 IPC 断开时自行退出，不会留孤儿进程）
+  if (typeof process.once === 'function') process.once('exit', () => { try { asrService.close(); } catch {} });
+  // 控制台最近一次「试听」合成的音频（GET /api/voice/preview-audio 播放用）
+  let lastTtsPreview = null; // { file, mime, at }
+  const TTS_MIME = { wav: 'audio/wav', mp3: 'audio/mpeg', ogg: 'audio/ogg', opus: 'audio/ogg', ogg_opus: 'audio/ogg', aac: 'audio/aac', flac: 'audio/flac' };
+
+  /** segmentsToText 的 resolveVoice：转写成功返回「[语音 6秒·语气开心] 原话」，失败返回 null（回退为「[语音]」）。 */
+  async function transcribeVoiceV2(data, messageId) {
+    const info = await asrService.transcribeSegment(data, { messageId });
+    if (!info || info.status === 'error') return null;
+    const a = normalizeAsrConfig(cfg.socialV2?.asr);
+    return formatVoiceText(info, { showEmotion: a.showEmotion, showEvent: a.showEvent });
+  }
+
+  /**
+   * 把合成好的音频当语音条发出去。走 base64:// 而不是本地路径：SnowLuma 常跑在 Docker 里，
+   * 宿主机路径在容器内不可见；而合成结果是我们自己生成的音频，不存在「借语音外发本机文件」的风险。
+   * 与文本/图片共用 sendChain，保证顺序不乱。
+   */
+  async function sendSynthVoiceV2(key, synth) {
+    const assertSendAllowed = captureSendGuard(key);
+    const [kind, id] = key.split(':');
+    const recordSegment = { type: 'record', data: { file: `base64://${synth.buffer.toString('base64')}` } };
+    let resolveSend;
+    let rejectSend;
+    const sendPromise = new Promise((resolve, reject) => { resolveSend = resolve; rejectSend = reject; });
+    sendChain = sendChain.then(async () => {
+      try {
+        assertSendAllowed();
+        const action = kind === 'private' ? 'send_private_msg' : 'send_group_msg';
+        const params = kind === 'private'
+          ? { user_id: Number(id), message: [recordSegment] }
+          : { group_id: Number(id), message: [recordSegment] };
+        const body = await snowLumaAction(action, params, 60000);
+        if (body.status !== 'ok' || body.retcode !== 0) {
+          throw new Error(`OneBot ${action} 失败: ${body.wording || body.message || body.retcode || body.httpStatus}`);
+        }
+        resolveSend(body.data);
+      } catch (error) {
+        rejectSend(error);
+      }
+    });
+    const data = await sendPromise;
+    return { messageId: data?.message_id ?? null };
+  }
+
+  /**
+   * 开口说一句话：限流 → 内容审计 → 合成 → 发送 → 记账 → 回读校验。
+   * source='tool'（qq_speak）或 'auto'（随机语音）。失败抛错，调用方决定怎么回给模型。
+   */
+  async function speakForV2(key, text, { emotion = '', style = '', source = 'tool', timeoutMs = null } = {}) {
+    const sc = speakCfg();
+    if (!sc.enabled) throw new Error('开口说话功能未开启（socialV2.speak.enabled=false）');
+    const ready = ttsService.ready();
+    if (!ready.ok) throw new Error(`语音合成未就绪：${ready.reason}`);
+    const scope = `tts:${key}`;
+    voiceBudgetCheck(scope, sc);
+    const raw = String(text ?? '');
+    const hasKnownToken = [...KNOWN_AGENT_TOKENS].some((t) => t && raw.includes(t));
+    if (shouldAuditKey(key) && (SENSITIVE_RE.test(raw) || hasKnownToken)) {
+      appendActivity(`${key} [tts] 合成被拦截（疑似敏感信息${hasKnownToken ? '/会话令牌' : ''}）`);
+      throw new Error('这句话疑似包含敏感信息（路径/凭据/会话令牌），已阻止');
+    }
+    const synth = await ttsService.synthesize(raw, { emotion, style, timeoutMs });
+    const sent = await sendSynthVoiceV2(key, synth);
+    voiceBudgetCommit(scope);
+    const spoken = synth.text.replace(/^[（(\[][^）)\]]{1,24}[）)\]]/, '').trim();
+    const secs = synth.seconds ? Math.max(1, Math.round(synth.seconds)) : null;
+    // 记成与入站转写同样的格式，模型回看上下文时能认出「这是我说过的一条语音」
+    recordVoiceSentV2(key, { ...sent, detail: '' }, `[语音${secs ? ` ${secs}秒` : ''}] ${spoken}`);
+    log(`[tts] ${key} ${source === 'auto' ? '随机语音' : '开口说话'}：${synth.chars} 字 / ${synth.seconds ? synth.seconds.toFixed(1) : '?'}s（${synth.provider}，合成 ${synth.ms}ms，messageId=${sent.messageId ?? '?'}）`);
+    appendActivity(`${key} [tts] ${source === 'auto' ? '随机语音' : '开口说话'} ${synth.chars} 字（${synth.provider}）`);
+    const wantVerify = voiceCfg().autoReadback;
+    const verification = wantVerify ? await verifyVoiceMessageSent(sent.messageId) : null;
+    // sent 表示 OneBot 已接收这条记录；verified 只表示「get_msg 回读确认」。
+    // 关闭 autoReadback 时 verified=null，不能因此让模型以为没发出去。
+    return {
+      ...sent,
+      sent: true,
+      seconds: synth.seconds,
+      chars: synth.chars,
+      provider: synth.provider,
+      ms: synth.ms,
+      notes: synth.notes,
+      verified: wantVerify ? (verification ? verification.confirmed === true : null) : null
+    };
+  }
+
+  /**
+   * 随机语音：AI 发一条短句文字时，按概率改成语音条发出。返回发送结果，或 null 表示照常发文字。
+   * 任何一步不满足（关闭/冷却/不像能说出口的话/没抽中/合成失败）都安静地回退为文字。
+   */
+  async function maybeAutoSpeakV2(key, kind, text) {
+    const sc = speakCfg();
+    const ac = sc.autoConvert;
+    if (!sc.enabled || !ac.enabled || !v2ToolEnabled('speak')) return null;
+    if (ac.privateOnly && kind !== 'private') return null;
+    if (!ttsService.ready().ok) return null;
+    const now = Date.now();
+    if (ac.cooldownMs > 0 && now - (lastAutoSpeakAt.get(key) ?? 0) < ac.cooldownMs) return null;
+    const check = autoSpeakable(text, { minChars: ac.minChars, maxChars: Math.min(ac.maxChars, sc.maxChars) });
+    if (!check.ok) return null;
+    const mirror = ac.mirrorWindowMs > 0 && now - (lastInboundVoiceAt.get(key) ?? 0) < ac.mirrorWindowMs;
+    const p = mirror ? Math.max(ac.probability, ac.mirrorProbability) : ac.probability;
+    if (!(p > 0) || Math.random() >= p) return null;
+    lastAutoSpeakAt.set(key, now);
+    try {
+      const r = await speakForV2(key, text, { source: 'auto', timeoutMs: ac.timeoutMs });
+      return { ...r, mirror };
+    } catch (error) {
+      log(`[tts] ${key} 随机语音没发成，改发文字：${error?.message ?? error}`);
+      return null;
+    }
   }
 
   // 发送一个收藏表情（按 emoji_id/url/md5 解析，发图片段）。
@@ -3313,6 +3483,10 @@ async function main() {
       // 语音是「总闸 + 工具开关」两道：只开 enabled 而 qq_send_voice 没注册，AI 仍然发不出去。
       // 总览页把两者当成一个开关，避免出现「显示已开、实际不可用」。
       voice: cfg.socialV2?.voice?.enabled === true && cfg.socialV2?.tools?.sendVoice !== false,
+      // 听懂语音：asr 默认开启；引擎设成 off 也算关闭
+      asr: cfg.socialV2?.asr?.enabled !== false && cfg.socialV2?.asr?.engine !== 'off',
+      // 开口说话同样是「总闸 speak.enabled + 工具开关 tools.speak」两道，合成一个开关
+      speak: cfg.socialV2?.speak?.enabled === true && cfg.socialV2?.tools?.speak !== false,
       sticker: cfg.socialV2?.sticker?.enabled !== false,
       slang: cfg.slang?.enabled !== false,
       proactive: cfg.socialV2?.proactive?.enabled !== false,
@@ -3323,23 +3497,33 @@ async function main() {
 
   function applyFeatureFlags(next, touched = new Set()) {
     const touchVoice = touched.has('voice');
+    const touchAsr = touched.has('asr');
+    const touchSpeak = touched.has('speak');
     cfg.social = { ...(cfg.social ?? {}), enabled: next.social };
     cfg.socialV2 = {
       ...(cfg.socialV2 ?? {}),
       enabled: next.socialV2,
       voice: { ...(cfg.socialV2?.voice ?? {}), ...(touchVoice ? { enabled: next.voice } : {}) },
+      ...(touchAsr ? { asr: asrFeaturePatch(cfg.socialV2?.asr, next.asr) } : {}),
+      ...(touchSpeak ? { speak: { ...(cfg.socialV2?.speak ?? {}), enabled: next.speak } } : {}),
       sticker: { ...(cfg.socialV2?.sticker ?? {}), enabled: next.sticker },
       proactive: { ...(cfg.socialV2?.proactive ?? {}), enabled: next.proactive },
       tools: {
         ...(cfg.socialV2?.tools ?? {}),
         getImages: next.images,
         memory: next.memory,
-        ...(touchVoice ? { sendVoice: next.voice } : {})
+        ...(touchVoice ? { sendVoice: next.voice } : {}),
+        ...(touchSpeak ? { speak: next.speak } : {})
       }
     };
     cfg.slang = { ...(cfg.slang ?? {}), enabled: next.slang };
     cfg.features = { ...(cfg.features ?? {}), biliCard: next.biliCard };
     cfg.webSearch = { ...(cfg.webSearch ?? {}), enabled: next.webSearch };
+  }
+  /** 总览页打开「听懂语音」时，若引擎之前被设成 off，顺手切回默认的本地 SenseVoice，避免「开了但没生效」。 */
+  function asrFeaturePatch(section, on) {
+    const base = section && typeof section === 'object' && !Array.isArray(section) ? section : {};
+    return { ...base, enabled: on, ...(on && base.engine === 'off' ? { engine: 'sensevoice' } : {}) };
   }
 
   function startConsoleServer() {
@@ -3698,18 +3882,23 @@ async function main() {
             : {};
           const section = (value) => (value && typeof value === 'object' && !Array.isArray(value) ? value : {});
           const touchVoice = touched.has('voice');
+          const touchAsr = touched.has('asr');
+          const touchSpeak = touched.has('speak');
           file.social = { ...section(file.social), enabled: next.social };
           file.socialV2 = {
             ...fileV2,
             enabled: next.socialV2,
             voice: { ...section(fileV2.voice), ...(touchVoice ? { enabled: next.voice } : {}) },
+            ...(touchAsr ? { asr: asrFeaturePatch(fileV2.asr, next.asr) } : {}),
+            ...(touchSpeak ? { speak: { ...section(fileV2.speak), enabled: next.speak } } : {}),
             sticker: { ...section(fileV2.sticker), enabled: next.sticker },
             proactive: { ...section(fileV2.proactive), enabled: next.proactive },
             tools: {
               ...section(fileV2.tools),
               getImages: next.images,
               memory: next.memory,
-              ...(touchVoice ? { sendVoice: next.voice } : {})
+              ...(touchVoice ? { sendVoice: next.voice } : {}),
+              ...(touchSpeak ? { speak: next.speak } : {})
             }
           };
           file.slang = { ...section(file.slang), enabled: next.slang };
@@ -4680,7 +4869,17 @@ async function main() {
         }
         // ── 二代仿真模式（reserved2）内部 Agent API ─────────────────────────
         if (req.method === 'GET' && url.pathname === '/api/socialV2/config') {
-          sendJson({ ok: true, config: cfg.socialV2 ?? {} });
+          // asr / speak 按默认值补全后返回（控制台面板要显示「当前生效值」，而不是文件里恰好写了的几项），
+          // 并且脱敏：服务商 API Key 只返回 '********' + apiKeySet，保存时回传 '********' 表示「不改」。
+          const v2 = cfg.socialV2 ?? {};
+          sendJson({
+            ok: true,
+            config: {
+              ...v2,
+              asr: redactAsrConfig(normalizeAsrConfig(v2.asr)),
+              speak: redactSpeakConfig(normalizeSpeakConfig(v2.speak))
+            }
+          });
           return;
         }
         if (req.method === 'POST' && url.pathname === '/api/socialV2/config') {
@@ -4702,7 +4901,7 @@ async function main() {
           const current = fileV2 ?? ((cfg.socialV2 && typeof cfg.socialV2 === 'object') ? cfg.socialV2 : {});
           const merged = { ...current, ...body };
           // 子对象必须是非 null 对象；null/数组/基本类型会覆盖默认值导致工具开关被绕过，这里直接保留当前值。
-          for (const sub of ['tools', 'wake', 'send', 'wait', 'proactive', 'sticker', 'voice', 'feedback', 'context']) {
+          for (const sub of ['tools', 'wake', 'send', 'wait', 'proactive', 'sticker', 'voice', 'feedback', 'context', 'asr', 'speak']) {
             if (body[sub] !== undefined && (body[sub] === null || typeof body[sub] !== 'object' || Array.isArray(body[sub]))) {
               merged[sub] = current[sub] ?? {};
             }
@@ -4712,7 +4911,7 @@ async function main() {
             merged.autoReplyCheckMs = Number.isFinite(n) ? Math.max(1000, Math.round(n)) : (current.autoReplyCheckMs ?? 30000);
           }
           // tools：只接受布尔开关
-          const toolFlags = ['getPrompt', 'getUnread', 'getRecent', 'socialState', 'sendGroup', 'sendPrivate', 'reply', 'sendBurst', 'sendMessage', 'waitMessages', 'feedback', 'getMyRecent', 'getMessageDetail', 'getActiveMembers', 'setWakeConfig', 'markRead', 'memory', 'slangQuery', 'slangSubmit', 'getImages', 'getForwardMsg', 'sendPoke', 'listStickers', 'getStickerImage', 'sendSticker', 'sendImage', 'setStickerRemark', 'stickerNote', 'collectSticker', 'addSticker', 'getSelfImage', 'sendVoice'];
+          const toolFlags = ['getPrompt', 'getUnread', 'getRecent', 'socialState', 'sendGroup', 'sendPrivate', 'reply', 'sendBurst', 'sendMessage', 'waitMessages', 'feedback', 'getMyRecent', 'getMessageDetail', 'getActiveMembers', 'setWakeConfig', 'markRead', 'memory', 'slangQuery', 'slangSubmit', 'getImages', 'getForwardMsg', 'sendPoke', 'listStickers', 'getStickerImage', 'sendSticker', 'sendImage', 'setStickerRemark', 'stickerNote', 'collectSticker', 'addSticker', 'getSelfImage', 'sendVoice', 'speak'];
           if (body.tools && typeof body.tools === 'object') {
             merged.tools = { ...(current.tools ?? {}), ...body.tools };
             for (const k of toolFlags) {
@@ -4809,6 +5008,24 @@ async function main() {
             if (merged.voice.enabled !== undefined) merged.voice.enabled = merged.voice.enabled === true;
             if (merged.voice.autoReadback !== undefined) merged.voice.autoReadback = merged.voice.autoReadback === true;
           }
+          // asr / speak：逐层合并后交给各自的 normalize 收敛类型；脱敏占位「********」不覆盖已存的密钥。
+          if (body.asr && typeof body.asr === 'object' && !Array.isArray(body.asr)) {
+            merged.asr = normalizeAsrConfig({
+              ...(current.asr ?? {}),
+              ...body.asr,
+              openai: { ...(current.asr?.openai ?? {}), ...((body.asr.openai && typeof body.asr.openai === 'object') ? body.asr.openai : {}) }
+            });
+            if (body.asr.openai?.apiKey === '********') merged.asr.openai.apiKey = current.asr?.openai?.apiKey ?? '';
+          }
+          if (body.speak && typeof body.speak === 'object' && !Array.isArray(body.speak)) {
+            const nextSpeak = { ...(current.speak ?? {}), ...body.speak };
+            for (const sub of ['autoConvert', 'mimo', 'doubao', 'openai', 'gptsovits', 'feiyu']) {
+              const patch = body.speak[sub];
+              nextSpeak[sub] = { ...(current.speak?.[sub] ?? {}), ...((patch && typeof patch === 'object' && !Array.isArray(patch)) ? patch : {}) };
+              if (patch?.apiKey === '********') nextSpeak[sub].apiKey = current.speak?.[sub]?.apiKey ?? '';
+            }
+            merged.speak = normalizeSpeakConfig(nextSpeak);
+          }
           // feedback：数值/布尔归一化
           if (body.feedback && typeof body.feedback === 'object') {
             merged.feedback = { ...(current.feedback ?? {}), ...body.feedback };
@@ -4852,7 +5069,16 @@ async function main() {
             WAKE_DEFAULT_KEYS.some((k) => Object.prototype.hasOwnProperty.call(body.wake, k));
           if (wakeDefaultChanged) refreshAllDefaultWakeConfigsV2();
           log('控制台：二代仿真配置已更新');
-          sendJson({ ok: true, config: cfg.socialV2 });
+          // 回包也要脱敏：GET 已经脱敏，保存回包若只脱敏 speak，会在一瞬间把
+          // asr.openai.apiKey 明文回给浏览器（VOICE_IO.md 明确承诺两个接口都脱敏）。
+          sendJson({
+            ok: true,
+            config: {
+              ...cfg.socialV2,
+              asr: redactAsrConfig(normalizeAsrConfig(cfg.socialV2.asr)),
+              speak: redactSpeakConfig(normalizeSpeakConfig(cfg.socialV2.speak))
+            }
+          });
           return;
         }
         if (req.method === 'GET' && url.pathname === '/api/socialV2/activity') {
@@ -4982,12 +5208,16 @@ async function main() {
             collectSticker: 'qq_collect_sticker',
             addSticker: 'qq_add_sticker',
             getSelfImage: 'qq_get_self_image',
-            sendVoice: 'qq_send_voice / qq_list_voices'
+            sendVoice: 'qq_send_voice / qq_list_voices',
+            speak: 'qq_speak'
           };
           const tools = cfg.socialV2?.tools ?? {};
           const stickerToolFlags = new Set(['listStickers', 'getStickerImage', 'sendSticker', 'setStickerRemark', 'stickerNote', 'collectSticker']);
           const enabledTools = [];
+          const speakNow = speakCfg();
           for (const [flag, name] of Object.entries(toolMap)) {
+            // qq_speak 只在开口说话总开关打开时列出，否则模型会去调一个必然 403 的工具
+            if (flag === 'speak' && !speakNow.enabled) continue;
             if (tools[flag] !== false && !(stickerToolFlags.has(flag) && !stickerEnabled())) enabledTools.push(name);
           }
           sendJson({
@@ -5033,7 +5263,18 @@ async function main() {
               names: voiceLibrary().slice(0, 12).map((v) => v.name),
               maxSeconds: voiceCfg().maxSeconds,
               hint: '可用 qq_list_voices 查看语音库，再用 qq_send_voice 把其中一个当语音发出去'
-            }
+            },
+            // 开口说话（TTS）：关闭时只回 enabled=false，不暴露服务商细节
+            speak: !speakNow.enabled || tools.speak === false ? { enabled: false } : {
+              enabled: true,
+              ready: ttsService.ready().ok,
+              maxChars: speakNow.maxChars,
+              emotions: speakNow.allowEmotion ? SPEAK_EMOTIONS : [],
+              autoConvert: speakNow.autoConvert.enabled,
+              hint: '想把一句短话说出口时用 qq_speak(text, emotion)；长内容、链接、代码、列表还是打字'
+            },
+            // 听语音（ASR）：群友语音会被转写成「[语音 N秒] 原话」
+            asr: { enabled: cfg.socialV2?.asr?.enabled !== false && cfg.socialV2?.asr?.engine !== 'off' }
           });
           return;
         }
@@ -5592,6 +5833,25 @@ async function main() {
           // 先预占发送额度，避免并发绕过限频
           for (let i = 0; i < messages.length; i++) st.sendTimes.push(now);
           if (st.sendTimes.length > 500) st.sendTimes = st.sendTimes.slice(-500);
+          // 随机语音（MaiBot 生态的 random / random_llm 策略）：单条、无引用、无 @ 的短句，按概率改成语音条发出。
+          // 不满足条件或合成失败都会返回 null，照常走下面的文字发送；成功时这条文字额度就算语音用掉了。
+          if (messages.length === 1 && !atUserId
+              && (replyToMessageId === undefined || replyToMessageId === null || String(replyToMessageId).trim() === '')) {
+            const spoken = await maybeAutoSpeakV2(key, kind, messages[0]);
+            if (spoken) {
+              scheduleReplyCheckV2(key);
+              sendJson({
+                ok: true,
+                key,
+                sent: 1,
+                failed: 0,
+                spokenAsVoice: true,
+                voice: { sent: true, seconds: spoken.seconds ?? null, verified: spoken.verified === true },
+                hint: '这句被系统随机改成了语音条发出（内容就是你写的这句），不要再用文字重发一遍。'
+              });
+              return;
+            }
+          }
           let quotedInfo = null;
           let actualReplyToMessageId = replyToMessageId;
           if (replyToMessageId !== undefined && replyToMessageId !== null && String(replyToMessageId).trim() !== '') {
@@ -6065,6 +6325,163 @@ async function main() {
             // 额度只在真正发出后才记账（voiceBudgetCommit），所以失败路径无需回滚。
             sendJson({ ok: false, error: error?.message ?? String(error) }, 500);
           }
+          return;
+        }
+
+        // ── 开口说话（AI 通道：qq_speak）────────────────────────────────────────
+        // 与 send-voice 同一套闸门（token / 模式 / 白名单 / 静默），额度单独计数（scope=tts:key）。
+        if (req.method === 'POST' && url.pathname === '/api/socialV2/speak') {
+          const body = await readBody();
+          const token = String(body.token ?? req.headers['x-agent-token'] ?? '').trim();
+          const key = String(body.key ?? '').trim();
+          const sc = speakCfg();
+          const fallbackHint = '这次没说出口，改用 qq_send_message 打字即可，不要反复重试 qq_speak';
+          if (!sc.enabled) { sendJson({ ok: false, error: '开口说话功能未开启，继续打字即可，不要重试', hint: fallbackHint }, 403); return; }
+          if (!key) { sendJson({ ok: false, error: 'key 不能为空（格式 group:群号 或 private:QQ号）' }, 400); return; }
+          if (currentMode !== 'reserved2') { sendJson({ ok: false, error: '该接口仅 reserved2 模式可用' }, 403); return; }
+          if (!token) { sendJson({ ok: false, error: 'reserved2 模式发送必须携带 agent token' }, 403); return; }
+          if (!agentTokenOk(key, token)) { sendJson({ ok: false, error: 'agent token 无效' }, 403); return; }
+          if (!v2ToolEnabled('speak')) { sendJson({ ok: false, error: '工具未启用：qq_speak', hint: fallbackHint }, 403); return; }
+          if (!v2SessionAllowed(key)) { sendJson({ ok: false, error: '目标不在当前模式允许范围内' }, 403); return; }
+          if (shouldBlockSilentReply(key)) { sendJson({ ok: false, error: '静默模式已开启，当前不允许发送' }, 403); return; }
+          const keyMatch = /^(group|private):(\d+)$/.exec(key);
+          if (!keyMatch) { sendJson({ ok: false, error: 'key 格式应为 group:群号 或 private:QQ号' }, 400); return; }
+          const kind = keyMatch[1];
+          const id = Number(keyMatch[2]);
+          if (!Number.isFinite(id) || id <= 0 || !modeAllowed(key, kind, id, cfg, currentMode)) {
+            sendJson({ ok: false, error: '目标不在当前模式允许范围内' }, 403);
+            return;
+          }
+          const text = String(body.text ?? body.message ?? '').trim();
+          if (!text) { sendJson({ ok: false, error: 'text 不能为空：写你要说出口的那句话' }, 400); return; }
+          if (text.length > 1000) { sendJson({ ok: false, error: '内容太长，语音只适合一两句话；长内容请打字' }, 400); return; }
+          try {
+            const r = await speakForV2(key, text, {
+              emotion: body.emotion ? String(body.emotion) : '',
+              style: body.style ? String(body.style).slice(0, 200) : '',
+              source: 'tool'
+            });
+            scheduleReplyCheckV2(key);
+            sendJson({
+              ok: true,
+              key,
+              sent: true,
+              messageId: r.messageId,
+              seconds: r.seconds != null ? Math.round(r.seconds * 10) / 10 : null,
+              chars: r.chars,
+              // sent=true 表示 OneBot 已接收；verified=true 表示 get_msg 回读到 record 段。
+              // autoReadback=false 时 verified=null（未回读），不代表发送失败。
+              verified: r.verified,
+              ...(r.notes?.length ? { notes: r.notes } : {})
+            });
+          } catch (error) {
+            const msg = error?.message ?? String(error);
+            const status = /频率超限|已用完/.test(msg) ? 429 : /太长|为空|没有可朗读|敏感/.test(msg) ? 400 : 500;
+            sendJson({ ok: false, error: msg, hint: fallbackHint }, status);
+          }
+          return;
+        }
+
+        // ── 开口说话（操作者通道：试听 / 手动发一句，凭 consoleToken）────────────
+        // 不看 socialV2.speak.enabled（那是「AI 能不能说」的总闸），方便你先试好音色再开放给 AI。
+        // dryRun=true 只合成不发送，音频写到 data/tts/last-preview.<ext> 供试听。
+        if (req.method === 'POST' && url.pathname === '/api/voice/speak') {
+          // 这是操作者通道：不看 speak.enabled、不限会话。AI 若能调到这里，就能绕过总闸
+          // 往任意白名单会话发语音（confused deputy），所以带 agent 标记的请求一律拒绝。
+          if (req.headers['x-agent-call'] !== undefined || String(req.headers['x-agent-token'] ?? '').trim()) {
+            sendJson({ ok: false, error: 'AI 请改用 qq_speak（/api/socialV2/speak，带 key + token）' }, 403);
+            return;
+          }
+          const body = await readBody();
+          const text = String(body.text ?? '').trim();
+          if (!text) { sendJson({ ok: false, error: 'text 不能为空' }, 400); return; }
+          try {
+            const ready = ttsService.ready();
+            if (!ready.ok) { sendJson({ ok: false, error: `语音合成未就绪：${ready.reason}` }, 400); return; }
+            if (body.dryRun === true) {
+              const synth = await ttsService.synthesize(text, { emotion: body.emotion, style: body.style ? String(body.style).slice(0, 200) : '' });
+              const dir = path.join(ROOT, 'data', 'tts');
+              fs.mkdirSync(dir, { recursive: true });
+              const file = path.join(dir, `last-preview.${synth.ext}`);
+              fs.writeFileSync(file, synth.buffer);
+              lastTtsPreview = { file, mime: TTS_MIME[synth.ext] ?? 'application/octet-stream', at: Date.now() };
+              sendJson({ ok: true, dryRun: true, file, previewUrl: '/api/voice/preview-audio', seconds: synth.seconds, chars: synth.chars, provider: synth.provider, ms: synth.ms, text: synth.text, notes: synth.notes });
+              return;
+            }
+            const key = String(body.target ?? body.key ?? '').trim();
+            const parsedTarget = parseTargetKey(key);
+            if (!parsedTarget) { sendJson({ ok: false, error: 'target 格式应为 group:群号 或 private:QQ号' }, 400); return; }
+            if (!modeAllowed(key, parsedTarget.kind, Number(parsedTarget.id), cfg, currentMode)) {
+              sendJson({ ok: false, error: `目标 ${key} 不在白名单内（config.json allow.groups / allow.private）` }, 403);
+              return;
+            }
+            const sc = speakCfg();
+            voiceBudgetCheck('operator:tts', sc);
+            if (SENSITIVE_RE.test(text)) { sendJson({ ok: false, error: '内容疑似包含敏感信息，已阻止' }, 403); return; }
+            const synth = await ttsService.synthesize(text, { emotion: body.emotion, style: body.style ? String(body.style).slice(0, 200) : '' });
+            const [kind, id] = key.split(':');
+            const recordSegment = { type: 'record', data: { file: `base64://${synth.buffer.toString('base64')}` } };
+            const sendBody = await snowLumaAction(kind === 'private' ? 'send_private_msg' : 'send_group_msg',
+              kind === 'private' ? { user_id: Number(id), message: [recordSegment] } : { group_id: Number(id), message: [recordSegment] }, 60000);
+            if (sendBody.status !== 'ok' || sendBody.retcode !== 0) throw new Error(`OneBot 发送失败: ${sendBody.wording || sendBody.retcode || sendBody.httpStatus}`);
+            voiceBudgetCommit('operator:tts');
+            log(`[tts] 操作者试发 ${key}：${synth.chars} 字（${synth.provider}）`);
+            appendActivity(`${key} [tts] 操作者试发 ${synth.chars} 字（${synth.provider}）`);
+            sendJson({ ok: true, key, sent: true, messageId: sendBody.data?.message_id ?? null, seconds: synth.seconds, chars: synth.chars, provider: synth.provider, ms: synth.ms });
+          } catch (error) {
+            sendJson({ ok: false, error: error?.message ?? String(error) }, 500);
+          }
+          return;
+        }
+
+        // 语音收发状态（只读）：ASR 模型/依赖是否就绪、TTS 服务商是否配置、今日用量。
+        if (req.method === 'GET' && url.pathname === '/api/voice/io-status') {
+          sendJson({ ok: true, asr: asrService.status(), speak: ttsService.status() });
+          return;
+        }
+
+        // 控制台「立即加载 / 立即释放」识别模型（操作者通道）。释放 = 结束识别子进程，约 850MB 内存归还系统。
+        if (req.method === 'POST' && url.pathname === '/api/voice/asr') {
+          if (req.headers['x-agent-call'] !== undefined || String(req.headers['x-agent-token'] ?? '').trim()) {
+            sendJson({ ok: false, error: '仅限控制台操作' }, 403);
+            return;
+          }
+          const body = await readBody();
+          const action = String(body?.action ?? '');
+          if (action === 'unload') {
+            const released = asrService.unload('控制台手动释放');
+            sendJson({ ok: true, released, asr: asrService.status() });
+            return;
+          }
+          if (action === 'load') {
+            const loaded = await asrService.warmup({ force: true });
+            const st = asrService.status();
+            sendJson(loaded
+              ? { ok: true, asr: st }
+              : { ok: false, error: st.unavailable || '语音识别已关闭，或当前引擎不是本地 SenseVoice', asr: st }, loaded ? 200 : 400);
+            return;
+          }
+          sendJson({ ok: false, error: 'action 只能是 load 或 unload' }, 400);
+          return;
+        }
+
+        // 播放最近一次试听合成的音频。控制台 CSP 是 default-src 'self'，data:/blob: 音频会被拦，
+        // 所以走同源 URL（<audio src="/api/voice/preview-audio?token=...">）。只读本模块自己写的固定文件。
+        if (req.method === 'GET' && url.pathname === '/api/voice/preview-audio') {
+          if (req.headers['x-agent-call'] !== undefined || String(req.headers['x-agent-token'] ?? '').trim()) {
+            sendJson({ ok: false, error: '仅限控制台操作' }, 403);
+            return;
+          }
+          if (!lastTtsPreview || !fs.existsSync(lastTtsPreview.file)) {
+            const dir = path.join(ROOT, 'data', 'tts');
+            const found = Object.keys(TTS_MIME).map((ext) => path.join(dir, `last-preview.${ext}`)).filter((f) => fs.existsSync(f))
+              .sort((a, b) => fs.statSync(b).mtimeMs - fs.statSync(a).mtimeMs)[0];
+            lastTtsPreview = found ? { file: found, mime: TTS_MIME[path.extname(found).slice(1)], at: fs.statSync(found).mtimeMs } : null;
+          }
+          if (!lastTtsPreview) { sendJson({ ok: false, error: '还没有试听音频：先在控制台点「试听」合成一次' }, 404); return; }
+          const buf = fs.readFileSync(lastTtsPreview.file);
+          res.writeHead(200, { ...SECURITY_HEADERS, 'content-type': lastTtsPreview.mime, 'content-length': buf.length, 'cache-control': 'no-store' });
+          res.end(buf);
           return;
         }
 
@@ -10103,6 +10520,8 @@ async function main() {
       const sender = raw.sender?.card || raw.sender?.nickname || String(raw.sender?.user_id ?? raw.user_id ?? '未知');
       const text = await segmentsToText(raw.message ?? [], {
         resolveAtName: kind === 'group' ? (qq) => resolveGroupMemberName(convId, qq) : null,
+        // 被引用的是语音：同样转写（按文件缓存，已经转过的不会重复识别）
+        resolveVoice: (d) => transcribeVoiceV2(d, raw.message_id ?? messageId),
         includeReply: false,
         biliCard: cfg.features?.biliCard !== false
       });
@@ -10595,6 +11014,11 @@ async function main() {
     const stickerLine = stickerCfg.enabled !== false && stickerCfg.includeInPrompt !== false
       ? `${buildStickerStrategyHint()}\n${buildStickerContext(stickerEntries, stickerCfg.promptMaxStickers ?? 8)}\n\n`
       : '';
+    // 开口说话：只在总开关打开时注入，默认关闭时唤醒 prompt 一个字都不多。
+    const speakNow = speakCfg();
+    const speakLine = speakNow.enabled && v2ToolEnabled('speak')
+      ? `【开口说话】可以用 qq_speak(text, emotion, style) 把一句话直接说成语音条（≤${speakNow.maxChars} 字）。适合对方发语音时回一句、打招呼/吐槽/惊叹/撒娇这类短句；长解释、链接、代码、列表、数字密集的内容照常打字。大多数时候还是打字，别连着发语音。想唱歌时把 style 设为「唱歌」，text 写一两句歌词（只支持 MiMo 预置音色；voiceDesign/clone 不支持唱歌，整首也不行）。${speakNow.autoConvert.enabled ? '你发的短句偶尔会被系统随机改成语音（返回 spokenAsVoice=true），不用再补发文字。' : ''}\n\n`
+      : '';
     const preSleepMs = Math.max(0, Number(cfg.socialV2?.wake?.preSleepWaitMs) || 300000);
     const proactiveLine = '【积极性】不要习惯性潜水：群里有你能接的话题就主动参与，偶尔插一句别人的话题也很正常；只有确实没话可说、对方已明确结束、或长时间没人说话时才潜水。\n\n';
     const replyTiming = replyTimingV2(st);
@@ -10632,7 +11056,7 @@ async function main() {
     const freshLine = st.lastIdleRetireAt && Date.now() - Number(st.lastIdleRetireAt) < 10 * 60 * 1000
       ? '【会话已刷新】上一段对话因空闲已归档；你的长期记忆与最近消息仍在，不要追问“刚才聊到哪”，直接按当前消息自然接话。\n\n'
       : '';
-    const base = roleLine + identityLine + tokenLine + freshLine + initialPromptLine + antiAiLine + proactiveLine + stickerLine + replyLine + statusLine + wakeLine + memoryLine + participationLine + preSleepLine;
+    const base = roleLine + identityLine + tokenLine + freshLine + initialPromptLine + antiAiLine + proactiveLine + stickerLine + speakLine + replyLine + statusLine + wakeLine + memoryLine + participationLine + preSleepLine;
     if (reason === 'bootstrap') {
       return `${base}【引导唤醒】你已接入 QQ 会话 ${key}。\n当前是二代仿真模式：你的文本输出不会自动发送到 QQ，所有发言必须通过工具完成。\n请先调用 qq_get_prompt 查看角色、推荐值、可用工具和状态；有待回应的消息先按首回复节奏处理，最后才用 qq_set_wake_config 设置你希望如何被唤醒。`;
     }
@@ -11140,11 +11564,17 @@ async function main() {
       return resolveGroupMemberName(event.group_id, qq);
     };
     const resolveReply = (messageId) => resolveReplyInfo(kind, id, messageId, event.self_id);
+    // 语音转写：别人发的语音才转（自己发的语音我们本来就知道说了什么）。
+    // textContent / plainContent 各调一次 segmentsToText，但识别按文件做了 Promise 缓存，只会跑一次。
+    const fromSelf = event.self_id != null && String(event.user_id) === String(event.self_id);
+    const hasVoice = Array.isArray(event.message) && event.message.some((s) => s?.type === 'record');
+    const resolveVoice = hasVoice && !fromSelf ? (d) => transcribeVoiceV2(d, event.message_id) : null;
+    if (hasVoice && !fromSelf) lastInboundVoiceAt.set(key, Date.now());
     // textContent 带引用对象信息，供 DSH 判断“这句话在对谁说”；
     // plainContent 只保留当前消息自己的文字，用于命令/指向性判断，避免被引用原文干扰。
     const biliCard = cfg.features?.biliCard !== false;
-    const textContent = await segmentsToText(event.message ?? [], { resolveAtName, resolveReply, biliCard });
-    const plainContent = await segmentsToText(event.message ?? [], { resolveAtName, includeReply: false, biliCard });
+    const textContent = await segmentsToText(event.message ?? [], { resolveAtName, resolveReply, resolveVoice, biliCard });
+    const plainContent = await segmentsToText(event.message ?? [], { resolveAtName, resolveVoice, includeReply: false, biliCard });
     const mediaList = extractMediaFromSegments(event.message ?? []);
     const messageRef = String(event.message_id ?? event.msg_id ?? event.message_seq ?? '');
     const seqRef = event.message_seq != null ? String(event.message_seq) : '';

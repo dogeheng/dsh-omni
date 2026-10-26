@@ -30,6 +30,9 @@
     "test-voice": "node scripts/test-voice.mjs",
     "test-voice:gui": "node scripts/test-voice-gui.mjs",
     "test-voice:system": "node scripts/test-voice-system.mjs",
+    "test-voice:io": "node scripts/test-voice-io.mjs",
+    "setup:asr": "node scripts/setup-asr.mjs",
+    "setup:feiyu": "node scripts/setup-feiyu.mjs",
     "test-encoding": "node scripts/test-encoding.mjs",
     "send-voice": "node scripts/send-voice.mjs",
     "voice-gui": "cd ../voice-tool && node voice-gui.mjs",
@@ -67,5 +70,9 @@
     "@snowluma/sdk": "^1.14.20",
     "js-yaml": "^4.3.2",
     "zod": "^4.4.3"
+  },
+  "optionalDependencies": {
+    "sherpa-onnx-node": "^2.0.0",
+    "silk-wasm": "^3.7.1"
   }
 }

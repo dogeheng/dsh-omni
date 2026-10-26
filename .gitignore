@@ -13,3 +13,7 @@ audio/
 # Personal role cards (migration may copy these locally)
 packages/bridge/roles/yuki.md
 packages/bridge/roles/猫娘.md
+
+# Optional local checkout of the separately-licensed FeiyuVoice service
+# (setup:feiyu clones it here; its code/models are not redistributed by this repo)
+packages/feiyu-voice/

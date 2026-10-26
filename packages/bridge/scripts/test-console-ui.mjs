@@ -253,6 +253,82 @@ try {
     assert.deepEqual(fixture.requests, expected);
   });
 
+  // 放在基线比对之后：这里产生的写请求不影响「改版前载荷基线」那条检查。
+  if (!original) await test('听懂语音 / 开口说话：参数回显、服务商切换、按需加载控制、试听试发与保存载荷', async () => {
+    await page.setViewportSize({ width: 1440, height: 1000 });
+    // 总览页的大功能开关
+    assert.equal(await (await reveal('[data-feature="asr"]')).isChecked(), true, '听懂语音应回显 asr:true');
+    assert.equal(await (await reveal('[data-feature="speak"]')).isChecked(), false, '开口说话应回显 speak:false');
+    assert.equal(await page.locator('[data-v2-tool="speak"]').count(), 1, '工具开关里应有 qq_speak');
+    // 展开分组会自动拉一次状态；按需加载模式下初始是「未加载」
+    await reveal('#v2AsrEnabled');
+    await page.waitForFunction(() => /未加载/.test(document.getElementById('asrStatus')?.textContent || ''));
+    assert.match(await page.textContent('#asrStatus'), /按需加载，闲置 10 分钟后自动释放/);
+    assert.match(await page.textContent('#ttsStatus'), /小米 MiMo，✅ 已就绪/);
+    // 回显：单位换算 + Key 脱敏不回填
+    assert.equal(await page.inputValue('#v2AsrIdleUnloadMin'), '10');
+    assert.equal(await page.inputValue('#v2SpeakAutoProb'), '5');
+    assert.equal(await page.inputValue('#v2MimoVoice'), '冰糖');
+    assert.equal(await page.inputValue('#v2MimoApiKey'), '', '脱敏后的 Key 不能回填进输入框');
+    assert.equal(await page.getAttribute('#v2MimoApiKey', 'placeholder'), '已保存（留空 = 不修改）');
+    assert.equal(await page.getAttribute('#v2DoubaoApiKey', 'placeholder'), '未设置');
+    // 服务商 / 引擎切换只显示对应参数区
+    assert(await page.isVisible('#v2SpeakMimoBox') && !await page.isVisible('#v2SpeakDoubaoBox'));
+    await page.selectOption('#v2SpeakProvider', 'gptsovits');
+    assert(await page.isVisible('#v2SpeakGsvBox') && !await page.isVisible('#v2SpeakMimoBox'));
+    assert(!await page.isVisible('#v2AsrOpenaiBox'));
+    await page.selectOption('#v2AsrEngine', 'openai');
+    assert(await page.isVisible('#v2AsrOpenaiBox'));
+    await page.selectOption('#v2AsrEngine', 'sensevoice');
+    // GPT-SoVITS 参考音频 JSON 写错：拦在前端，不发保存请求
+    const before = fixture.requests.length;
+    await fill('v2GsvRefs', '{"default": ');
+    await (await reveal('#v2ConfigSave')).click();
+    await page.waitForFunction(() => /GPT-SoVITS 参考音频不是合法 JSON/.test(document.getElementById('v2ConfigMsg')?.textContent || ''));
+    assert.equal(fixture.requests.length, before, '非法 JSON 不应发出保存请求');
+    await fill('v2GsvRefs', '');
+    // 立即加载 / 立即释放（按需加载的手动控制）
+    assert.deepEqual(await clickWrite('#asrLoadBtn', '/api/voice/asr'), { action: 'load' });
+    await page.waitForFunction(() => /已加载（识别子进程/.test(document.getElementById('asrStatus')?.textContent || ''));
+    assert.deepEqual(await clickWrite('#asrUnloadBtn', '/api/voice/asr'), { action: 'unload' });
+    await page.waitForFunction(() => /已释放/.test(document.getElementById('asrMsg')?.textContent || ''));
+    // 试听：dryRun + 同源音频（CSP 下不能用 data:/blob:）
+    await fill('ttsPreviewText', '你好呀，我在呢');
+    await page.selectOption('#ttsPreviewEmotion', '开心');
+    assert.deepEqual(await clickWrite('#ttsPreviewBtn', '/api/voice/speak'), { text: '你好呀，我在呢', dryRun: true, emotion: '开心' });
+    await page.waitForFunction(() => (document.getElementById('ttsPreviewAudio')?.getAttribute('src') || '').startsWith('/api/voice/preview-audio?'));
+    assert(await page.isVisible('#ttsPreviewAudio'));
+    // 试发：目标格式错误拦在前端；正确时确认后发到 mock
+    await fill('ttsSendTarget', '123456789');
+    await (await reveal('#ttsSendBtn')).click();
+    assert.match(await page.textContent('#ttsMsg'), /发送目标格式/);
+    await fill('ttsSendTarget', 'group:123456789');
+    assert.deepEqual(await clickWrite('#ttsSendBtn', '/api/voice/speak'), { text: '你好呀，我在呢', target: 'group:123456789', emotion: '开心' });
+    // 保存载荷：单位换算、Key 占位与新 Key
+    await fill('v2AsrIdleUnloadMin', '0.5');
+    await check('v2AsrPreload', true);
+    await check('v2SpeakEnabled', true);
+    await check('v2SpeakAutoEnabled', true);
+    await fill('v2SpeakAutoProb', '12.5');
+    await fill('v2SpeakAutoCooldownMin', '2');
+    await page.selectOption('#v2SpeakProvider', 'doubao');
+    await fill('v2DoubaoApiKey', 'fixture-doubao-key');
+    await (await reveal('[data-v2-tool="speak"]')).setChecked(false);
+    const saved = await clickWrite('#v2ConfigSave', '/api/socialV2/config');
+    assert.equal(saved.asr.idleUnloadMs, 30000, '0.5 分钟 = 30000ms');
+    assert.equal(saved.asr.preload, true);
+    assert.equal(saved.asr.openai.apiKey, '', '未设置的 Key 保持为空');
+    assert.equal(saved.speak.enabled, true);
+    assert.equal(saved.speak.provider, 'doubao');
+    assert.equal(saved.speak.autoConvert.enabled, true);
+    assert.equal(saved.speak.autoConvert.probability, 0.125);
+    assert.equal(saved.speak.autoConvert.cooldownMs, 120000);
+    assert.equal(saved.speak.mimo.apiKey, '********', '已保存但没改的 Key 回传占位，由后端保留原值');
+    assert.equal(saved.speak.doubao.apiKey, 'fixture-doubao-key');
+    assert.deepEqual(saved.speak.gptsovits.refs, {});
+    assert.equal(saved.tools.speak, false, 'qq_speak 工具开关随工具列表一起保存');
+  });
+
   if (!original) await test('Token usage panel renders totals, per-conversation and per-turn cost', async () => {
     await page.setViewportSize({ width: 1440, height: 1000 });
     await navigate('usage');

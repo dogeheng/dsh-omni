@@ -320,9 +320,28 @@ export function makeFixtureState() {
     socialStates: { 'group:123456789': { phase: 'active' }, 'group:100003': { phase: 'idle' } },
     features: {
       social: true, socialV2: true, biliCard: true, webSearch: true, voice: false,
-      sticker: true, slang: true, proactive: true, images: true, memory: true,
+      asr: true, speak: false, sticker: true, slang: true, proactive: true, images: true, memory: true,
     },
-    v2: { enabled: true, agentPreset: 'qq-chat-v2', provideRecommendations: true, tools: {}, voice: { enabled: false, autoReadback: true } },
+    v2: {
+      enabled: true, agentPreset: 'qq-chat-v2', provideRecommendations: true, tools: {}, voice: { enabled: false, autoReadback: true },
+      // 听懂语音 / 开口说话：形状与 GET /api/socialV2/config 一致（补全默认值 + API Key 脱敏）
+      asr: {
+        enabled: true, engine: 'sensevoice', modelDir: 'data/models/sherpa-onnx-sense-voice-zh-en-ja-ko-yue-int8-2024-07-17',
+        numThreads: 2, language: 'auto', useItn: true, preload: false, idleUnloadMs: 600000, maxSeconds: 60, maxBytes: 4194304,
+        timeoutMs: 15000, maxConcurrent: 2, qqFallback: true, showEmotion: true, showEvent: true, maxTextChars: 300, cacheSize: 500,
+        openai: { baseUrl: 'https://api.siliconflow.cn/v1', model: 'FunAudioLLM/SenseVoiceSmall', apiKey: '', apiKeySet: false, apiKeyEnv: 'SILICONFLOW_API_KEY' },
+      },
+      speak: {
+        enabled: false, provider: 'mimo', maxChars: 80, maxSeconds: 30, timeoutMs: 30000, maxPerMinute: 2, maxPerHour: 20, dailyCharBudget: 0,
+        trimSilence: true, allowEmotion: true,
+        autoConvert: { enabled: false, probability: 0.05, mirrorProbability: 0.35, mirrorWindowMs: 600000, minChars: 2, maxChars: 40, cooldownMs: 180000, privateOnly: false, timeoutMs: 15000 },
+        mimo: { baseUrl: 'https://api.xiaomimimo.com/v1', model: 'mimo-v2.5-tts', voice: '冰糖', format: 'wav', apiKey: '********', apiKeySet: true, apiKeyEnv: 'MIMO_API_KEY', styleInstruction: '用同一个人的音色自然地说话。', cloneAudio: '', voiceDesign: '', designSampleText: '嗯，我在呢。' },
+        doubao: { url: 'https://openspeech.bytedance.com/api/v3/tts/unidirectional', apiKey: '', apiKeySet: false, apiKeyEnv: 'DOUBAO_TTS_API_KEY', resourceId: 'seed-tts-2.0', speaker: 'zh_female_vv_uranus_bigtts', format: 'mp3', sampleRate: 24000, speechRate: 0, emotionScale: 3 },
+        openai: { baseUrl: 'https://api.siliconflow.cn/v1', model: 'FunAudioLLM/CosyVoice2-0.5B', voice: 'FunAudioLLM/CosyVoice2-0.5B:anna', format: 'wav', speed: 1, apiKey: '', apiKeySet: false, apiKeyEnv: 'SILICONFLOW_API_KEY', instructTemplate: '' },
+        gptsovits: { baseUrl: 'http://127.0.0.1:9880', textLang: 'zh', format: 'wav', refs: {} },
+      },
+    },
+    asrLoaded: false,
     // 会话初始提示词（离线示例）：整段内容都是虚构的演示文本。
     initPrompt: '离线示例：这是一个演示用的群聊环境说明，不会写进任何真实配置。',
     slangConfig: { enabled: true, extractMinMessages: 10, extractCooldownMs: 300000, inferenceThresholds: [2, 4, 8], injectMax: 8, learnerPreset: 'qq-chat', workspaceTitle: 'QQ 黑话学习', autoResearch: true },
@@ -479,6 +498,28 @@ export async function startConsoleFixture({ port = 0, original = false, htmlPath
               createdAt: Date.now(), updatedAt: Date.now(), maxChars: 2000, writable: true
             });
           }
+          // 语音收发状态（离线示例：不启动识别子进程，不调用任何语音服务商）
+          case '/api/voice/io-status': return json({
+            ok: true,
+            asr: {
+              enabled: true, engine: 'sensevoice', modelReady: true, sherpaInstalled: true, silkInstalled: true, loadMode: 'onDemand', idleUnloadMs: 600000,
+              loaded: state.asrLoaded, loading: false, workerPid: state.asrLoaded ? 4242 : null, idleUnloadAt: state.asrLoaded ? Date.parse(timestamp) + 600000 : null,
+              loads: state.asrLoaded ? 1 : 0, unloads: 0, crashes: 0, lastLoadMs: state.asrLoaded ? 520 : 0, lastUsedAt: 0, loadedAt: 0, lastUnloadReason: '',
+              unavailable: null, cached: 0, transcribed: 3, failed: 0, fallbackQq: 0, viaGateway: 3, viaSilk: 0, lastMs: 610, lastError: '',
+            },
+            speak: { enabled: false, provider: 'mimo', ready: { ok: true }, todayChars: 12, dailyCharBudget: 0, synthesized: 1, failed: 0, lastMs: 1800, lastError: '', lastProvider: 'mimo' },
+          });
+          // 试听音频：离线生成 0.2 秒静音 WAV（真实环境返回最近一次试听合成的音频）
+          case '/api/voice/preview-audio': {
+            const pcm = Buffer.alloc(4800 * 2);
+            const h = Buffer.alloc(44);
+            h.write('RIFF', 0); h.writeUInt32LE(36 + pcm.length, 4); h.write('WAVE', 8); h.write('fmt ', 12);
+            h.writeUInt32LE(16, 16); h.writeUInt16LE(1, 20); h.writeUInt16LE(1, 22); h.writeUInt32LE(24000, 24);
+            h.writeUInt32LE(48000, 28); h.writeUInt16LE(2, 32); h.writeUInt16LE(16, 34); h.write('data', 36); h.writeUInt32LE(pcm.length, 40);
+            res.writeHead(200, { 'content-type': 'audio/wav', 'cache-control': 'no-store' });
+            res.end(Buffer.concat([h, pcm]));
+            return;
+          }
           // 语音库（离线示例：不含任何真实音频路径）
           case '/api/voice/list':
           case '/api/socialV2/voices': return json({
@@ -576,6 +617,17 @@ export async function startConsoleFixture({ port = 0, original = false, htmlPath
             state.security = body;
             return json({ ok: true });
           case '/api/console/token': return json({ ok: true, token: body.token || 'offline-demo-token-123456', generated: !body.token });
+          // 识别模型加载 / 释放（离线只切换状态位，不启动子进程）
+          case '/api/voice/asr': {
+            if (body.action !== 'load' && body.action !== 'unload') return json({ ok: false, error: 'action 只能是 load 或 unload' }, 400);
+            const was = state.asrLoaded;
+            state.asrLoaded = body.action === 'load';
+            return json({ ok: true, released: body.action === 'unload' && was });
+          }
+          // 合成试听 / 试发（离线：不调用语音服务商，不产生任何真实 QQ 消息）
+          case '/api/voice/speak': return json(body.dryRun
+            ? { ok: true, dryRun: true, previewUrl: '/api/voice/preview-audio', seconds: 1.6, chars: String(body.text || '').length, provider: 'mimo', ms: 1800, text: body.text, notes: [] }
+            : { ok: true, key: body.target, messageId: 9002, seconds: 1.6, chars: String(body.text || '').length, provider: 'mimo', ms: 1800 });
           case '/api/test-send': return json({ ok: true, message_id: 'mock-message-001' });
           // 语音试发（操作者通道）：离线只回执，不产生任何真实 QQ 消息
           case '/api/voice/send': return json(body.dryRun

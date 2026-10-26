@@ -142,7 +142,8 @@
       "collectSticker": true,
       "addSticker": true,
       "getSelfImage": true,
-      "sendVoice": false
+      "sendVoice": false,
+      "speak": true
     },
     "wake": {
       "defaultMode": "diving",
@@ -234,6 +235,87 @@
       "loudness": "normal",
       "ffmpegPath": "",
       "autoReadback": true
+    },
+    "asr": {
+      "enabled": true,
+      "engine": "sensevoice",
+      "modelDir": "data/models/sherpa-onnx-sense-voice-zh-en-ja-ko-yue-int8-2024-07-17",
+      "numThreads": 2,
+      "preload": false,
+      "idleUnloadMs": 600000,
+      "language": "auto",
+      "useItn": true,
+      "maxSeconds": 60,
+      "timeoutMs": 15000,
+      "maxConcurrent": 2,
+      "qqFallback": true,
+      "showEmotion": true,
+      "showEvent": true,
+      "openai": {
+        "baseUrl": "https://api.siliconflow.cn/v1",
+        "model": "FunAudioLLM/SenseVoiceSmall",
+        "apiKeyEnv": "SILICONFLOW_API_KEY"
+      }
+    },
+    "speak": {
+      "enabled": false,
+      "provider": "mimo",
+      "maxChars": 80,
+      "maxSeconds": 30,
+      "timeoutMs": 30000,
+      "maxPerMinute": 2,
+      "maxPerHour": 20,
+      "dailyCharBudget": 0,
+      "trimSilence": true,
+      "allowEmotion": true,
+      "autoConvert": {
+        "enabled": false,
+        "probability": 0.05,
+        "mirrorProbability": 0.35,
+        "mirrorWindowMs": 600000,
+        "minChars": 2,
+        "maxChars": 40,
+        "cooldownMs": 180000,
+        "privateOnly": false,
+        "timeoutMs": 15000
+      },
+      "mimo": {
+        "baseUrl": "https://api.xiaomimimo.com/v1",
+        "model": "mimo-v2.5-tts",
+        "voice": "冰糖",
+        "format": "wav",
+        "apiKeyEnv": "MIMO_API_KEY",
+        "cloneAudio": "",
+        "voiceDesign": ""
+      },
+      "doubao": {
+        "resourceId": "seed-tts-2.0",
+        "speaker": "zh_female_vv_uranus_bigtts",
+        "format": "mp3",
+        "apiKeyEnv": "DOUBAO_TTS_API_KEY"
+      },
+      "openai": {
+        "baseUrl": "https://api.siliconflow.cn/v1",
+        "model": "FunAudioLLM/CosyVoice2-0.5B",
+        "voice": "FunAudioLLM/CosyVoice2-0.5B:anna",
+        "format": "wav",
+        "apiKeyEnv": "SILICONFLOW_API_KEY",
+        "instructTemplate": ""
+      },
+      "gptsovits": {
+        "baseUrl": "http://127.0.0.1:9880",
+        "textLang": "zh",
+        "refs": {}
+      },
+      "feiyu": {
+        "baseUrl": "http://127.0.0.1:9880",
+        "apiKey": "",
+        "apiKeyEnv": "FEIYU_VOICE_API_KEY",
+        "voice": "feiyu",
+        "style": "cute",
+        "timeoutMs": 120000,
+        "pollMs": 800
+      }
     },
     "proactive": {
       "enabled": true,

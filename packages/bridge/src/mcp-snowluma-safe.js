@@ -342,6 +342,7 @@ const TOOL_CONFIG_FLAGS = {
   qq_slang_submit: 'slangSubmit',
   qq_send_voice: 'sendVoice',
   qq_list_voices: 'sendVoice',
+  qq_speak: 'speak',
   // 下面这些曾经漏登记。漏一个不是"多注册一个工具"那么轻：桥接那边按 `v2ToolEnabled(flag)`
   // 在**调用期**一律 403，而这里不登记就等于"控制台显示已关闭、模型每次请求仍收到它的完整
   // 描述与参数 schema，然后调用它、再拿到 403"——既白烧 token（本文件开头 176 行起就是为省这份
@@ -1285,7 +1286,35 @@ if (cfg.socialV2?.voice?.enabled !== false && cfg.socialV2?.tools?.sendVoice !==
     }
   );
 }
-
+// 开口说话（TTS）：总开关 socialV2.speak.enabled 默认关闭，关闭时连工具描述都不注册（省 token、不诱导误调）。
+// 触发策略参考 MaiBot 生态语音插件的「LLM 主动调用」模式（Liccsu/maibot-mimotts-voice、ZhaoCang-QWQ/doubao-tts），
+// 详见 docs/VOICE_IO.md。
+if (cfg.socialV2?.speak?.enabled === true && cfg.socialV2?.tools?.speak !== false) {
+  server.tool(
+    'qq_speak',
+    '把一句话说出口：用你固定的音色把 text 合成成 QQ 语音条，发到当前会话。适合：对方发语音时回一句、打招呼/吐槽/惊叹/撒娇/安慰这类口语短句、私聊里拉近距离。不适合：长解释、链接、代码、列表、数字密集的内容（这些请打字）。规则：① 一次只说一两句话，超过字数上限会被拒绝；② text 里可以用短括号写语气/动作标签，如「（叹气）行吧」「（小声）别告诉别人」，长段旁白和 emoji 会被去掉；③ 想唱歌时把 style 设为「唱歌」（或 text 以 (唱歌) 开头），text 写一两句歌词；只有 MiMo 预置音色能唱，voiceDesign/clone 不支持唱歌，整首也不行；④ 受频率上限约束，大多数时候还是打字，别连着发语音；⑤ 返回 ok=false 或 sent!=true 就改用 qq_send_message 打字，不要反复重试；⑥ sent=true 表示已经发出，verified=true 表示已用 get_msg 回读确认；verified=false / null 只表示回读没有确认（可能是没开回读或读不回来），不代表没发出去。sent=true 后不要重发。',
+    {
+      key: z.string().describe('会话 key，格式 group:群号 或 private:QQ号'),
+      token: z.string().describe('会话令牌（见唤醒提示中的【会话令牌】）'),
+      text: z.string().describe('要说出口的那句话（口语、简短；就是你想发的那句文字）'),
+      emotion: z.string().optional().describe('可选：语气。开心/难过/生气/惊讶/害怕/温柔/撒娇/无奈/委屈/兴奋/慵懒/俏皮/平静/嫌弃/小声；不填就是自然语气'),
+      style: z.string().optional().describe('可选（MiMo 音色才生效）：用一句自然语言描述说话方式，如「压低声音像在说悄悄话」「刚睡醒、懒洋洋的」；不填用默认风格')
+    },
+    async ({ key, token, text, emotion, style }) => {
+      try {
+        const data = await agentApi('/api/socialV2/speak', {
+          method: 'POST',
+          body: JSON.stringify({ key, text: String(text ?? ''), emotion: emotion || '', style: style || '', token }),
+          headers: { 'x-agent-token': token },
+          timeoutMs: 120000
+        });
+        return { content: [{ type: 'text', text: serializeModelData(data) }] };
+      } catch (error) {
+        return { content: [{ type: 'text', text: `语音没发出去：${error?.message ?? error}（改用 qq_send_message 打字即可）` }], isError: true };
+      }
+    }
+  );
+}
 if (cfg.socialV2?.tools?.getSelfImage !== false) {
   server.tool(
     'qq_get_self_image',

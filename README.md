@@ -20,6 +20,7 @@
 - **reserved2 仿真**：分条发送、引用、唤醒/潜水、拍一拍、主动机会、回复检查、长期记忆。
 - **表情包**：同步 QQ 收藏表情、AI 看图标注、按情绪搜索、按语义自检、可配置发送概率与“发完文字后提醒补一张”。
 - **B 站卡片**：解析 QQ 小程序卡（`b23.tv` → `BV...`），把标题/BV 注入消息；AI 可按需调用 `bili_video_info` / `bili_subtitle`，再决定回复还是安静。
+- **听懂语音 / 开口说话**：群友的 QQ 语音用本地 SenseVoice-Small 转写成「[语音 6秒·语气开心] 原话」（免费、单条约 1 秒）；可选让 AI 用自己的声音说话（`qq_speak` 主动说 + 短句随机转语音，默认小米 MiMo TTS，也支持豆包 / OpenAI 兼容 / GPT-SoVITS，以及可选的 [FeiyuVoice](https://github.com/Esmerubphire/astrbot_plugin_feiyu_voice) `cute` / `gentle` 声线，需单独部署）。策略借鉴 MaiBot 生态语音插件，见 [docs/VOICE_IO.md](docs/VOICE_IO.md)。
 - **Web 控制台**：白名单、唤醒参数、人格卡、表情参数、令牌与花费看板。
 - **DSH 集成**：两个 agent preset（`qq-chat` / `qq-chat-v2`）、模式控制台 bundle、可选的设置页入口 launcher。
 - **可迁移**：从 qq-bridge 的 `state/` + `config.json` 一键复制到本项目的 `data/`。
@@ -66,7 +67,9 @@ dsh-omni/
 │  │  └─ config.json          # 本地配置（gitignore，不提交）
 │  ├─ launcher/               # 可选：DSH 设置页「dsh-omni」入口
 │  └─ bili-mcp/               # 可选：把 dsh-bili-scroll 的只读 MCP 挂进 DSH
-├─ docs/ARCHITECTURE.md
+├─ docs/
+│  ├─ ARCHITECTURE.md
+│  └─ VOICE_IO.md             # 听懂语音 / 开口说话：配置、策略与致谢
 ├─ LICENSE
 ├─ NOTICE.md
 └─ README.md
@@ -170,7 +173,7 @@ node packages/bridge/scripts/install-watchdog.mjs
 
 preset / MCP / bundle 安装后需要重启 DSH 才生效。之后在允许的群或私聊里 @ 机器人即可。
 
-## 可选：launcher 与 B 站 MCP
+## 可选：launcher、B 站 MCP 与 FeiyuVoice
 
 `packages/launcher` 和 `packages/bili-mcp` 是标准 DSH bundle，但不是桥接运行的必需项：
 
@@ -186,6 +189,11 @@ preset / MCP / bundle 安装后需要重启 DSH 才生效。之后在允许的�
   - 先安装 dsh-bili-scroll；
   - 默认路径是 `~/.dsh/bili-duty`；可用 `DSH_BILI_HOME`、`DSH_BILI_PYTHON`、`DSH_BILI_MCP_SERVER` 覆盖；
   - 通过 DSH 的插件管理安装这个本地 bundle，或在 profile 的 `cordis.patch.yml` 中插入 `packages/bili-mcp/cordis.patch.yml`。
+- **[FeiyuVoice](https://github.com/Esmerubphire/astrbot_plugin_feiyu_voice)**（可选）：另一套「小肥鱼」声线（CosyVoice3 `cute` / `gentle` + RVC/SVS）。dsh-omni 只带 HTTP 客户端，不复制它的源码/模型：
+  ```bash
+  npm --prefix packages/bridge run setup:feiyu   # clone 到被 gitignore 的 packages/feiyu-voice/
+  ```
+  按上游 `server/INSTALL_AGENT.md` 在 WSL/Linux GPU 机器上部署，启动 `http://127.0.0.1:9880` 后，在控制台「二代仿真 → 开口说话」把服务商切到 **FeiyuVoice**，填 `baseUrl`、API Key（`server/.runtime/voice-service/api_key.txt`）和 `cute`/`gentle`。上游目前没有 macOS 运行时，Apple Silicon 需要把服务放到 GPU 机器/局域网。FeiyuVoice 的 `NOTICE.md` 没有给其本地源码统一许可证，因此本仓库**不 vendor 它的代码**；引用与素材署名见 [NOTICE.md](NOTICE.md)。
 
 ## 从 qq-bridge 迁移
 
@@ -255,6 +263,7 @@ MCP 没读到控制台令牌。确认 `packages/bridge/data/console-token` 存�
 - **qq-bridge** — Derpyu520 与 qq-bridge / QSH contributors，MIT：<https://github.com/Derpyu520/qq-bridge>
 - **dsh-bili-scroll** — c1overzz，MIT：<https://github.com/c1overzz/dsh-bili-scroll>
 - **bilibili-mcp** — AGI_Ananas，MIT（由 dsh-bili-scroll 内置）
+- **FeiyuVoice** — Esmerubphire，独立声音服务（本项目只做 HTTP 客户端，未 vendor 其源码/模型）；声库素材来自 B 站 [星落落_oi](https://space.bilibili.com/30584746/)，训练授权与署名见上游 `COPYRIGHT.md`。
 
 本仓库的整合、改动与文档由 dogeheng 及 dsh-omni contributors 维护。
 
