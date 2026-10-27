@@ -5019,7 +5019,7 @@ async function main() {
           }
           if (body.speak && typeof body.speak === 'object' && !Array.isArray(body.speak)) {
             const nextSpeak = { ...(current.speak ?? {}), ...body.speak };
-            for (const sub of ['autoConvert', 'mimo', 'doubao', 'openai', 'gptsovits', 'feiyu']) {
+            for (const sub of ['autoConvert', 'mimo', 'doubao', 'openai', 'gptsovits', 'feiyu', 'cosyvoice']) {
               const patch = body.speak[sub];
               nextSpeak[sub] = { ...(current.speak?.[sub] ?? {}), ...((patch && typeof patch === 'object' && !Array.isArray(patch)) ? patch : {}) };
               if (patch?.apiKey === '********') nextSpeak[sub].apiKey = current.speak?.[sub]?.apiKey ?? '';
@@ -11017,7 +11017,7 @@ async function main() {
     // 开口说话：只在总开关打开时注入，默认关闭时唤醒 prompt 一个字都不多。
     const speakNow = speakCfg();
     const speakLine = speakNow.enabled && v2ToolEnabled('speak')
-      ? `【开口说话】可以用 qq_speak(text, emotion, style) 把一句话直接说成语音条（≤${speakNow.maxChars} 字）。适合对方发语音时回一句、打招呼/吐槽/惊叹/撒娇这类短句；长解释、链接、代码、列表、数字密集的内容照常打字。大多数时候还是打字，别连着发语音。想唱歌时把 style 设为「唱歌」，text 写一两句歌词（只支持 MiMo 预置音色；voiceDesign/clone 不支持唱歌，整首也不行）。${speakNow.autoConvert.enabled ? '你发的短句偶尔会被系统随机改成语音（返回 spokenAsVoice=true），不用再补发文字。' : ''}\n\n`
+      ? `【开口说话】可以用 qq_speak(text, emotion, style) 把一句话直接说成语音条（≤${speakNow.maxChars} 字）。适合对方发语音时回一句、打招呼/吐槽/惊叹/撒娇这类短句；长解释、链接、代码、列表、数字密集的内容照常打字。大多数时候还是打字，别连着发语音。CosyVoice 只负责说话，不能把 style 设成「唱歌」；唱歌是另一条独立链路。${speakNow.autoConvert.enabled ? '你发的短句偶尔会被系统随机改成语音（返回 spokenAsVoice=true），不用再补发文字。' : ''}\n\n`
       : '';
     const preSleepMs = Math.max(0, Number(cfg.socialV2?.wake?.preSleepWaitMs) || 300000);
     const proactiveLine = '【积极性】不要习惯性潜水：群里有你能接的话题就主动参与，偶尔插一句别人的话题也很正常；只有确实没话可说、对方已明确结束、或长时间没人说话时才潜水。\n\n';

@@ -259,7 +259,7 @@
     },
     "speak": {
       "enabled": false,
-      "provider": "mimo",
+      "provider": "cosyvoice",
       "maxChars": 80,
       "maxSeconds": 30,
       "timeoutMs": 30000,
@@ -315,6 +315,19 @@
         "style": "cute",
         "timeoutMs": 120000,
         "pollMs": 800
+      },
+      "cosyvoice": {
+        "baseUrl": "",
+        "workspaceId": "",
+        "region": "cn-beijing",
+        "apiKey": "",
+        "apiKeyEnv": "DASHSCOPE_API_KEY",
+        "model": "cosyvoice-v3.5-flash",
+        "voiceId": "",
+        "format": "wav",
+        "sampleRate": 24000,
+        "instruction": "",
+        "timeoutMs": 30000
       }
     },
     "proactive": {

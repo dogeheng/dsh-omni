@@ -2178,7 +2178,8 @@ button:active:not(:disabled) {
         <label style="flex:1">允许 AI 开口说话（总开关）</label><input type="checkbox" id="v2SpeakEnabled" style="width:auto">
         <label style="flex:1">语音合成服务商</label>
         <select id="v2SpeakProvider" style="width:260px">
-          <option value="mimo">小米 MiMo（默认，目前限时免费）</option>
+          <option value="cosyvoice">百炼 CosyVoice 3.5（默认，远程）</option>
+          <option value="mimo">小米 MiMo（目前限时免费）</option>
           <option value="doubao">火山引擎豆包语音</option>
           <option value="openai">OpenAI 兼容（硅基流动 / mlx-audio 等）</option>
           <option value="gptsovits">GPT-SoVITS（本地 api_v2）</option>
@@ -2284,6 +2285,28 @@ button:active:not(:disabled) {
         </div>
         <div class="row">
           <label style="flex:1">情绪模板（可选，含 {emotion} 与 {text}）</label><input type="text" id="v2OaiTtsInstruct" placeholder="用{emotion}的语气说&lt;|endofprompt|&gt;{text}" style="flex:3">
+        </div>
+      </div>
+      <div id="v2SpeakCosyBox" data-speak-provider="cosyvoice" style="display:none">
+        <div class="meta" style="margin:8px 0 4px"><b>百炼 CosyVoice 3.5</b>：远程 TTS，不加载本地模型、不占内存。先在百炼控制台用「声音设计」或「声音复刻」创建音色，把音色 ID 填进来。价格约 0.8 元/万字符（flash）或 1.5 元/万字符（plus）。</div>
+        <div class="row">
+          <label style="flex:1">业务空间 ID</label><input type="text" id="v2CosyWorkspaceId" placeholder="WorkspaceId" style="flex:2">
+          <label style="flex:1">地域</label><input type="text" id="v2CosyRegion" placeholder="cn-beijing" style="width:130px">
+        </div>
+        <div class="row">
+          <label style="flex:1">API Key</label><input type="password" id="v2CosyApiKey" autocomplete="off" style="flex:2">
+          <label style="flex:1">或从环境变量读取</label><input type="text" id="v2CosyApiKeyEnv" placeholder="DASHSCOPE_API_KEY" style="flex:2">
+        </div>
+        <div class="row">
+          <label style="flex:1">模型</label>
+          <select id="v2CosyModel" style="width:220px"><option value="cosyvoice-v3.5-flash">cosyvoice-v3.5-flash（0.8 元/万字符）</option><option value="cosyvoice-v3.5-plus">cosyvoice-v3.5-plus（1.5 元/万字符）</option></select>
+          <label style="flex:1">音色 ID</label><input type="text" id="v2CosyVoiceId" placeholder="voiceId" style="flex:2">
+        </div>
+        <div class="row">
+          <label style="flex:1">默认指令</label><textarea id="v2CosyInstruction" rows="2" style="flex:3" placeholder="留空就保持复刻音色本来的声线"></textarea>
+        </div>
+        <div class="row">
+          <label style="flex:1">可选 baseUrl</label><input type="text" id="v2CosyBaseUrl" placeholder="留空则用 workspaceId.region.maas.aliyuncs.com" style="flex:3">
         </div>
       </div>
       <div id="v2SpeakFeiyuBox" data-speak-provider="feiyu" style="display:none">
@@ -3782,7 +3805,7 @@ function fillVoiceIoForm(a, s) {
   vioSetKey('v2AsrOpenaiApiKey', ao);
 
   vioEl('v2SpeakEnabled').checked = s.enabled === true;
-  vioEl('v2SpeakProvider').value = ['mimo', 'doubao', 'openai', 'gptsovits'].includes(s.provider) ? s.provider : 'mimo';
+  vioEl('v2SpeakProvider').value = ['cosyvoice', 'mimo', 'doubao', 'openai', 'gptsovits', 'feiyu'].includes(s.provider) ? s.provider : 'cosyvoice';
   vioEl('v2SpeakMaxChars').value = s.maxChars ?? 80;
   vioEl('v2SpeakMaxSeconds').value = s.maxSeconds ?? 30;
   vioEl('v2SpeakTimeoutSec').value = round1((s.timeoutMs ?? 30000) / 1000);
@@ -3831,6 +3854,15 @@ function fillVoiceIoForm(a, s) {
   vioEl('v2OaiTtsApiKeyEnv').value = o.apiKeyEnv || '';
   vioSetKey('v2OaiTtsApiKey', o);
   vioEl('v2OaiTtsInstruct').value = o.instructTemplate || '';
+  const cv = s.cosyvoice || {};
+  vioEl('v2CosyWorkspaceId').value = cv.workspaceId || '';
+  vioEl('v2CosyRegion').value = cv.region || 'cn-beijing';
+  vioEl('v2CosyBaseUrl').value = cv.baseUrl || '';
+  vioEl('v2CosyApiKeyEnv').value = cv.apiKeyEnv || '';
+  vioEl('v2CosyModel').value = cv.model === 'cosyvoice-v3.5-plus' ? 'cosyvoice-v3.5-plus' : 'cosyvoice-v3.5-flash';
+  vioEl('v2CosyVoiceId').value = cv.voiceId || '';
+  vioEl('v2CosyInstruction').value = cv.instruction || '';
+  vioSetKey('v2CosyApiKey', cv);
   const fy = s.feiyu || {};
   vioEl('v2FeiyuBaseUrl').value = fy.baseUrl || '';
   vioEl('v2FeiyuVoice').value = fy.voice || '';
@@ -3945,6 +3977,16 @@ function collectVoiceIoForm() {
       format: vioEl('v2GsvFormat').value,
       refs
     },
+    cosyvoice: {
+      baseUrl: vioStr('v2CosyBaseUrl'),
+      workspaceId: vioStr('v2CosyWorkspaceId'),
+      region: vioStr('v2CosyRegion') || 'cn-beijing',
+      apiKey: vioGetKey('v2CosyApiKey'),
+      apiKeyEnv: vioStr('v2CosyApiKeyEnv'),
+      model: vioEl('v2CosyModel').value,
+      voiceId: vioStr('v2CosyVoiceId'),
+      instruction: vioStr('v2CosyInstruction')
+    },
     feiyu: {
       baseUrl: vioStr('v2FeiyuBaseUrl'),
       apiKey: vioGetKey('v2FeiyuApiKey'),
@@ -3957,7 +3999,7 @@ function collectVoiceIoForm() {
 }
 
 const VOICE_ENGINE_NAMES = { sensevoice: '本地 SenseVoice', openai: '云端（OpenAI 兼容）', qq: 'QQ 自带转写', off: '关闭' };
-const SPEAK_PROVIDER_NAMES = { mimo: '小米 MiMo', doubao: '火山豆包', openai: 'OpenAI 兼容', gptsovits: 'GPT-SoVITS', feiyu: 'FeiyuVoice（肥鱼声线）' };
+const SPEAK_PROVIDER_NAMES = { cosyvoice: '百炼 CosyVoice 3.5', mimo: '小米 MiMo', doubao: '火山豆包', openai: 'OpenAI 兼容', gptsovits: 'GPT-SoVITS', feiyu: 'FeiyuVoice（肥鱼声线）' };
 function vioDur(ms) { return ms >= 60000 ? `${round1(ms / 60000)} 分钟` : `${Math.round(ms / 1000)} 秒`; }
 
 async function refreshVoiceIoStatus() {

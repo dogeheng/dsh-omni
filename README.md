@@ -20,7 +20,7 @@
 - **reserved2 仿真**：分条发送、引用、唤醒/潜水、拍一拍、主动机会、回复检查、长期记忆。
 - **表情包**：同步 QQ 收藏表情、AI 看图标注、按情绪搜索、按语义自检、可配置发送概率与“发完文字后提醒补一张”。
 - **B 站卡片**：解析 QQ 小程序卡（`b23.tv` → `BV...`），把标题/BV 注入消息；AI 可按需调用 `bili_video_info` / `bili_subtitle`，再决定回复还是安静。
-- **听懂语音 / 开口说话**：群友的 QQ 语音用本地 SenseVoice-Small 转写成「[语音 6秒·语气开心] 原话」（免费、单条约 1 秒）；可选让 AI 用自己的声音说话（`qq_speak` 主动说 + 短句随机转语音，默认小米 MiMo TTS，也支持豆包 / OpenAI 兼容 / GPT-SoVITS，以及可选的 [FeiyuVoice](https://github.com/Esmerubphire/astrbot_plugin_feiyu_voice) `cute` / `gentle` 声线，需单独部署）。策略借鉴 MaiBot 生态语音插件，见 [docs/VOICE_IO.md](docs/VOICE_IO.md)。
+- **听懂语音 / 开口说话**：群友的 QQ 语音用本地 SenseVoice-Small 转写成「[语音 6秒·语气开心] 原话」（免费、单条约 1 秒）；可选让 AI 用自己的声音说话（`qq_speak` 主动说 + 短句随机转语音，默认百炼 CosyVoice 3.5，也支持小米 MiMo / 豆包 / OpenAI 兼容 / GPT-SoVITS，以及可选的 [FeiyuVoice](https://github.com/Esmerubphire/astrbot_plugin_feiyu_voice) `cute` / `gentle` 声线，需单独部署）。策略借鉴 MaiBot 生态语音插件，见 [docs/VOICE_IO.md](docs/VOICE_IO.md)。
 - **Web 控制台**：白名单、唤醒参数、人格卡、表情参数、令牌与花费看板。
 - **DSH 集成**：两个 agent preset（`qq-chat` / `qq-chat-v2`）、模式控制台 bundle、可选的设置页入口 launcher。
 - **可迁移**：从 qq-bridge 的 `state/` + `config.json` 一键复制到本项目的 `data/`。

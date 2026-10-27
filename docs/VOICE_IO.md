@@ -101,6 +101,7 @@ dsh-omni 的触发策略直接借鉴了 MaiBot 生态语音插件的做法（出
 | `openai` | 已有 OpenAI / 硅基流动 / 本地 mlx-audio 等兼容端点 | 取决于 `voice` | 可选 `instructTemplate`，如 CosyVoice2 的 `用{emotion}的语气说<|endofprompt|>{text}` | 走 `/audio/speech` |
 | `gptsovits` | 完全本地、想要特定角色声线 | 固定参考音频 | 按情绪切换参考音频（`refs.开心`、`refs.default`） | 需要自己跑 GPT-SoVITS api_v2 |
 | `feiyu` | 想要「小肥鱼」的 `cute` / `gentle` 声线 | 服务端预置 checkpoint + 参考音频 | 只支持 `cute` / `gentle` 两种声线，不支持 MiMo 的句内标签 | 需要单独部署 FeiyuVoice（Python/CosyVoice3，推荐 WSL + GPU）；本仓库只带 HTTP 客户端，不复制其源码/模型 |
+| `cosyvoice` | 想用百炼 CosyVoice 3.5 的固定复刻/设计音色，不想本地跑模型 | 声音设计/复刻创建固定 `voiceId` | `instruction` 可为空；情绪会叠加自然语言指令 | 远程 API，不占本机模型内存；Flash 0.8 元/万字符、Plus 1.5 元/万字符；只说话、不唱歌 |
 
 关于 `voiceDesign`：MiMo 的音色设计模型每次调用都会重新生成声线，直接用它合成会让每条语音听起来像不同的人。所以这里第一次用 `voicedesign` 生成一段参考音频，存到 `data/tts/mimo-design-<hash>.wav`，之后一律走 `voiceclone` 复刻。这个「固定参考音频保证音色一致」的做法来自 SoulString-Dev 与 Ling-LA。MiMo 的风格指令放在 user 消息里（默认值见 `DEFAULT_MIMO_STYLE`），SoulString-Dev 实测这能把同一句话多次合成的音高离散度从 σ≈35 Hz 降到 σ≈6–14 Hz。
 
@@ -154,12 +155,19 @@ FeiyuVoice 是另一套「小肥鱼」声音服务（CosyVoice3 `cute` / `gentle
 
 许可证：FeiyuVoice 的 `NOTICE.md` 明确没有给其本地源码一个统一许可证，所以 dsh-omni **只提供 HTTP 客户端和 setup 脚本，不复制、不 vendor 它的源码/模型**。引用与素材署名见根目录 [NOTICE.md](../NOTICE.md)。
 
+### CosyVoice 3.5（百炼远程 TTS）
+
+1. 在[百炼控制台](https://bailian.console.aliyun.com/)用「声音设计」或「声音复刻」创建一个音色，拿到 `voiceId`；
+2. 控制台「二代仿真 → 开口说话 → 服务商 百炼 CosyVoice 3.5」填业务空间 ID、API Key（或 `DASHSCOPE_API_KEY`）、`voiceId`；
+3. `provider: "cosyvoice"` 时 `qq_speak` 调用百炼 HTTP API，不加载本地模型；
+4. `instruction` 默认留空，避免给复刻音色额外加“可爱/撒娇”导致声线变化；需要情绪时再填。
+
 ### 配置（`socialV2.speak`）
 
 | 字段 | 默认 | 说明 |
 | --- | --- | --- |
 | `enabled` | `false` | 总开关（AI 通道） |
-| `provider` | `mimo` | `mimo` / `doubao` / `openai` / `gptsovits` / `feiyu` |
+| `provider` | `cosyvoice` | `cosyvoice` / `mimo` / `doubao` / `openai` / `gptsovits` / `feiyu` |
 | `maxChars` | `80` | 单条语音最多念多少字（清洗后、不计标签与标点） |
 | `maxSeconds` | `30` | 合成结果时长上限 |
 | `maxPerMinute` / `maxPerHour` | `2` / `20` | 每个会话的语音限流（与文字限流、语音库限流分开计数） |
@@ -180,6 +188,11 @@ FeiyuVoice 是另一套「小肥鱼」声音服务（CosyVoice3 `cute` / `gentle
 | `feiyu.apiKey` / `apiKeyEnv` | 空 / `FEIYU_VOICE_API_KEY` | 服务端 `.runtime/voice-service/api_key.txt` 里的 Bearer Key；控制台读取时脱敏 |
 | `feiyu.voice` | `feiyu` | 服务端声音 ID |
 | `feiyu.style` | `cute` | `cute`（可爱）或 `gentle`（温柔）；`qq_speak` 的 style 含「温柔/gentle」时会切 gentle |
+| `cosyvoice.workspaceId` / `region` | 空 / `cn-beijing` | 百炼业务空间 ID 与地域；也可直接填 `baseUrl` |
+| `cosyvoice.apiKey` / `apiKeyEnv` | 空 / `DASHSCOPE_API_KEY` | 百炼 API Key；控制台读取时脱敏 |
+| `cosyvoice.model` | `cosyvoice-v3.5-flash` | `flash` 或 `plus` |
+| `cosyvoice.voiceId` | 空 | 在百炼控制台用声音设计/复刻创建的固定音色 ID |
+| `cosyvoice.instruction` | 空 | 默认自然语言指令；留空保持复刻音色原声线，情绪会叠加 |
 | `*.apiKeyEnv` | `MIMO_API_KEY` 等 | 从哪个环境变量读密钥；也可以写 `apiKey`，控制台读取配置时会脱敏 |
 
 ### 唱歌（MiMo 预置音色）
@@ -206,9 +219,9 @@ MiMo 的 `mimo-v2.5-tts` 预置音色支持唱歌：**必须在 assistant 文本
 ## 四、测试
 
 ```bash
-npm run test-voice:io     # 40 项：文本整理、随机转换判断、WAV 裁剪、五个服务商的请求格式（假 fetch）、
+npm run test-voice:io     # 41 项：文本整理、随机转换判断、WAV 裁剪、六个服务商的请求格式（假 fetch）、
                           #       重试与额度、ASR 降级与缓存、真实模型识别、按需加载 / 闲置释放 / 重新加载、
-                          #       大功能开关、桥接接入与闸门、sent/verified 语义、保存回包脱敏、唱歌标签、FeiyuVoice HTTP
+                          #       大功能开关、桥接接入与闸门、sent/verified 语义、保存回包脱敏、唱歌标签、FeiyuVoice/CosyVoice HTTP
 npm run test:console-ui   # 控制台 UI（需要 Playwright）：含「听懂语音 / 开口说话」面板的回显、切换、
                           #       加载释放、试听试发与保存载荷
 npm run test-voice        # 既有语音库测试（新增 toolFlags 含 speak 的断言）

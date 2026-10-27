@@ -95,10 +95,10 @@ console.log('配置');
 await test('默认关闭；非法值收敛；密钥脱敏', () => {
   const d = normalizeSpeakConfig({});
   assert.equal(d.enabled, false);
-  assert.equal(d.provider, 'mimo');
+  assert.equal(d.provider, 'cosyvoice');
   assert.equal(d.autoConvert.probability, 0.05);
   const n = normalizeSpeakConfig({ provider: 'nope', maxChars: 99999, autoConvert: { probability: 3 } });
-  assert.equal(n.provider, 'mimo');
+  assert.equal(n.provider, 'cosyvoice');
   assert.equal(n.maxChars, 500);
   assert.equal(n.autoConvert.probability, 1);
   const r = redactSpeakConfig({ mimo: { apiKey: 'sk-secret' } });
@@ -204,6 +204,28 @@ await test('FeiyuVoice：HTTP 202 job → 轮询 → 下载 WAV；唱歌明确�
     fetchImpl: f
   });
   await assert.rejects(() => tts2.synthesize('小星星', { style: '唱歌' }), /不支持唱歌/);
+});
+await test('CosyVoice 3.5：远程 TTS 请求、instruction 与音频 URL 下载；唱歌拒绝', async () => {
+  const f = fakeFetch((call) => {
+    if (call.url.includes('/api/v1/services/audio/tts/SpeechSynthesizer')) {
+      return new Response(JSON.stringify({ output: { audio: { url: 'http://oss.test/tts.wav' } } }), { status: 200 });
+    }
+    if (call.url === 'http://oss.test/tts.wav') return new Response(wav, { status: 200 });
+    throw new Error(`unexpected CosyVoice request ${call.url}`);
+  });
+  const tts = createTtsService({
+    getConfig: () => ({ provider: 'cosyvoice', cosyvoice: { workspaceId: 'ws', apiKey: 'ck', voiceId: 'voice-1', model: 'cosyvoice-v3.5-flash' } }),
+    root: tmpRoot,
+    fetchImpl: f
+  });
+  const r = await tts.synthesize('你好呀', { emotion: '开心' });
+  assert.equal(f.calls[0].url, 'https://ws.cn-beijing.maas.aliyuncs.com/api/v1/services/audio/tts/SpeechSynthesizer');
+  assert.equal(f.calls[0].init.headers.authorization, 'Bearer ck');
+  assert.equal(f.calls[0].body.model, 'cosyvoice-v3.5-flash');
+  assert.equal(f.calls[0].body.input.voice, 'voice-1');
+  assert.match(f.calls[0].body.input.instruction, /开心/);
+  assert.equal(r.ext, 'wav');
+  await assert.rejects(() => tts.synthesize('唱一句', { style: '唱歌' }), /不支持唱歌/);
 });
 await test('豆包 V3：请求头、情感映射与 NDJSON 拼接', async () => {
   const half = Math.floor(wav.length / 2);
@@ -424,7 +446,7 @@ console.log('桥接接入（audit harness）');
         config: {
           allow: { groups: ['456'] },
           socialV2: {
-            speak: { enabled: true, maxChars: 80, mimo: { apiKey: 'test' } },
+            speak: { enabled: true, maxChars: 80, provider: 'mimo', mimo: { apiKey: 'test' } },
             voice: { autoReadback: false },
             tools: { speak: true }
           }

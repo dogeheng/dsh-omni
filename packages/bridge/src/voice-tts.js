@@ -29,7 +29,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import crypto from 'node:crypto';
 
-export const SPEAK_PROVIDERS = ['mimo', 'doubao', 'openai', 'gptsovits', 'feiyu'];
+export const SPEAK_PROVIDERS = ['mimo', 'doubao', 'openai', 'gptsovits', 'feiyu', 'cosyvoice'];
 
 // 统一的情绪词表（工具参数用）。各服务商在 mapEmotion 里各自翻译。
 export const SPEAK_EMOTIONS = ['开心', '难过', '生气', '惊讶', '害怕', '温柔', '撒娇', '无奈', '委屈', '兴奋', '慵懒', '俏皮', '平静', '嫌弃', '小声'];
@@ -49,7 +49,7 @@ export const DEFAULT_MIMO_STYLE = '用同一个人的音色自然地说话，像
 
 export const SPEAK_DEFAULTS = Object.freeze({
   enabled: false,              // 总开关：需要先配好服务商与 API Key
-  provider: 'mimo',
+  provider: 'cosyvoice',
   maxChars: 80,                // 单条语音最多读多少字（清洗后）；超出直接拒绝，让模型改成打字
   maxSeconds: 30,
   timeoutMs: 30000,
@@ -121,6 +121,21 @@ export const SPEAK_DEFAULTS = Object.freeze({
     style: 'cute',           // cute | gentle
     timeoutMs: 120000,
     pollMs: 800
+  }),
+  // 百炼 DashScope CosyVoice 3.5：远程 TTS，不占本机模型内存。
+  // 音色先用百炼控制台/API 的声音设计或复刻创建，把 voiceId 填进来。
+  cosyvoice: Object.freeze({
+    baseUrl: '',              // 可留空，由 workspaceId + region 拼
+    workspaceId: '',
+    region: 'cn-beijing',
+    apiKey: '',
+    apiKeyEnv: 'DASHSCOPE_API_KEY',
+    model: 'cosyvoice-v3.5-flash',
+    voiceId: '',
+    format: 'wav',
+    sampleRate: 24000,
+    instruction: '',
+    timeoutMs: 30000
   })
 });
 
@@ -142,6 +157,7 @@ export function normalizeSpeakConfig(raw = {}) {
   const o = obj(r.openai);
   const g = obj(r.gptsovits);
   const fy = obj(r.feiyu);
+  const cv = obj(r.cosyvoice);
   const D = SPEAK_DEFAULTS;
   return {
     enabled: r.enabled === true,
@@ -212,6 +228,19 @@ export function normalizeSpeakConfig(raw = {}) {
       style: fy.style === 'gentle' ? 'gentle' : 'cute',
       timeoutMs: num(fy.timeoutMs, D.feiyu.timeoutMs, { min: 5000, max: 300000, int: true }),
       pollMs: num(fy.pollMs, D.feiyu.pollMs, { min: 200, max: 5000, int: true })
+    },
+    cosyvoice: {
+      baseUrl: str(cv.baseUrl, D.cosyvoice.baseUrl).replace(/\/+$/, ''),
+      workspaceId: str(cv.workspaceId).trim(),
+      region: str(cv.region, D.cosyvoice.region) || D.cosyvoice.region,
+      apiKey: str(cv.apiKey),
+      apiKeyEnv: str(cv.apiKeyEnv, D.cosyvoice.apiKeyEnv) || D.cosyvoice.apiKeyEnv,
+      model: ['cosyvoice-v3.5-flash', 'cosyvoice-v3.5-plus'].includes(cv.model) ? cv.model : D.cosyvoice.model,
+      voiceId: str(cv.voiceId).trim(),
+      format: ['wav', 'mp3'].includes(cv.format) ? cv.format : D.cosyvoice.format,
+      sampleRate: num(cv.sampleRate, D.cosyvoice.sampleRate, { min: 8000, max: 48000, int: true }),
+      instruction: typeof cv.instruction === 'string' ? cv.instruction : D.cosyvoice.instruction,
+      timeoutMs: num(cv.timeoutMs, D.cosyvoice.timeoutMs, { min: 5000, max: 120000, int: true })
     }
   };
 }
@@ -835,6 +864,63 @@ export function createTtsService({ getConfig, root, log = () => {}, fetchImpl = 
     return buf;
   }
 
+  function cosyBase(c) {
+    if (c.baseUrl) return c.baseUrl;
+    if (!c.workspaceId) return '';
+    return `https://${c.workspaceId}.${c.region || 'cn-beijing'}.maas.aliyuncs.com`;
+  }
+
+  /**
+   * 百炼 DashScope CosyVoice 3.5。非流式 HTTP API：同步返回一个 24h 有效的 OSS URL。
+   * 这是远程 TTS，不加载任何本地模型；voiceId 来自百炼控制台的声音设计/复刻。
+   */
+  async function synthCosyVoice(cfg, prepared, { style, emotion }) {
+    const c = cfg.cosyvoice;
+    const base = cosyBase(c);
+    if (!base) throw new Error('CosyVoice 未配置 baseUrl 或 workspaceId');
+    if (!c.voiceId) throw new Error('CosyVoice 未配置 voiceId（先在百炼创建声音设计/复刻音色）');
+    const key = keyFor(c);
+    if (!key) throw new Error(`CosyVoice 缺少 API Key（socialV2.speak.cosyvoice.apiKey 或环境变量 ${c.apiKeyEnv}）`);
+    const instruction = [emotion ? `用${emotion}的语气` : '', style || c.instruction || '']
+      .filter(Boolean).join('，').slice(0, 500);
+    const body = {
+      model: c.model,
+      input: {
+        text: prepared.text,
+        voice: c.voiceId,
+        format: c.format,
+        sample_rate: c.sampleRate,
+        ...(instruction ? { instruction } : {})
+      }
+    };
+    const res = await fetchImpl(`${base}/api/v1/services/audio/tts/SpeechSynthesizer`, {
+      method: 'POST',
+      headers: { authorization: `Bearer ${key}`, 'content-type': 'application/json' },
+      body: JSON.stringify(body),
+      signal: AbortSignal.timeout(c.timeoutMs)
+    });
+    const text = await res.text().catch(() => '');
+    let json = {};
+    try { json = text ? JSON.parse(text) : {}; } catch {}
+    if (!res.ok) {
+      throw new Error(`CosyVoice HTTP ${res.status}：${String(json?.message ?? json?.code ?? text).replace(/\s+/g, ' ').slice(0, 180)}`);
+    }
+    const audio = json?.output?.audio ?? {};
+    let buf;
+    if (typeof audio.data === 'string' && audio.data.length > 64) {
+      const b64 = audio.data.includes(',') ? audio.data.slice(audio.data.indexOf(',') + 1) : audio.data;
+      buf = Buffer.from(b64, 'base64');
+    } else if (typeof audio.url === 'string' && /^https?:\/\//.test(audio.url)) {
+      const ar = await fetchImpl(audio.url, { signal: AbortSignal.timeout(c.timeoutMs) });
+      if (!ar.ok) throw new Error(`CosyVoice 音频下载 HTTP ${ar.status}`);
+      buf = Buffer.from(await ar.arrayBuffer());
+    } else {
+      throw new Error('CosyVoice 没有返回音频 URL/data');
+    }
+    if (buf.length < MIN_AUDIO_BYTES || buf.length > 64 * 1024 * 1024) throw new Error('CosyVoice 返回的音频无效或过大');
+    return buf;
+  }
+
   /**
    * 合成一句话。返回 { buffer, ext, mime, seconds, chars, provider, text, ms }。
    * 失败抛错（调用方决定是回给模型还是静默改发文字）。
@@ -845,6 +931,9 @@ export function createTtsService({ getConfig, root, log = () => {}, fetchImpl = 
     const provider = cfg.provider;
     if (provider === 'feiyu' && (isSingingStyle(style) || hasSingingTag(rawText))) {
       throw new Error('FeiyuVoice TTS 只支持说话，不支持唱歌；唱歌请切回 MiMo 预置音色，或使用 Feiyu 的 SVS 按谱唱歌接口');
+    }
+    if (provider === 'cosyvoice' && (isSingingStyle(style) || hasSingingTag(rawText))) {
+      throw new Error('CosyVoice TTS 只支持说话，不支持唱歌；唱歌请用 Seed-VC 唱歌功能');
     }
     const keepTags = provider === 'mimo';
     const emo = cfg.allowEmotion ? normalizeEmotion(emotion) : '';
@@ -870,6 +959,7 @@ export function createTtsService({ getConfig, root, log = () => {}, fetchImpl = 
       else if (provider === 'doubao') buffer = await synthDoubao(cfg, prepared, { emotion: emo });
       else if (provider === 'openai') buffer = await synthOpenAI(cfg, prepared, { emotion: emo });
       else if (provider === 'feiyu') buffer = await synthFeiyu(cfg, prepared, { style });
+      else if (provider === 'cosyvoice') buffer = await synthCosyVoice(cfg, prepared, { style, emotion: emo });
       else buffer = await synthGptSovits(cfg, prepared, { emotion: emo });
     } catch (error) {
       stats.failed++;
@@ -904,6 +994,13 @@ export function createTtsService({ getConfig, root, log = () => {}, fetchImpl = 
       return keyFor(cfg.feiyu)
         ? { ok: true, note: 'FeiyuVoice 服务需要另行运行，准备好后用试听确认连通性' }
         : { ok: false, reason: `缺少 FeiyuVoice API Key（环境变量 ${cfg.feiyu.apiKeyEnv}）` };
+    }
+    if (p === 'cosyvoice') {
+      if (!cosyBase(cfg.cosyvoice)) return { ok: false, reason: 'CosyVoice 缺少 baseUrl 或 workspaceId' };
+      if (!cfg.cosyvoice.voiceId) return { ok: false, reason: 'CosyVoice 缺少 voiceId（先在百炼创建声音设计/复刻音色）' };
+      return keyFor(cfg.cosyvoice)
+        ? { ok: true, note: '百炼远程 TTS，不占本机模型内存' }
+        : { ok: false, reason: `缺少 CosyVoice API Key（环境变量 ${cfg.cosyvoice.apiKeyEnv}）` };
     }
     return { ok: true };
   }
