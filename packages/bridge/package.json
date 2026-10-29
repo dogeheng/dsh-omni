@@ -32,6 +32,7 @@
     "test-voice:io": "node scripts/test-voice-io.mjs",
     "test-singing": "node scripts/test-singing.mjs",
     "test-short-cover": "node scripts/test-short-cover.mjs",
+    "test-cover-queue": "node scripts/test-cover-queue.mjs",
     "test-sandbox": "node scripts/test-sandbox.mjs",
     "test-online-cover": "node scripts/test-online-cover.mjs",
     "setup:cover": "node scripts/setup-cover.mjs",

@@ -1345,7 +1345,7 @@ if (cfg.socialV2?.singing?.enabled === true && cfg.socialV2?.tools?.sing !== fal
 if (cfg.socialV2?.singing?.enabled === true && cfg.socialV2?.tools?.sing !== false) {
   server.tool(
     'sing_short_cover',
-    '用大肥鱼的音色唱 10–20 秒歌曲片段。适合群友自然语言点歌（如「唱15秒雨爱」「来一段起风了副歌」）。工具会后台搜索合法音源、选段、分离、Seed-VC 换嗓和混音，完成后自动发语音；不需要用户上传、选模型或输入命令。只支持本地授权曲库/CC 音源，不支持整首、不绕过版权；找不到音源会明确返回。调用后先回一句符合人设的“去找调子”，不要重复点歌。',
+    '用大肥鱼的音色唱 10–20 秒歌曲片段。适合群友自然语言点歌（如「唱15秒雨爱」「来一段起风了副歌」）。工具会后台搜索合法音源、选段、分离、Seed-VC 换嗓和混音，完成后自动发语音；不需要用户上传、选模型或输入命令。只支持本地授权曲库/CC 音源，不支持整首、不绕过版权；找不到音源会明确返回。桥接会自动回执排队/开始信息，调用后不要重复发“去找调子”或重复点歌。',
     {
       key: z.string().describe('会话 key，格式 group:群号 或 private:QQ号'),
       token: z.string().describe('会话令牌（见唤醒提示中的【会话令牌】）'),

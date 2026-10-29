@@ -28,7 +28,7 @@ import { discoverSnowLumaConnection, persistSnowLumaEndpoint, persistToken } fro
 import { createAsrService, formatVoiceText, normalizeAsrConfig } from './voice-asr.js';
 import { autoSpeakable, createTtsService, normalizeSpeakConfig, redactSpeakConfig, SPEAK_EMOTIONS } from './voice-tts.js';
 import { createSingingService, normalizeSingingConfig, redactSingingConfig } from './singing.js';
-import { createShortCoverService } from './short-cover/manager.js';
+import { createShortCoverService } from './short-cover/manager-v2.js';
 import { normalizeCoverConfig } from './short-cover/config.js';
 import { hardenDir, manualDirCommand } from './state-acl.mjs';
 import { extractForwardIds, forwardIdFromData, sanitizeForwardId, formatForwardResponse } from './forward.js';
@@ -2066,6 +2066,16 @@ async function main() {
     getConfig: () => ({ cover: cfg.socialV2?.singing?.cover, singing: cfg.socialV2?.singing }),
     root: ROOT,
     log,
+    beforeRun: async () => {
+      // A loaded ASR worker holds ~850MB. If it is idle (no active/queued
+      // transcription), release it before the much heavier Seed-VC phase;
+      // the next voice will cold-load it again.
+      const st = asrService.status();
+      if (st.loaded && !st.active && !st.pending) {
+        await asrService.unload('cover 预处理释放内存');
+        log('[cover] 已释放空闲 ASR worker，为翻唱腾出内存');
+      }
+    },
     onAudio: async (key, result) => {
       let sent;
       try {
@@ -2079,6 +2089,14 @@ async function main() {
       appendActivity(`${key} [cover] ${result.song?.title || result.candidate?.title || ''} ${result.seconds?.toFixed?.(1) ?? '?'}s`);
     },
     onText: async (key, text) => { await sendToQQ(key, text); },
+    onAccepted: async (key, info) => {
+      const ahead = Number(info?.queued) || 0;
+      const title = info?.title || '这首歌';
+      const msg = ahead > 0
+        ? `收到《${title}》翻唱，排第 ${info.position} 位，前面还有 ${ahead} 个；我按顺序做完发语音。`
+        : `收到《${title}》翻唱，开始处理，好了直接发语音。`;
+      await sendToQQ(key, msg);
+    },
   });
   // 按需加载：SenseVoice 跑在独立子进程里（加载后约占 850MB），默认第一条语音到来时才启动，
   // 闲置 socialV2.asr.idleUnloadMs（默认 10 分钟）后结束子进程、内存归还系统。
@@ -2107,26 +2125,18 @@ async function main() {
     const assertSendAllowed = captureSendGuard(key);
     const [kind, id] = key.split(':');
     const recordSegment = { type: 'record', data: { file: `base64://${synth.buffer.toString('base64')}` } };
-    let resolveSend;
-    let rejectSend;
-    const sendPromise = new Promise((resolve, reject) => { resolveSend = resolve; rejectSend = reject; });
-    sendChain = sendChain.then(async () => {
-      try {
-        assertSendAllowed();
-        const action = kind === 'private' ? 'send_private_msg' : 'send_group_msg';
-        const params = kind === 'private'
-          ? { user_id: Number(id), message: [recordSegment] }
-          : { group_id: Number(id), message: [recordSegment] };
-        const body = await snowLumaAction(action, params, 60000);
-        if (body.status !== 'ok' || body.retcode !== 0) {
-          throw new Error(`OneBot ${action} 失败: ${body.wording || body.message || body.retcode || body.httpStatus}`);
-        }
-        resolveSend(body.data);
-      } catch (error) {
-        rejectSend(error);
+    const data = await enqueueSendLane(key, async () => {
+      assertSendAllowed();
+      const action = kind === 'private' ? 'send_private_msg' : 'send_group_msg';
+      const params = kind === 'private'
+        ? { user_id: Number(id), message: [recordSegment] }
+        : { group_id: Number(id), message: [recordSegment] };
+      const body = await snowLumaAction(action, params, 60000);
+      if (body.status !== 'ok' || body.retcode !== 0) {
+        throw new Error(`OneBot ${action} 失败: ${body.wording || body.message || body.retcode || body.httpStatus}`);
       }
+      return body.data;
     });
-    const data = await sendPromise;
     return { messageId: data?.message_id ?? null };
   }
 
@@ -6601,7 +6611,7 @@ async function main() {
               segment: body.segment,
               start_time: body.start_time
             });
-            sendJson({ ok: true, key, jobId: r.jobId, status: r.status, cached: r.cached === true, title: r.title, duration: r.duration ?? null, hint: r.cached === true ? '命中缓存，已经直接发送语音' : '后台处理中，完成后会自动发语音；先回一句“去找调子”即可，不要重复点歌' });
+            sendJson({ ok: true, key, jobId: r.jobId, status: r.status, cached: r.cached === true, duplicate: r.duplicate === true, title: r.title, duration: r.duration ?? null, position: r.position ?? null, hint: r.duplicate === true ? '这个请求已经在队列里，不要重复发回执' : '已经自动回执；不要重复发“去找调子”，完成后会自动发语音' });
           } catch (error) {
             const msg = error?.message ?? String(error);
             const stage = error?.stage || '';
@@ -8286,6 +8296,18 @@ async function main() {
 
   // QQ 发送队列（顺序发送 + 间隔，避免触发频率限制）
   let sendChain = Promise.resolve();
+  // 按会话分 lane：群内顺序固定，群间不再互相队头阻塞。仅用于文本和合成语音；
+  // 图片/表情等旧路径仍走全局 sendChain，后续可逐步迁移。
+  const sendLanes = new Map();
+  function enqueueSendLane(key, task) {
+    const k = String(key || '');
+    const prev = sendLanes.get(k) || Promise.resolve();
+    const p = prev.then(task);
+    const tail = p.catch(() => {});
+    sendLanes.set(k, tail);
+    tail.finally(() => { if (sendLanes.get(k) === tail) sendLanes.delete(k); }).catch(() => {});
+    return p;
+  }
   function redactKnownTokensOnly(text) {
     let s = String(text ?? '');
     for (const token of KNOWN_AGENT_TOKENS) {
@@ -8305,20 +8327,21 @@ async function main() {
     const [kind, id] = key.split(':');
     const parts = splitForQQ(safeMsg);
     lastSendFailed.delete(key);
+    let last = Promise.resolve();
     for (const part of parts) {
-      sendChain = sendChain
-        .then(async () => {
+      last = enqueueSendLane(key, async () => {
+        try {
           assertSendAllowed();
           if (kind === 'private') await withTimeout(bot.sendPrivateMessage(Number(id), text(escapeCqText(part))), SEND_TIMEOUT_MS, `QQ发送 ${kind}:${id}`);
           else await withTimeout(bot.sendGroupMessage(Number(id), text(escapeCqText(part))), SEND_TIMEOUT_MS, `QQ发送 ${kind}:${id}`);
-        })
-        .catch((error) => {
+        } catch (error) {
           lastSendFailed.set(key, true);
           log(`QQ 发送失败 (${key}):`, error?.message ?? error);
-        })
-        .then(() => sleep(cfg.sendDelayMs));
+        }
+        await sleep(cfg.sendDelayMs);
+      });
     }
-    return sendChain;
+    return last;
   }
 
   /**
@@ -11300,7 +11323,7 @@ async function main() {
       : '';
     const singNow = singingCfg();
     const singLine = singNow.enabled && v2ToolEnabled('sing')
-      ? `【唱歌】群友自然语言点歌时用 sing_short_cover(song, artist?, version?, duration?, segment?)：后台搜索合法音源、选副歌/短片段、分离人声、Seed-VC 换成你的音色、混音，完成后自动发语音；先回一句“去找调子”，不要重复点歌。只支持本地授权曲库/CC 音源、只唱 10–20 秒，不唱整首、不绕过版权；找不到音源要明确说明。qq_sing 只用于曲库中已分离好的短片段。\n\n`
+      ? `【唱歌】群友自然语言点歌时用 sing_short_cover(song, artist?, version?, duration?, segment?)：后台搜索合法音源、选副歌/短片段、分离人声、Seed-VC 换成你的音色、混音，完成后自动发语音；桥接会自动回执排队/开始信息，不要重复发“去找调子”或重复点歌。只支持本地授权曲库/CC 音源、只唱 10–20 秒，不唱整首、不绕过版权；找不到音源要明确说明。qq_sing 只用于曲库中已分离好的短片段。\n\n`
       : '';
     const preSleepMs = Math.max(0, Number(cfg.socialV2?.wake?.preSleepWaitMs) || 300000);
     const proactiveLine = '【积极性】不要习惯性潜水：群里有你能接的话题就主动参与，偶尔插一句别人的话题也很正常；只有确实没话可说、对方已明确结束、或长时间没人说话时才潜水。\n\n';

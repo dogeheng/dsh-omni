@@ -146,6 +146,22 @@ async function resolveThirdParty(c, query, cfg) {
   return { url: j.url, isPreview: false, license: j.license || 'third-party (operator-authorised)' };
 }
 
+async function cachedSource(c, cfg) {
+  const dir = path.join(cfg.cacheDir, 'sources');
+  const id = `${c.source}-${c.id}`.replace(/[^\w.-]/g, '_');
+  for (const ext of ['.mp3', '.m4a', '.wav', '.flac', '.ogg']) {
+    const file = path.join(dir, id + ext);
+    if (!fs.existsSync(file) || fs.statSync(file).size < 1024) continue;
+    try {
+      const d = await validateAudio(file, cfg);
+      const lrcFile = file.replace(/\.[^.]+$/, '.lrc');
+      let meta = {}; try { meta = JSON.parse(fs.readFileSync(path.join(dir, id + '.json'), 'utf8')); } catch {}
+      return { ...c, path: file, duration: d, lrc: fs.existsSync(lrcFile) ? lrcFile : '', isPreview: meta.isPreview === true, license: meta.license || c.license, online: true, cachedSource: true };
+    } catch {}
+  }
+  return null;
+}
+
 async function resolveCandidate(c, query, cfg) {
   if (paidOf(c) && !cfg.online.allowPaidMedia) throw Object.assign(new Error('候选需要付费/会员，未开启 allowPaidMedia'), { stage: 'no_authorized_url' });
   if (c.source === 'qqmusic') {
@@ -239,12 +255,21 @@ export async function resolveOnlineSource(query, cfg, log = () => {}) {
     const e = new Error(query.version ? `没有找到「${query.song}（${query.version}）」的对应版本，已拒绝普通版替代` : `没有找到可处理音源：${query.song}`);
     e.stage = 'source_not_found'; throw e;
   }
+  // If an exact-title candidate exists, do not silently fall back to a remix
+  // ("雨爱 (Afro House版)") when that exact source has no authorised URL.
+  const exactTitle = candidates.filter((c) => norm(c.title) === songNorm);
+  const basedOnTitle = exactTitle.length ? exactTitle : candidates;
   // Prefer exact version, then free (unless the operator explicitly allowed paid media).
-  const exact = query.version ? candidates.filter((c) => norm(c.version) === norm(query.version)) : candidates;
-  const ordered = (exact.length ? exact : candidates).sort((a, b) => (paidOf(a) ? 1 : 0) - (paidOf(b) ? 1 : 0) || b.score - a.score);
+  const exact = query.version ? basedOnTitle.filter((c) => norm(c.version) === norm(query.version)) : basedOnTitle;
+  const ordered = (exact.length ? exact : basedOnTitle).sort((a, b) => (paidOf(a) ? 1 : 0) - (paidOf(b) ? 1 : 0) || b.score - a.score);
   let lastError;
   for (const c of ordered.slice(0, 5)) {
     try {
+      const cached = await cachedSource(c, cfg);
+      if (cached) {
+        log(`[cover] 使用已缓存音源 ${c.source} ${c.title} / ${c.artist} ${cached.duration.toFixed(1)}s`);
+        return { candidate: cached, candidates };
+      }
       let resolved;
       try { resolved = await resolveCandidate(c, query, cfg); }
       catch (e) {

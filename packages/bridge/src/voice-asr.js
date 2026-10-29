@@ -47,6 +47,7 @@ export const ASR_DEFAULTS = Object.freeze({
   maxBytes: 4 * 1024 * 1024,  // 原始 SILK 下载上限
   timeoutMs: 15000,           // 单条语音「取音频 + 识别」的总预算
   maxConcurrent: 2,
+  maxQueue: 4,
   qqFallback: true,           // 本地识别失败时回退到 fetch_ptt_text
   showEmotion: true,          // 在标注里带上 SenseVoice 识别的情绪（开心/难过/生气…）
   showEvent: true,            // 在标注里带上声学事件（笑声/掌声/背景音乐…）
@@ -81,6 +82,7 @@ export function normalizeAsrConfig(raw = {}) {
     maxBytes: num(r.maxBytes, ASR_DEFAULTS.maxBytes, { min: 64 * 1024, max: 32 * 1024 * 1024, int: true }),
     timeoutMs: num(r.timeoutMs, ASR_DEFAULTS.timeoutMs, { min: 1000, max: 120000, int: true }),
     maxConcurrent: num(r.maxConcurrent, ASR_DEFAULTS.maxConcurrent, { min: 1, max: 8, int: true }),
+    maxQueue: num(r.maxQueue, ASR_DEFAULTS.maxQueue, { min: 0, max: 32, int: true }),
     qqFallback: r.qqFallback !== false,
     showEmotion: r.showEmotion !== false,
     showEvent: r.showEvent !== false,
@@ -267,7 +269,7 @@ function withTimeout(promise, ms, label) {
   ]).finally(() => clearTimeout(timer));
 }
 
-function createSemaphore(limit) {
+function createSemaphore(limit, maxQueue = Infinity) {
   let active = 0;
   const queue = [];
   const next = () => {
@@ -277,7 +279,13 @@ function createSemaphore(limit) {
     Promise.resolve().then(fn).then(resolve, reject).finally(() => { active--; next(); });
   };
   return {
-    run(fn) { return new Promise((resolve, reject) => { queue.push({ fn, resolve, reject }); next(); }); },
+    run(fn) {
+      return new Promise((resolve, reject) => {
+        if (queue.length >= maxQueue) { reject(Object.assign(new Error(`ASR 队列已满（${maxQueue}）`), { code: 'ASR_QUEUE_FULL' })); return; }
+        queue.push({ fn, resolve, reject });
+        next();
+      });
+    },
     get active() { return active; },
     get pending() { return queue.length; }
   };
@@ -295,6 +303,7 @@ export function createAsrService({ getConfig, root, oneBot, log = () => {}, fetc
   const cache = new Map(); // key → { at, promise }
   let sem = null;
   let semLimit = 0;
+  let semQueueLimit = -1;
   let unavailable = null; // { reason, at }
   let warnedUnavailable = '';
   const stats = { transcribed: 0, failed: 0, fallbackQq: 0, viaGateway: 0, viaSilk: 0, lastMs: 0, lastError: '' };
@@ -307,7 +316,7 @@ export function createAsrService({ getConfig, root, oneBot, log = () => {}, fetc
   const cfgNow = () => normalizeAsrConfig(typeof getConfig === 'function' ? getConfig() : {});
 
   function semaphore(cfg) {
-    if (!sem || semLimit !== cfg.maxConcurrent) { sem = createSemaphore(cfg.maxConcurrent); semLimit = cfg.maxConcurrent; }
+    if (!sem || semLimit !== cfg.maxConcurrent || semQueueLimit !== cfg.maxQueue) { sem = createSemaphore(cfg.maxConcurrent, cfg.maxQueue); semLimit = cfg.maxConcurrent; semQueueLimit = cfg.maxQueue; }
     return sem;
   }
 
@@ -652,6 +661,8 @@ export function createAsrService({ getConfig, root, oneBot, log = () => {}, fetc
       ...life,
       unavailable: unavailable?.reason ?? null,
       cached: cache.size,
+      active: sem?.active ?? 0,
+      pending: sem?.pending ?? 0,
       ...stats
     };
   }

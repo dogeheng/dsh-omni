@@ -120,9 +120,13 @@ CosyVoice。这个 WAV 已在 `.gitignore` 中，不提交。
   "seedvcSteps": 30,
   "seedvcTimeoutMs": 180000,
   "maxConcurrent": 1,
-  "maxQueue": 2,
+  "maxQueue": 10,
+  "maxPerKey": 2,
+  "queueFile": "data/singing/queue.json",
   "maxRssMb": 6500,
-  "minFreeMb": 3000,
+  "minFreeMb": 2500,
+  "maxMemoryRetries": 2,
+  "memoryRetryDelayMs": 30000,
   "cooldownMs": 60000,
   "jamendoClientId": "",
   "contextSeconds": 0.75,
@@ -174,7 +178,11 @@ CosyVoice。这个 WAV 已在 `.gitignore` 中，不提交。
   Seed-VC 步数/`cacheVersion`。
 - 命中缓存直接发音频；结果存 `data/singing/cache/<key>.mp3`，临时目录任务后删除。
 - 失败会通过 QQ 文字说明阶段：找音源 / 分离环境 / 分离 / 换嗓 / QQ 发送。
-- **回收**：任务临时目录在 `finally` 立即删除；结果 MP3 缓存默认 1 天/最多 120 个，下载的源音频默认 1 天，试听文件 10 分钟；服务启动时和每 10 分钟自动清理。
+- **接收即回执**：任务被接受后由 bridge 立刻发一条「已排队/开始处理」文字，不依赖模型记得回话。
+- **不静默丢任务**：已接受任务写入 `data/singing/queue.json`；bridge 重启后 queued 任务恢复，running 任务明确失败并通知。队列满在入口拒绝，不会先接受再丢。
+- **按群顺序回传**：每个群有 requestSeq/outbox；后完成的音频/失败说明要等前面的结果，按请求顺序发送。
+- **回收**：任务临时目录在 `finally` 立即删除；结果 MP3 缓存默认 1 天/最多 120 个/128MB，下载源音频 1 天/300MB，试听 10 分钟；启动和每 10 分钟按 TTL/LRU 清理。
+- **重负载**：翻唱 active 1、全局队列 10、每群 pending 2；ASR 队列 4，翻唱前会释放空闲 ASR worker（~850MB）；内存不足会退避重试 2 次。
 - **语音发送兜底**：QQ 原生语音发送失败时，自动尝试 OneBot `upload_group_file` / `upload_private_file` 发 MP3 文件；文件 5 分钟后删除。
 - **TTS 侧**：`qq_speak` / `autoConvert` 只把音频放在内存 Buffer 里，不产生每条消息的临时文件；控制台试听 `data/tts/last-preview.*` 10 分钟回收，MiMo 设计参考音频 30 天回收。
 
@@ -220,7 +228,10 @@ Apple M5 / 16GB、无 NVIDIA CUDA：
 npm --prefix packages/bridge run setup:cover
 npm --prefix packages/bridge run test-short-cover
 npm --prefix packages/bridge run test-online-cover
+npm --prefix packages/bridge run test-cover-queue
 ```
+
+`test-cover-queue` 覆盖接收回执、队列上限、持久化、同群结果顺序和缓存命中。
 
 `test-online-cover` 用本地 HTTP mock + 假 QQMusic 子进程覆盖搜索、精确版本、免费优先、
 付费候选拒绝、下载校验、LRC 和网易云适配器；真实 QQ 搜索/试听下载另做本地验证。
