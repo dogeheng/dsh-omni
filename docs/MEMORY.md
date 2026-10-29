@@ -462,7 +462,7 @@ node scripts/memory-bench.mjs --count 5000 --queries 500 --scale   # 5000 + 2000
 
 ```bash
 cd packages/bridge
-node scripts/test-memory.mjs          # 存储/ACL/检索/预算/迁移/注入（21 个用例）
+node scripts/test-memory.mjs          # 存储/ACL/检索/预算/迁移/注入（22 个用例）
 node scripts/test-memory-bridge.mjs   # 真实 bridge.js + 假 DSH/QQ（14 个用例）
 node scripts/memory-eval.mjs          # 50 个场景的质量评测（43 个问题 + 12 条无关闲聊）
 npm run test:audit                    # 既有全量回归（已包含上面两个文件）
@@ -472,7 +472,7 @@ node scripts/memory-eval.mjs --live   # 额外让真实模型带注入块回答�
 node scripts/memory-calibrate.mjs     # 用真实模型 usage 校准 350 token 估算
 ```
 
-`test-memory.mjs` 覆盖：A 群事件可回忆、B 群读不到 A 群（含诱导泄漏）、跨群同人身份关联但记录隔离、
+`test-memory.mjs` 覆盖（22 个用例）：A 群事件可回忆、B 群读不到 A 群（含诱导泄漏）、跨群同人身份关联但记录隔离、
 改名不丢身份、主人私聊不进群、跨场景共享（person_shared）只能在当事人私聊授权、重启后仍可召回、
 事实更新与重复写入幂等、真删除（DB+FTS）、普通聊天零 LLM 调用、不需要记忆时不加块、
 shadow 模式不改提示词、350 token 上限、跨天提炼预算、SQLite 降级、迁移备份/幂等/无丢失/回滚后重迁、

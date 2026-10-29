@@ -312,6 +312,26 @@ test('8. 明确删除后数据库与 FTS 索引都不再召回', () => {
   }
 });
 
+test('8b. 无标签的结构化记忆不会污染无关检索', () => {
+  const root = tempRoot();
+  const m = makeManager(root);
+  try {
+    const ctx = groupCtx(m, A_GROUP, [[XIAOMING, '小明']]);
+    // subject 有 QQ 号但没昵称（工具只传了 QQ 号的情况）
+    const rec = remember(m, ctx, { kind: 'promise', content: '答应周末带蝴蝶酥', subjectId: XIAOMING });
+    assert.equal(m.recall({ ctx, text: '完全无关的一句话', limit: 5 }).rows.length, 0, '无关查询不应带出结构化记忆');
+    // 点名这个人时才允许出现（空查询=列举也允许）
+    const named = m.recall({ ctx, text: '小明 答应 带什么', limit: 5 });
+    assert.ok(named.rows.some((r) => r.id === rec.id));
+    const listed = m.recall({ ctx, text: '', limit: 5 });
+    assert.ok(listed.rows.some((r) => r.id === rec.id), '空查询应能列出');
+    m.forget({ ctx, id: rec.id });
+  } finally {
+    m.close();
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
 test('9. 普通聊天不触发任何额外 LLM 调用（只落规则候选）', async () => {
   const root = tempRoot();
   const m = makeManager(root);

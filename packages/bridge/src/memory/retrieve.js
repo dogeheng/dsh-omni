@@ -149,8 +149,12 @@ export function rankMemoryRows({
     const isStructuredOnly = !Number.isFinite(Number(row.bm25));
     if (isStructuredOnly) {
       // 结构化命中（人物档案/承诺/状态）：只有问题里明确提到这个人，才允许出现。
-      const label = String(row.subjectLabel ?? '').toLowerCase().replace(/\s+/g, '');
-      if (label && !queryNorm.includes(label)) continue;
+      // 没有 subjectLabel 的结构化记忆无法证明与当前问题相关，自然语言检索里直接跳过
+      // （否则查任何词都会把"这个人的承诺"带出来；空查询=列举时才保留）。
+      if (queryNorm) {
+        const label = String(row.subjectLabel ?? '').toLowerCase().replace(/\s+/g, '');
+        if (!label || !queryNorm.includes(label)) continue;
+      }
     }
     const bm25 = Number(row.bm25);
     const bm25Norm = Number.isFinite(bm25) && max > min ? (max - bm25) / (max - min) : (coverage > 0 ? 0.5 : 0);
