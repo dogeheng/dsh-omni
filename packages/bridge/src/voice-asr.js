@@ -586,7 +586,12 @@ export function createAsrService({ getConfig, root, oneBot, log = () => {}, fetc
    * 永不抛错：失败返回 { status:'error', error }，调用方据此回退为「[语音]」占位。
    */
   async function transcribeSegment(d = {}, ctx = {}) {
-    const cfg = cfgNow();
+    const base = cfgNow();
+    // 调用方可以只对这一次转写覆盖引擎（离电省电：本地模型不拉起，改走 QQ 转写）。
+    // 只认 'qq'/'sensevoice'/'off'，其余一律忽略，避免把配置读出奇怪状态。
+    const cfg = ['qq', 'sensevoice', 'off'].includes(ctx.engine) && ctx.engine !== base.engine
+      ? { ...base, engine: ctx.engine }
+      : base;
     if (!cfg.enabled || cfg.engine === 'off') return null;
     const key = String(d.file || d.file_id || d.url || '');
     if (!key) return null;

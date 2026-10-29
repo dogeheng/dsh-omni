@@ -26,6 +26,8 @@ import * as shortCoverConfig from '../src/short-cover/config.js';
 import * as shortCoverV2 from '../src/short-cover/manager-v2.js';
 import * as presetPrompt from '../src/preset-prompt.js';
 import * as stateAcl from '../src/state-acl.mjs';
+import * as power from '../src/power.js';
+import * as roleCard from '../src/role-card.js';
 import { unwrap, createTurnCollector } from '../src/dsh-client.js';
 
 const root = fileURLToPath(new URL('..', import.meta.url));
@@ -147,6 +149,9 @@ export async function bridgeHarness({ config = {}, savedState, files = {}, globa
     voiceBudgetCheck, sendVoiceV2, sendVoiceForV2, assertOutboundAuditOk,
     speakCfg, speakForV2, maybeAutoSpeakV2, transcribeVoiceV2, asrService, ttsService, lastInboundVoiceAt, lastAutoSpeakAt,
     setMode(value) { currentMode = value; },
+    // 电源监控：main 在这里提前 return，真实 monitor 不会被创建；测试可注入一个固定电源状态。
+    setPowerMonitor(value) { powerMonitor = value; },
+    powerSnapshot,
     setReady(value) { dshReady = value; },
     setPresets(value) { dshPresetIds = value; dshDefaultPreset = 'standard'; },
     resetEpoch() { sessionEpoch++; },
@@ -170,6 +175,19 @@ export async function bridgeHarness({ config = {}, savedState, files = {}, globa
     ...markdown, ...sensitive, ...wait, ...safeFetch, ...forward, ...slang, ...sticker,
     ...modelPrices, ...tokenLedger, ...voiceLib, ...stateAcl, ...presetPrompt,
     ...voiceAsr, ...voiceTts, ...singing, ...shortCover, ...shortCoverV2, ...shortCoverConfig,
+    ...power, ...roleCard,
+    // 电源监控在测试里必须确定：不 spawn pmset、不按宿主机当前电源改变策略、不留下轮询定时器。
+    // 纯函数（normalizePowerConfig / powerAllowsCapability …）仍用 src/power.js 的真实现。
+    createPowerMonitor: () => ({
+      start: async () => ({ source: 'ac' }),
+      stop() {},
+      state: () => ({ source: 'ac', committedAt: new Date().toISOString() }),
+      observed: () => null,
+      refresh: async () => ({ source: 'ac' }),
+      simulate: async () => ({ source: 'ac' }),
+      simulated: () => null,
+    }),
+    readPowerState: () => null,
     // ACL 收紧会 spawn icacls 去改**真实**文件系统；测试不该做这件事（同理见下面的
     // cleanupTemp / processAudioVolume 桩）。桩成成功，让 hardenStateDirAcl 走正常分支。
     hardenDir: () => ({ ok: true, detail: 'stub' }),

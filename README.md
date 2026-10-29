@@ -17,6 +17,7 @@
 - **QQ ↔ DSH 会话桥接**：群聊/私聊消息进入独立 DSH 会话，agent 的回复通过工具发回 QQ。
 - **四种模式**：`chat`、`reserved`、`reserved2`（仿真）、`closed-agent`，可在控制台切换。
 - **大功能开关**：控制台「运行总览」一页开关一代/二代仿真、B 站卡片、联网搜索、语音、表情包、黑话学习、主动机会、看图与长期记忆；细粒度工具开关在「二代仿真」页。
+- **离电省电**：检测 macOS 电源，离电时只放行你勾选的能力（默认只留表情与长期记忆），其余工具调用直接拒答；插电自动解除限制并恢复原思考档位，可顺带暂停主动冒泡。核心聊天永远可用，检测失败一律放行。见 [docs/POWER.md](docs/POWER.md)。
 - **reserved2 仿真**：分条发送、引用、唤醒/潜水、拍一拍、主动机会、回复检查、长期记忆。
 - **表情包**：同步 QQ 收藏表情、AI 看图标注、按情绪搜索、按语义自检、可配置发送概率与“发完文字后提醒补一张”。
 - **B 站卡片**：解析 QQ 小程序卡（`b23.tv` → `BV...`），把标题/BV 注入消息；AI 可按需调用 `bili_video_info` / `bili_subtitle`，再决定回复还是安静。
@@ -72,6 +73,7 @@ dsh-omni/
 │  └─ bili-mcp/               # 可选：把 dsh-bili-scroll 的只读 MCP 挂进 DSH
 ├─ docs/
 │  ├─ ARCHITECTURE.md
+│  ├─ POWER.md                # 离电省电：电源检测、能力闸门、自动启服务
 │  └─ VOICE_IO.md             # 听懂语音 / 开口说话：配置、策略与致谢
 ├─ LICENSE
 ├─ NOTICE.md
@@ -154,7 +156,7 @@ bash packages/bridge/start-mac.sh
 
 ### 自动跟随 DSH 重启（可选，推荐）
 
-DSH 每次重启都会换端口并带走桥接进程。装一个 per-user LaunchAgent，让桥接每 20 秒检查一次 DSH 端口，必要时自动重启：
+DSH 每次重启都会换端口并带走桥接进程。装一个 per-user LaunchAgent，让它每 20 秒校准一次整条服务栈（Docker → SnowLuma 容器 → 桥接）：
 
 ```bash
 node packages/bridge/scripts/install-watchdog.mjs
@@ -163,6 +165,10 @@ node packages/bridge/scripts/install-watchdog.mjs
 - 不需要 sudo；plist 在 `~/Library/LaunchAgents/com.dogeheng.dsh-omni-bridge.plist`；
 - 登录时自动运行，之后每 20 秒检查一次；
 - DSH 换端口 / 桥接退出时，自动执行 `start-mac.sh`（内部用 detached spawn，不会被 launchd 一起收掉）；
+- Docker 没开就先 `open -a Docker`（最多等 `config.stack.dockerWaitMs`），容器没跑就 `docker start snowluma`；
+- 端口抖动要求连续两次探测一致，且桥接重启有 90 秒冷却，避免 DSH 启动窗口期反复重启；
+- 不想自动管 Docker 就把 `config.json` 的 `stack.docker` 设为 `false`，整段关掉用 `stack.autoStart: false`；
+- `dsh-omni-mode-console` 插件在 DSH 启动时还会主动 kick 一次，把最多 20 秒的空窗压到几秒；
 - 日志：`packages/bridge/data/watchdog.log`；
 - 查看/卸载：
   ```bash
@@ -245,7 +251,10 @@ node packages/bridge/scripts/cleanup-workspaces.mjs --delete-obsolete --apply
 ## 常见问题
 
 **DSH 重启后机器人没反应？**
-DSH 端口会变，桥接进程也可能随 DSH 退出。跑 `bash packages/bridge/start-mac.sh` 重新同步端口并拉起。
+DSH 端口会变，桥接进程也可能随 DSH 退出。跑 `bash packages/bridge/start-mac.sh` 重新同步端口并拉起；装了 watchdog 的话它会自动处理（最多 20 秒）。
+
+**离电后语音 / 唱歌 / 联网搜索都提示「省电模式已关闭」？**
+这是「运行总览 → 电源与省电」的离电白名单在生效，不是故障。插电会自动解除并恢复思考档位；想立刻验证可以点「模拟离电 / 模拟插电」。读不到电源状态时会全放行。详见 [docs/POWER.md](docs/POWER.md)。
 
 **控制台打不开？**
 确认 `consolePort` 没被占用；令牌在 `data/console-token`。

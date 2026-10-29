@@ -322,6 +322,26 @@ export function makeFixtureState() {
       social: true, socialV2: true, biliCard: true, webSearch: true, voice: false,
       asr: true, speak: false, sticker: true, slang: true, proactive: true, images: true, memory: true,
     },
+    // 电源与省电（离线演示：默认插电，模拟离电只改内存状态）
+    power: {
+      state: { source: 'ac', percent: 100, charging: true, lowPowerMode: false, sampledAt: new Date().toISOString(), committedAt: new Date().toISOString(), simulated: false },
+      simulated: null,
+      config: {
+        enabled: true, pollMs: 30000, debounceMs: 20000,
+        battery: { allow: ['sticker', 'memory'], reasoningEffort: 'low', pauseProactive: true },
+      },
+      reasoning: { current: 'max', configured: 'max', battery: 'low', autoApplied: null },
+      capabilities: [
+        { id: 'voice', label: '语音发送', note: 'qq_send_voice / qq_list_voices（本地语音库）' },
+        { id: 'speak', label: '开口说话', note: 'qq_speak（云端 TTS 或本地音色服务）' },
+        { id: 'asr', label: '听懂语音', note: '本地 SenseVoice 转写；关闭后回退 QQ 自带转写' },
+        { id: 'sing', label: '唱歌 / 翻唱', note: 'qq_sing、sing_short_cover（本地 Seed-VC，最费电）' },
+        { id: 'images', label: '图片理解', note: 'qq_get_message_images（下载图片 + 视觉模型）' },
+        { id: 'sticker', label: '表情包', note: '收藏、标注、发送表情' },
+        { id: 'memory', label: '长期记忆', note: 'qq_memory_*（本地读写，几乎不耗电）' },
+        { id: 'webSearch', label: '联网搜索', note: 'web_search / web_fetch / 图片搜索' },
+      ],
+    },
     v2: {
       enabled: true, agentPreset: 'qq-chat-v2', provideRecommendations: true, tools: {}, voice: { enabled: false, autoReadback: true },
       // 听懂语音 / 开口说话：形状与 GET /api/socialV2/config 一致（补全默认值 + API Key 脱敏）
@@ -480,6 +500,7 @@ export async function startConsoleFixture({ port = 0, original = false, htmlPath
           case '/api/pending': return json({ pending: [{ key: 'group:123456789', kind: 'approval', toolName: '演示工具', reason: '等待管理员确认（离线示例）' }] });
           case '/api/social': return json({ config: state.social, states: state.socialStates, pendingSummaries: { 'group:123456789': 2 } });
           case '/api/features': return json({ ok: true, features: state.features });
+          case '/api/power': return json({ ok: true, state: state.power.state, simulated: state.power.simulated, config: state.power.config, policy: state.power.policy ?? { onBattery: false, source: 'ac', enabled: true, allow: [], deny: [] }, capabilities: state.power.capabilities ?? [], reasoning: state.power.reasoning });
           case '/api/socialV2/config': return json({ ok: true, config: state.v2 });
           case '/api/socialV2/activity': return json({ ok: true, paused: state.paused });
           case '/api/socialV2/tool-log': return json({ ok: true, entries: state.toolLog });
@@ -603,6 +624,21 @@ export async function startConsoleFixture({ port = 0, original = false, htmlPath
           case '/api/whitelist': state.whitelist = body; return json({ ok: true });
           case '/api/social': state.social = body; return json({ ok: true });
           case '/api/features': state.features = { ...state.features, ...body }; return json({ ok: true, features: state.features });
+          case '/api/power': {
+            if (body.enabled !== undefined) state.power.config.enabled = body.enabled !== false;
+            if (body.battery && typeof body.battery === 'object') {
+              if (Array.isArray(body.battery.allow)) state.power.config.battery.allow = body.battery.allow;
+              if (body.battery.reasoningEffort !== undefined) state.power.config.battery.reasoningEffort = body.battery.reasoningEffort;
+              if (typeof body.battery.pauseProactive === 'boolean') state.power.config.battery.pauseProactive = body.battery.pauseProactive;
+            }
+            if (body.simulate !== undefined) {
+              const sim = body.simulate === 'battery' || body.simulate === 'ac' ? body.simulate : null;
+              state.power.simulated = sim;
+              state.power.state.source = sim || 'ac';
+              state.power.state.simulated = !!sim;
+            }
+            return json({ ok: true, state: state.power.state, simulated: state.power.simulated, config: state.power.config, policy: { onBattery: state.power.state.source === 'battery', source: state.power.state.source, enabled: state.power.config.enabled, allow: state.power.config.battery.allow, deny: [] }, capabilities: state.power.capabilities ?? [], reasoning: state.power.reasoning });
+          }
           case '/api/social/state': state.socialStates[body.key] = { phase: body.phase }; return json({ ok: true });
           case '/api/socialV2/config': state.v2 = body; return json({ ok: true });
           case '/api/socialV2/activity': state.paused = body.paused; return json({ ok: true });

@@ -1811,6 +1811,38 @@ button:active:not(:disabled) {
       </div>
       <div class="meta">切换后即时保存。仿真参数可在左侧对应页面调整；封闭 Agent 仅允许管理员私聊。</div>
     </section>
+<section id="section-power" data-page="overview" class="card span-all">
+      <h2>电源与省电</h2>
+      <div class="meta">插电时全部能力可用；离电时只放行下面勾选的能力，其余工具调用会被拒绝并告诉 AI「省电模式关了」。核心聊天（收发文字、读消息、等待）永远可用。电源状态来自 <code>pmset</code>，默认每 30 秒采样一次，插拔有 20 秒去抖。</div>
+      <div class="row" style="margin-top:10px;gap:10px;flex-wrap:wrap">
+        <span class="pill" id="powerSourcePill">读取中…</span>
+        <span class="meta" id="powerDetail">—</span>
+      </div>
+      <div class="v2-tool-list" id="powerGrid" style="margin-top:8px"></div>
+      <div class="row" style="margin-top:10px;flex-wrap:wrap;gap:16px">
+        <label style="flex:0 0 auto"><input type="checkbox" id="powerEnabled"> 启用离电省电策略</label>
+        <label style="flex:0 0 auto"><input type="checkbox" id="powerPauseProactive"> 离电时暂停主动冒泡</label>
+      </div>
+      <div class="row" style="margin-top:8px;flex-wrap:wrap">
+        <label style="flex:0 0 auto">离电思考强度</label>
+        <select id="powerBatteryEffort" style="max-width:160px">
+          <option value="">不自动切换</option>
+          <option value="low">low</option>
+          <option value="high">high</option>
+          <option value="max">max</option>
+        </select>
+        <span class="meta" id="powerEffortHint">当前：—</span>
+        <span class="meta">插电会自动恢复成你配置的档位。</span>
+      </div>
+      <div class="row" style="margin-top:10px;flex-wrap:wrap">
+        <button id="powerSave" style="font-weight:bold;padding:6px 14px">保存电源策略</button>
+        <button id="powerRefresh" class="small">刷新电源状态</button>
+        <button id="powerSimulateBattery" class="small">模拟离电</button>
+        <button id="powerSimulateAc" class="small">模拟插电</button>
+        <button id="powerSimulateOff" class="small">恢复真实检测</button>
+        <span class="meta" id="powerMsg"></span>
+      </div>
+    </section>
 <section id="section-features" data-page="overview" class="card span-all">
       <h2>大功能开关</h2>
       <div class="meta">跨模式的“总闸”，写入 <code>config.json</code>；关掉后对应能力整体停用。细粒度工具开关仍在「二代仿真 → 工具开关」。标 <b>⚠</b> 的项要重启 DSH 才完全生效（刷新工具清单 / 重载 MCP 代码）。</div>
@@ -3030,6 +3062,8 @@ async function refresh() {
     const modeLabel = s.mode === 'reserved' ? '一代仿真模式' : s.mode === 'reserved2' ? '二代仿真模式' : s.mode === 'closed-agent' ? '封闭 Agent' : '聊天模式';
     updateOverview(s, modeLabel);
     document.getElementById('activity').textContent = s.activity || '（空）';
+    // 电源状态跟着状态刷新一起更新（不强制重画勾选框，避免盖掉正在编辑的选择）。
+    void loadPower();
     const presetSel = document.getElementById('closedPreset');
     if (presetSel && document.activeElement !== presetSel) presetSel.value = s.closedAgentPreset || '';
   } catch (e) { document.getElementById('statusText').textContent = '连接中断 · 请检查桥接服务'; setConnectionError(e); }
@@ -4113,6 +4147,135 @@ async function saveFeatures() {
   }
 }
 document.getElementById('featureSave').addEventListener('click', saveFeatures);
+
+// ── 电源与省电（运行总览） ─────────────────────────────────────────────────
+// 只写 config.json 的 power 段，不碰大功能开关/工具开关：实际可用 = 手动开关 AND（插电 ? 全放行 : 这里勾的能力）。
+let powerRendered = false;
+function powerPill(text, cls) {
+  const el = document.getElementById('powerSourcePill');
+  if (!el) return;
+  el.textContent = text;
+  el.className = 'pill ' + cls;
+}
+function renderPower(r, force) {
+  const st = r.state || {};
+  const battery = st.source === 'battery';
+  const simulated = r.simulated ? '（模拟）' : '';
+  powerPill(battery ? '电池' + simulated : st.source === 'ac' ? '电源' + simulated : '未知', battery ? 'r' : 'g');
+  const detail = document.getElementById('powerDetail');
+  if (detail) {
+    const bits = [];
+    if (typeof st.percent === 'number') bits.push(`电量 ${st.percent}%`);
+    if (st.lowPowerMode) bits.push('系统低电量模式');
+    if (st.sampledAt) bits.push('采样 ' + new Date(st.sampledAt).toLocaleTimeString());
+    bits.push(battery ? '省电策略生效中' : '全部能力可用');
+    detail.textContent = bits.join(' · ');
+  }
+  const grid = document.getElementById('powerGrid');
+  const applyForm = force || !powerRendered;
+  if (grid && applyForm) {
+    grid.textContent = '';
+    for (const cap of r.capabilities || []) {
+      const label = document.createElement('label');
+      label.className = 'v2-tool-item';
+      const input = document.createElement('input');
+      input.type = 'checkbox';
+      input.dataset.powerCap = cap.id;
+      const wrap = document.createElement('span');
+      const strong = document.createElement('strong');
+      strong.textContent = cap.label;
+      const note = document.createElement('span');
+      note.className = 'meta';
+      note.textContent = cap.note || '';
+      wrap.append(strong, note);
+      label.append(input, wrap);
+      grid.append(label);
+    }
+    powerRendered = true;
+  }
+  const cfg = r.config || {};
+  if (!applyForm) {
+    const hintOnly = document.getElementById('powerEffortHint');
+    if (hintOnly) {
+      const cur = r.reasoning?.current ?? '—';
+      hintOnly.textContent = `当前：${cur}${r.reasoning?.autoApplied ? '（离电自动）' : ''}`;
+    }
+    return;
+  }
+  const allow = new Set(cfg.battery?.allow || []);
+  document.querySelectorAll('input[data-power-cap]').forEach((el) => { el.checked = allow.has(el.dataset.powerCap); });
+  const enabledEl = document.getElementById('powerEnabled');
+  if (enabledEl) enabledEl.checked = cfg.enabled !== false;
+  const pauseEl = document.getElementById('powerPauseProactive');
+  if (pauseEl) pauseEl.checked = cfg.battery?.pauseProactive !== false;
+  const batEffort = document.getElementById('powerBatteryEffort');
+  if (batEffort) batEffort.value = cfg.battery?.reasoningEffort ?? '';
+  const hint = document.getElementById('powerEffortHint');
+  if (hint) {
+    const cur = r.reasoning?.current ?? '—';
+    hint.textContent = `当前：${cur}${r.reasoning?.autoApplied ? '（离电自动）' : ''}`;
+  }
+}
+async function loadPower({ force = false } = {}) {
+  try {
+    const r = await api('/api/power');
+    if (!r || r.ok !== true) return;
+    renderPower(r, force);
+  } catch {}
+}
+async function savePower() {
+  const msg = document.getElementById('powerMsg');
+  const allow = [...document.querySelectorAll('input[data-power-cap]')]
+    .filter((el) => el.checked)
+    .map((el) => el.dataset.powerCap);
+  const body = {
+    enabled: document.getElementById('powerEnabled').checked,
+    battery: {
+      allow,
+      reasoningEffort: document.getElementById('powerBatteryEffort').value,
+      pauseProactive: document.getElementById('powerPauseProactive').checked,
+    },
+  };
+  try {
+    const r = await api('/api/power', 'POST', body);
+    if (r.ok) {
+      msg.textContent = '✅ 已保存';
+      msg.className = 'meta ok';
+      renderPower(r, true);
+      showConsoleToast('电源策略已保存');
+    } else {
+      msg.textContent = '❌ ' + (r.error || '失败');
+      msg.className = 'meta err';
+    }
+  } catch (error) {
+    msg.textContent = '❌ ' + (error?.message || '失败');
+    msg.className = 'meta err';
+  }
+}
+async function simulatePower(source) {
+  const msg = document.getElementById('powerMsg');
+  try {
+    const r = await api('/api/power', 'POST', { simulate: source });
+    if (r.ok) {
+      renderPower(r, true);
+      msg.textContent = source === 'battery' ? '已模拟离电（不真拔电）' : source === 'ac' ? '已模拟插电' : '已恢复真实电源检测';
+      msg.className = 'meta ok';
+    } else {
+      msg.textContent = '❌ ' + (r.error || '失败');
+      msg.className = 'meta err';
+    }
+  } catch (error) {
+    msg.textContent = '❌ ' + (error?.message || '失败');
+    msg.className = 'meta err';
+  }
+}
+document.getElementById('powerSave').addEventListener('click', savePower);
+document.getElementById('powerRefresh').addEventListener('click', async () => {
+  await api('/api/power', 'POST', { refresh: true }).then((r) => { if (r?.ok) renderPower(r, true); }).catch(() => {});
+});
+document.getElementById('powerSimulateBattery').addEventListener('click', () => simulatePower('battery'));
+document.getElementById('powerSimulateAc').addEventListener('click', () => simulatePower('ac'));
+document.getElementById('powerSimulateOff').addEventListener('click', () => simulatePower(null));
 
 async function viewV2State() {
   const key = document.getElementById('v2StateKey').value.trim();
@@ -5220,7 +5383,7 @@ document.querySelectorAll('input,select,textarea').forEach(input => {
     input.setAttribute('aria-label', names[input.id] || input.placeholder || input.closest('section')?.querySelector('h2')?.textContent || '设置');
   }
 });
-const primaryActions = ['roleSet','roleCreate','socialSave','v2ConfigSave','v2ConfigSaveTop','featureSave','wlSave','secSave','consoleTokenSave','tsSend','aiNotifySend','slangAdd','slangConfigSave','slangModalDirectConfirm'];
+const primaryActions = ['roleSet','roleCreate','socialSave','v2ConfigSave','v2ConfigSaveTop','featureSave','powerSave','wlSave','secSave','consoleTokenSave','tsSend','aiNotifySend','slangAdd','slangConfigSave','slangModalDirectConfirm'];
 primaryActions.forEach(id => document.getElementById(id)?.classList.add('primary'));
 document.querySelectorAll('.meta[id$="Msg"], .meta[id$="Msg2"]').forEach(el => el.setAttribute('role','status'));
 document.getElementById('section-mode').querySelector('h2').dataset.note = '选择后即时生效';
@@ -5729,7 +5892,7 @@ document.getElementById('usageClear').addEventListener('click', async () => {
 
 setConsolePage(location.hash.slice(1), { updateHash:false });
 
-refresh(); refreshRoles(); refreshWhitelist(); refreshSessions(); refreshPending(); refreshPresets(); loadFeatures(); loadSocialForm(); loadV2Config(); refreshV2Activity(); loadV2ToolLog(); loadV2SessionOptions(); refreshSocialStatus(); refreshSlang(); loadSlangConfig(); loadSecurity(); refreshSimPrompt(); refreshDshModel(); refreshUsage(); refreshUsageChart(); refreshUsageRecent();
+refresh(); refreshRoles(); refreshWhitelist(); refreshSessions(); refreshPending(); refreshPresets(); loadFeatures(); loadPower(); loadSocialForm(); loadV2Config(); refreshV2Activity(); loadV2ToolLog(); loadV2SessionOptions(); refreshSocialStatus(); refreshSlang(); loadSlangConfig(); loadSecurity(); refreshSimPrompt(); refreshDshModel(); refreshUsage(); refreshUsageChart(); refreshUsageRecent();
 setInterval(() => { refresh(); refreshSessions(); refreshPending(); refreshSocialStatus(); refreshSlang(); }, 3000);
 // 用量看板只在本页可见时轮询：既保证「实时」，又不让其它页白白多打两份接口。
 setInterval(() => { if (currentConsolePage !== 'usage') return; refreshUsage(); refreshUsageChart(); refreshUsageRecent(); }, 3000);

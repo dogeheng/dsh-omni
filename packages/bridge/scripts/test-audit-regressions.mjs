@@ -435,6 +435,49 @@ await test('R16 appendSocialV2Message 保留 kind/emojiId/summary/subType', asyn
   } finally { await h.close(); }
 });
 
+// ── R17. 离电闸门：工具被拒、提示词提前告知、核心聊天不受影响 ────────────────
+await test('R17 离电时非白名单工具 403 POWER_SAVING，核心聊天仍可用', async () => {
+  const batteryMonitor = {
+    start: async () => ({ source: 'battery' }),
+    stop() {},
+    state: () => ({ source: 'battery', committedAt: new Date().toISOString() }),
+    observed: () => ({ source: 'battery' }),
+    refresh: async () => ({ source: 'battery' }),
+    simulate: async () => ({ source: 'battery' }),
+    simulated: () => null,
+  };
+  const h = await bridgeHarness();
+  try {
+    h.setMode('reserved2');
+    h.setPowerMonitor(batteryMonitor);
+    const token = h.getSocialV2State('group:456').agentToken;
+    await withServer(h, async (port) => {
+      // 模型拿到的能力表里不应再出现语音/看图（省掉「调一次 → 403 → 再解释」）
+      const prompt = await call(port, '/api/socialV2/prompt?key=group%3A456', { headers: { 'x-agent-call': '1' }, token });
+      assert.equal(prompt.status, 200, prompt.body);
+      assert.equal(prompt.json.power.saving, true, `离电时 power.saving 必须为 true：${JSON.stringify(prompt.json.power)}`);
+      assert.ok(prompt.json.power.disabled.some((x) => x.id === 'images'), '图片理解应在禁用列表');
+      assert.ok(!prompt.json.enabledTools.includes('qq_get_message_images'), '禁用的工具不能出现在 enabledTools');
+      assert.ok(prompt.json.enabledTools.includes('qq_send_message'), '核心发送工具必须仍在');
+
+      // 真调用被闸门挡住，且错误码/文案可被模型理解
+      const images = await call(port, '/api/images/message?key=group%3A456&messageId=1', { headers: { 'x-agent-call': '1' }, token });
+      assert.equal(images.status, 403, images.body);
+      assert.equal(images.json.code, 'POWER_SAVING');
+      assert.equal(images.json.capability, 'images');
+      assert.match(images.json.error, /电池/);
+      assert.match(images.json.hint, /不要重试/);
+
+      // 核心聊天不被电源策略挡（否则离电 = 机器人失联）
+      const sent = await call(port, '/api/socialV2/send-message', {
+        method: 'POST', token, body: { key: 'group:456', messages: ['省电模式还在'] }
+      });
+      assert.equal(sent.status, 200, sent.body);
+      assert.equal(sent.json?.ok, true);
+    });
+  } finally { await h.close(); }
+});
+
 if (failures) {
   console.error(`\n${failures} 项失败`);
   process.exitCode = 1;

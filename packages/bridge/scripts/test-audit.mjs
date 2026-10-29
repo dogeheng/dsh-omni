@@ -44,6 +44,8 @@ const tests = [
   // 语音图形界面（参数解析/鉴权/路径穿越/文件名净化；live 段需普通终端）
   // 控制台静态契约（跑不了 Playwright 的环境下的替代回归）
   'test-console-static.mjs',
+  // 离电省电：pmset 解析、配置归一化、策略判定、fail-open、状态文件与去抖状态机
+  'test-power.mjs',
   // 语音系统整体结构检查（入口/依赖/端点/开关/文档一致性）
   'test-voice-system.mjs',
   // SnowLuma 账号/token 自发现（换 QQ 账号后 token 会变，写死的工具会 401）

@@ -7,7 +7,7 @@ import vm from 'node:vm';
 import { test } from 'node:test';
 import { z } from 'zod';
 
-function loadWebTools({ safeFetch, webSearch }) {
+function loadWebTools({ safeFetch, webSearch, powerAllows = () => true, powerState = null }) {
   const tools = new Map();
   const source = fs.readFileSync(new URL('../src/mcp-web-search-safe.js', import.meta.url), 'utf8')
     .replace(/^import .*;\r?\n/gm, '')
@@ -24,7 +24,17 @@ function loadWebTools({ safeFetch, webSearch }) {
     z,
     URL,
     path,
+    fs,
     process,
+    // 电源模块的真实实现在 src/power.js（有独立单测）；这里只验证 MCP 调用期确实查了闸门。
+    powerAllowsCapability: powerAllows,
+    readPowerState: () => powerState,
+    powerRefusal: (capability) => ({
+      code: 'POWER_SAVING',
+      capability,
+      error: `现在使用电池，省电模式已关闭「${capability}」`,
+      hint: '不要重试；用文字回复。',
+    }),
   });
   return async (name, arguments_) => {
     const tool = tools.get(name);
@@ -70,6 +80,20 @@ test('empty searches are rejected without calling the transport', async () => {
   });
   const result = await callTool('web_search', { query: '[CQ:at,qq=1]\n ' });
   assert.equal(result.isError, true);
+});
+
+test('离电时联网搜索在调用期被拒，且不发出网络请求', async () => {
+  const callTool = loadWebTools({
+    safeFetch: async () => { assert.fail('离电时不应发起抓取'); },
+    webSearch: async () => { assert.fail('离电时不应发起搜索'); },
+    powerAllows: (_cfg, _state, capability) => capability !== 'webSearch',
+    powerState: { source: 'battery' },
+  });
+  for (const [name, args] of [['web_search', { query: 'fixture' }], ['web_fetch', { url: 'https://example.com/' }]]) {
+    const result = await callTool(name, args);
+    assert.equal(result.isError, true, name);
+    assert.match(result.content[0].text, /省电模式已关闭/);
+  }
 });
 
 /**

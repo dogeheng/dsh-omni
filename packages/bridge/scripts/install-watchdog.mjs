@@ -1,9 +1,9 @@
 #!/usr/bin/env node
 /**
  * Install a per-user macOS LaunchAgent that runs ensure-bridge.mjs every
- * 20 seconds. This is what makes the bridge follow DSH across restarts:
- * DSH changes its port and kills the old bridge, then launchd starts a new
- * bridge pointed at the current port.
+ * 20 seconds. This is what makes the whole stack follow DSH: when DSH is up,
+ * it starts Docker / SnowLuma if needed, then keeps the bridge pointed at the
+ * current DSH port (DSH changes its port on every restart).
  *
  * Usage:
  *   node scripts/install-watchdog.mjs            # install + start
@@ -122,7 +122,7 @@ function install() {
   console.log(`[watchdog] plist:  ${PLIST}`);
   console.log(`[watchdog] script: ${SCRIPT}`);
   console.log(`[watchdog] logs:   ${path.join(DATA_DIR, 'watchdog.log')}`);
-  console.log(`[watchdog] next:   every 20s, and at login`);
+  console.log(`[watchdog] next:   every 20s, and at login (Docker → container → bridge)`);
 }
 
 function status() {

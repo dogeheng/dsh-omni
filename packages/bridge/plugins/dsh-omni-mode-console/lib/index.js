@@ -23,6 +23,8 @@
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import { spawn } from 'node:child_process';
+import { fileURLToPath } from 'node:url';
 import z from '@deepseek-ai/schemastery';
 
 // 诊断日志写系统临时目录，**不要**按相对层级往上爬。
@@ -110,5 +112,67 @@ export const Config = z.object({
  */
 export function apply(ctx) {
   diag(`apply called; settings service=${typeof ctx.settings}; namespace=${QQMODE_NAMESPACE} (0.2.0: no registration needed)`);
+  kickStackOnce();
+}
+
+/**
+ * DSH 打开时立刻校准一次服务栈（Docker / SnowLuma / 桥接）。
+ *
+ * 为什么放在这里：LaunchAgent 每 20 秒才轮询一次，最多会有 20 秒空窗；DSH 插件在
+ * 应用启动时装配，正好能把这段补上。这里**只做一次 kick**，不保活、不阻塞：
+ * 真正的兜底仍然是 scripts/ensure-bridge.mjs 的 LaunchAgent（它可重入、带锁）。
+ *
+ * 插件可能以两种方式安装：
+ *   - 符号链接到仓库（本机默认）：`lib/` 往上三级就是 packages/bridge，能找到脚本；
+ *   - 复制到 ~/.dsh/plugins（别人的机器）：找不到脚本就安静跳过，不报错。
+ * 也可以显式用 DSH_OMNI_ROOT 指到仓库根。
+ */
+function resolveNodeBinary() {
+  const candidates = [
+    process.env.DSH_OMNI_NODE,
+    '/opt/homebrew/bin/node',
+    '/usr/local/bin/node',
+    path.join(os.homedir(), '.n', 'bin', 'node'),
+  ].filter(Boolean);
+  for (const candidate of candidates) {
+    try { if (fs.existsSync(candidate)) return candidate; } catch {}
+  }
+  // 万一 DSH 将来改成用 node 跑宿主（而不是 Electron），execPath 才是可用的。
+  return /(^|\/)node(\.exe)?$/i.test(process.execPath) ? process.execPath : null;
+}
+
+function kickStackOnce() {
+  try {
+    const root = process.env.DSH_OMNI_ROOT
+      ? path.resolve(process.env.DSH_OMNI_ROOT)
+      : path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..', '..');
+    const script = path.join(root, 'scripts', 'ensure-bridge.mjs');
+    if (!fs.existsSync(script)) return;
+    // ⚠️ DSH 桌面版是 Electron：process.execPath 是 App 二进制，不是 node。
+    // 直接 spawn(process.execPath, [script]) 会再开一个 DSH 窗口。这里显式找 node；
+    // 找不到就安静跳过 —— LaunchAgent 仍然会兜底。
+    const node = resolveNodeBinary();
+    if (!node) {
+      diag('stack kick skipped: node binary not found');
+      return;
+    }
+    const kick = () => {
+      try {
+        const child = spawn(node, [script], { cwd: root, detached: true, stdio: 'ignore', env: process.env });
+        child.on('error', (error) => diag(`stack kick error: ${error?.message ?? error}`));
+        child.unref();
+        diag(`stack kick: ${script}`);
+      } catch (error) {
+        diag(`stack kick failed: ${error?.message ?? error}`);
+      }
+    };
+    // 第一次在 DSH 刚起、端口可能还没监听；第二次等 Web 服务稳定后再兜一次。
+    for (const ms of [2500, 12000]) {
+      const timer = setTimeout(kick, ms);
+      timer.unref?.();
+    }
+  } catch (error) {
+    diag(`stack kick bootstrap failed: ${error?.message ?? error}`);
+  }
 }
 

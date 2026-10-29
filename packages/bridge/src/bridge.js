@@ -31,6 +31,19 @@ import { createSingingService, normalizeSingingConfig, redactSingingConfig } fro
 import { createShortCoverService } from './short-cover/manager-v2.js';
 import { normalizeCoverConfig } from './short-cover/config.js';
 import { hardenDir, manualDirCommand } from './state-acl.mjs';
+// 电源感知与离电省电策略。判定是纯函数；本进程只负责采样、写状态文件、按策略放行/拒绝。
+import {
+  POWER_CAPABILITIES,
+  createPowerMonitor,
+  decidePowerPolicy,
+  normalizePowerConfig,
+  powerAllowsCapability,
+  powerCapabilityForPath,
+  powerCapabilityLabel,
+  powerPromptLine,
+  powerRefusal,
+  readPowerState,
+} from './power.js';
 import { extractForwardIds, forwardIdFromData, sanitizeForwardId, formatForwardResponse } from './forward.js';
 import { resolvePriceTable } from './model-prices.js';
 import { createTokenLedger } from './token-ledger.js';
@@ -1033,6 +1046,10 @@ function loadConfig() {
     }
   }
 
+  // 离电省电策略（控制台「电源与省电」）。这里只归一化；真正判定在 power.js 的纯函数里，
+  // 这样控制台改了配置下一条消息就生效，不需要重启。
+  cfg.power = normalizePowerConfig(file.power);
+
   // 人格卡注入上限（字符）。历史硬编码 6000，现在可配：每条约 4~6k token 的成本护栏。
   cfg.role = { maxInjectChars: ROLE_INJECT_MAX_CHARS_DEFAULT, ...(file.role ?? {}) };
   roleInjectMaxChars = applyRoleInjectLimit(cfg.role.maxInjectChars);
@@ -1501,6 +1518,15 @@ let stateDirHardened = null;
 // ── 主流程 ──────────────────────────────────────────────────────────────────
 async function main() {
   const cfg = loadConfig();
+  // 电源监控在 main 的末尾才启动；这里先声明成 null，避免早期代码/请求处理器踩到 TDZ。
+  // 三个省电状态变量也放在这里：测试 harness 会在 main 中途 return，声明在末尾会 TDZ。
+  let powerMonitor = null;
+  // 离电思考强度只做**进程内覆盖**，不写 config.json：
+  //   - 拔插不需要改用户配置，也不会在桥接崩溃时把档位永久留在 low；
+  //   - 通过 modelSelectionEpoch 让下一个回合重新 selectModel；
+  //   - 用户手动改档位会清掉覆盖（powerUserOverride），下次拔插再重新评估。
+  let powerEffortOverride = null;
+  let powerUserOverride = false;
   fs.mkdirSync(STATE_DIR, { recursive: true });
   hardenStateDirAcl();
   acquireLock();
@@ -2110,7 +2136,10 @@ async function main() {
 
   /** segmentsToText 的 resolveVoice：转写成功返回「[语音 6秒·语气开心] 原话」，失败返回 null（回退为「[语音]」）。 */
   async function transcribeVoiceV2(data, messageId) {
-    const info = await asrService.transcribeSegment(data, { messageId });
+    // 离电省电：不拉起本地 SenseVoice（~850MB / 2 线程），改用 QQ 自带转写；没有转写就回退「[语音]」。
+    // 注意这里只影响**入站**识别；控制台的手动加载/试听不受电源策略影响。
+    const localAllowed = powerAllowsCapability(cfg.power, powerMonitor?.state?.() ?? null, 'asr');
+    const info = await asrService.transcribeSegment(data, { messageId, engine: localAllowed ? undefined : 'qq' });
     if (!info || info.status === 'error') return null;
     const a = normalizeAsrConfig(cfg.socialV2?.asr);
     return formatVoiceText(info, { showEmotion: a.showEmotion, showEvent: a.showEvent });
@@ -3867,6 +3896,18 @@ async function main() {
           }
         }
       }
+      // ── 电源闸门（只作用于智能体调用）──
+      // 控制台的管理请求不带 x-agent-call，所以永远不受影响：离电时你仍然可以在控制台
+      // 预览语音、试听 TTS、改配置。真正被拒绝的是模型发起的工具调用。
+      if (req.headers['x-agent-call'] !== undefined) {
+        const powerCap = powerCapabilityForPath(url.pathname);
+        if (powerCap && !powerAllowsCapability(cfg.power, powerMonitor?.state?.() ?? null, powerCap)) {
+          const refusal = powerRefusal(powerCap);
+          log(`[power] 拒绝离电调用的能力 ${powerCap}（${url.pathname}）`);
+          sendJson({ ok: false, ...refusal }, 403);
+          return;
+        }
+      }
       // CSRF 防护：所有写操作必须是 application/json，且（若带 Origin）必须来自本机页面。
       // 默认未配 consoleToken 时，这可阻止任意网页用表单/跨站请求触发
       // /api/restart、/api/workspace/reset、/api/role 等破坏性接口。
@@ -3999,6 +4040,50 @@ async function main() {
             snowluma: snowlumaHealthSnapshot(),
             activity: readActivityTail(100)
           });
+          return;
+        }
+        // ── 电源与省电 ─────────────────────────────────────────────────────
+        // GET 只读；POST 改 config.power（只动这一段，不碰 features/socialV2 的用户意图）。
+        if (req.method === 'GET' && url.pathname === '/api/power') {
+          sendJson({ ok: true, ...powerSnapshot() });
+          return;
+        }
+        if (req.method === 'POST' && url.pathname === '/api/power') {
+          const body = await readBody();
+          if (!body || typeof body !== 'object' || Array.isArray(body)) {
+            sendJson({ ok: false, error: '请求体必须是对象' }, 400);
+            return;
+          }
+          const src = cfg.power;
+          const batteryBody = (body.battery && typeof body.battery === 'object' && !Array.isArray(body.battery)) ? body.battery : {};
+          const merged = normalizePowerConfig({
+            enabled: typeof body.enabled === 'boolean' ? body.enabled : src.enabled,
+            pollMs: src.pollMs,
+            debounceMs: src.debounceMs,
+            battery: {
+              allow: Array.isArray(batteryBody.allow) ? batteryBody.allow : src.battery.allow,
+              reasoningEffort: batteryBody.reasoningEffort !== undefined ? batteryBody.reasoningEffort : src.battery.reasoningEffort,
+              pauseProactive: typeof batteryBody.pauseProactive === 'boolean' ? batteryBody.pauseProactive : src.battery.pauseProactive,
+            },
+          });
+          const configFile = path.join(ROOT, 'config.json');
+          const file = readConfigObject(configFile);
+          file.power = merged;
+          atomicWriteJson(configFile, file);
+          cfg.power = merged;
+          log(`控制台：离电策略已更新（${merged.enabled ? '启用' : '停用'}，离电放行 ${merged.battery.allow.join(',') || '无'}）`);
+          let simulatedNow = false;
+          if (body.simulate !== undefined) {
+            const sim = body.simulate === 'battery' || body.simulate === 'ac' ? body.simulate : null;
+            await powerMonitor?.simulate(sim);
+            simulatedNow = true;
+          } else if (body.refresh === true) {
+            await powerMonitor?.refresh('console');
+          }
+          // 开关本身变了（例如刚打开策略、或改了思考强度）时立刻应用一次，不必等下一次插拔。
+          // 模拟切换已经由 monitor 的 onChange 应用过，不要重复应用（会重复排程主动机会）。
+          if (!simulatedNow) applyPowerPolicy(null, powerMonitor?.state?.() ?? null, { reason: 'console' });
+          sendJson({ ok: true, ...powerSnapshot() });
           return;
         }
         if (req.method === 'GET' && url.pathname === '/api/features') {
@@ -4729,7 +4814,7 @@ async function main() {
           sendJson({
             provider,
             model,
-            reasoningEffort: String(cfg.dsh?.reasoningEffort || REASONING_EFFORT_DEFAULT),
+            reasoningEffort: String(effectiveReasoningEffort(false)),
             options,
             labels,
             default: REASONING_EFFORT_DEFAULT,
@@ -4746,15 +4831,11 @@ async function main() {
           let effort;
           try { effort = normalizeReasoningEffort(body.reasoningEffort); }
           catch (error) { sendJson({ ok: false, error: error?.message ?? '思考强度无效' }, 400); return; }
-          const configFile = path.join(ROOT, 'config.json');
-          // fail-fast：配置损坏时直接 500，绝不回写（与白名单接口同语义）
-          const file = readConfigObject(configFile);
-          file.dsh = { ...(file.dsh ?? {}), reasoningEffort: effort };
-          atomicWriteJson(configFile, file);
-          cfg.dsh = { ...(cfg.dsh ?? {}), reasoningEffort: effort };
-          // 递增代号：已在运行的会话在下一条消息会重新 selectModel（无需重启桥接或 DSH）
-          modelSelectionEpoch += 1;
-          log(`控制台：DSH 思考强度已设为 ${effort}（对已有会话于下一条消息生效）`);
+          // 用户手动改档位：如果此刻正被离电策略覆盖着，记一笔「别再自动盖回去」；
+          // 在插电状态下手动改档位只是普通配置修改，不应该影响之后拔电的自动降档。
+          if (powerEffortOverride != null) powerUserOverride = true;
+          powerEffortOverride = null;
+          setReasoningEffort(effort, { source: 'console' });
           sendJson({ ok: true, reasoningEffort: effort });
           return;
         }
@@ -5360,11 +5441,22 @@ async function main() {
           };
           const tools = cfg.socialV2?.tools ?? {};
           const stickerToolFlags = new Set(['listStickers', 'getStickerImage', 'sendSticker', 'setStickerRemark', 'stickerNote', 'collectSticker']);
+          // 工具开关 → 电源能力。离电时把被关掉的工具从 enabledTools 里摘掉：
+          // 模型看不到就不会调，省下「调一次→403→再解释」那一轮 token。403 仍然保留作兜底。
+          const toolFlagCapability = {
+            sendVoice: 'voice', speak: 'speak', getImages: 'images', memory: 'memory',
+            listStickers: 'sticker', getStickerImage: 'sticker', sendSticker: 'sticker',
+            setStickerRemark: 'sticker', stickerNote: 'sticker', collectSticker: 'sticker', addSticker: 'sticker',
+          };
+          const powerState = powerMonitor?.state?.() ?? null;
+          const powerPolicy = decidePowerPolicy(cfg.power, powerState);
+          const powerAllows = (cap) => !powerPolicy.onBattery || !cap || powerPolicy.allow.includes(cap);
           const enabledTools = [];
           const speakNow = speakCfg();
           for (const [flag, name] of Object.entries(toolMap)) {
             // qq_speak 只在开口说话总开关打开时列出，否则模型会去调一个必然 403 的工具
             if (flag === 'speak' && !speakNow.enabled) continue;
+            if (toolFlagCapability[flag] && !powerAllows(toolFlagCapability[flag])) continue;
             if (tools[flag] !== false && !(stickerToolFlags.has(flag) && !stickerEnabled())) enabledTools.push(name);
           }
           sendJson({
@@ -5385,6 +5477,13 @@ async function main() {
               proactive: cfg.socialV2?.proactive ?? {}
             },
             enabledTools,
+            // 电源状态：模型据此判断「现在还能不能唱歌/发语音/看图」，不要靠调一次 403 才知道。
+            power: {
+              source: powerState?.source ?? 'unknown',
+              saving: powerPolicy.onBattery && powerPolicy.enabled,
+              disabled: powerPolicy.deny.map((id) => ({ id, label: powerCapabilityLabel(id) })),
+              line: powerPromptLine(cfg.power, powerState) || null,
+            },
             replyTiming: replyTimingV2(st),
             unreadCount: st.unread.length,
             recentCount: st.recentMessages.length,
@@ -9163,9 +9262,8 @@ async function main() {
     const provider = String(cfg.dsh?.provider || 'deepseek-official');
     const model = String(cfg.dsh?.model || 'deepseek-flash');
     // closed-agent（owner 私聊、可操控 DSH）用单独的思考强度；QQ 群聊用低档。
-    const effort = String(currentMode === 'closed-agent'
-      ? (cfg.dsh?.closedAgentReasoningEffort || cfg.dsh?.reasoningEffort || REASONING_EFFORT_DEFAULT)
-      : (cfg.dsh?.reasoningEffort || REASONING_EFFORT_DEFAULT));
+    // 离电覆盖（powerEffortOverride）优先，且只在进程内生效。
+    const effort = String(effectiveReasoningEffort(currentMode === 'closed-agent'));
     let lastError = null;
     for (let attempt = 1; attempt <= 2; attempt += 1) {
       try {
@@ -10562,7 +10660,11 @@ async function main() {
     return selected.length > roleInjectMaxChars ? truncateText(selected, roleInjectMaxChars) : selected;
   }
   function currentRoleHint() {
-    return roleHintForMode('v1');
+    // 一代没有 qq_get_prompt 这类结构化入口，电源状态只能跟着人格提示一起注入。
+    // 插电时 powerPromptLine() 返回空串，不占 token。
+    const role = roleHintForMode('v1');
+    const power = powerPromptLine(cfg.power, powerMonitor?.state?.() ?? null);
+    return [role, power].filter(Boolean).join('\n\n');
   }
 
   // 二代仿真模式专用角色提示：去掉一代的 [SILENT] / 空格分句等状态机指令，避免与工具协议冲突。
@@ -11776,6 +11878,10 @@ async function main() {
     if (cfg.socialV2?.proactive?.enabled === false) return;
     if (socialV2.paused || currentMode !== 'reserved2') return;
     if (!isSessionAllowedInCurrentMode(key)) return;
+    // 离电省电：主动冒泡=无端多一轮 LLM 调用，是电池上最不值得的开销。只暂停调度，
+    // 不打断已经在跑的回合；插电后控制台的 applyPowerPolicy 会重新排程。
+    if (cfg.power?.enabled && cfg.power?.battery?.pauseProactive !== false
+      && powerMonitor?.state?.()?.source === 'battery') return;
     const st = getSocialV2State(key);
     if (st.proactiveTimer) return;
     const p = cfg.socialV2?.proactive ?? {};
@@ -13084,6 +13190,106 @@ async function main() {
   if (cfg.socialV2?.sticker?.enabled !== false) {
     syncStickerLibrary(true).catch((error) => log('启动预热表情库失败:', error?.message ?? error));
   }
+
+  // ── 电源与省电 ───────────────────────────────────────────────────────────
+  // 三条规则：
+  //   ① 只有「离电 + 策略开启」才收紧；插电/检测失败/策略关闭一律全放行（fail-open）。
+  //   ② 自动降思考强度只做一次，且用户手动改过档位后不再覆盖（powerUserOverride）。
+  //   ③ 主动机会只暂停调度，不打断正在进行的回合。
+  // 变量声明放在 main 顶部（见 powerMonitor 旁边）：测试 harness 会在中途 return，
+  // 如果声明在末尾，任何提前进入的请求都会踩到 TDZ。
+  function setReasoningEffort(effort, { source = 'console' } = {}) {
+    const next = normalizeReasoningEffort(effort);
+    if (next === cfg.dsh.reasoningEffort) return next;
+    const configFile = path.join(ROOT, 'config.json');
+    // fail-fast：配置损坏时直接抛错，绝不回写（与白名单接口同语义）。
+    const file = readConfigObject(configFile);
+    file.dsh = { ...(file.dsh ?? {}), reasoningEffort: next };
+    atomicWriteJson(configFile, file);
+    cfg.dsh = { ...(cfg.dsh ?? {}), reasoningEffort: next };
+    // 递增代号：已在运行的会话在下一条消息会重新 selectModel（无需重启桥接或 DSH）
+    modelSelectionEpoch += 1;
+    log(`思考强度已设为 ${next}（${source}；对已有会话于下一条消息生效）`);
+    return next;
+  }
+
+  function clearProactiveTimersV2() {
+    for (const st of socialV2.conversations.values()) {
+      if (st.proactiveTimer) {
+        clearTimeout(st.proactiveTimer);
+        st.proactiveTimer = null;
+      }
+    }
+  }
+
+  function applyPowerPolicy(prev, next, { reason = 'sample' } = {}) {
+    const p = cfg.power;
+    if (!p) return;
+    const onBattery = p.enabled && next?.source === 'battery';
+
+    // 思考强度：只在进程内覆盖，不写用户配置。拔电 → 覆盖；插电 → 撤销覆盖。
+    // 用户手动改过（powerUserOverride）后本轮不再自动覆盖，直到插电重置。
+    if (onBattery) {
+      const target = p.battery.reasoningEffort;
+      if (target && !powerUserOverride && powerEffortOverride !== target) {
+        powerEffortOverride = target;
+        modelSelectionEpoch += 1;
+        log(`思考强度按离电策略临时降到 ${target}（不写 config.json；下一条消息生效）`);
+      }
+    } else {
+      if (powerEffortOverride != null) {
+        powerEffortOverride = null;
+        modelSelectionEpoch += 1;
+        log('思考强度已恢复为用户配置（插电/策略关闭；下一条消息生效）');
+      }
+      powerUserOverride = false;
+    }
+
+    if (p.battery.pauseProactive !== false) {
+      if (onBattery) {
+        clearProactiveTimersV2();
+      } else if (prev?.source === 'battery' || reason === 'console') {
+        // 插电恢复：把主动机会排程补回来（只对仍在 conversations 里的会话）。
+        for (const key of socialV2.conversations.keys()) scheduleProactiveCheckV2(key);
+      }
+    }
+    log(`[power] 策略应用：${onBattery ? '电池省电' : '插电全放行'}（${reason}）`);
+  }
+
+  /** 当前生效的思考强度（考虑离电覆盖）。 */
+  function effectiveReasoningEffort(closedAgent = false) {
+    if (powerEffortOverride) return powerEffortOverride;
+    if (closedAgent) return cfg.dsh?.closedAgentReasoningEffort || cfg.dsh?.reasoningEffort || REASONING_EFFORT_DEFAULT;
+    return cfg.dsh?.reasoningEffort || REASONING_EFFORT_DEFAULT;
+  }
+
+  /** 控制台 /api/power 的只读快照。 */
+  function powerSnapshot() {
+    const state = powerMonitor?.state?.() ?? readPowerState(ROOT);
+    const policy = decidePowerPolicy(cfg.power, state);
+    return {
+      state: state ?? null,
+      simulated: powerMonitor?.simulated?.() ?? null,
+      config: cfg.power,
+      policy,
+      capabilities: POWER_CAPABILITIES,
+      reasoning: {
+        current: effectiveReasoningEffort(false),
+        configured: cfg.dsh.reasoningEffort,
+        battery: cfg.power.battery.reasoningEffort,
+        autoApplied: powerEffortOverride,
+      },
+    };
+  }
+
+  powerMonitor = createPowerMonitor({
+    root: ROOT,
+    getConfig: () => cfg.power,
+    log,
+    onChange: (prev, next, meta) => applyPowerPolicy(prev, next, meta),
+  });
+  powerMonitor.start().catch((error) => log(`[power] 启动电源监控失败：${error?.message ?? error}`));
+
   startDshWatch();
   startSnowlumaWatch();
   startConsoleServer();

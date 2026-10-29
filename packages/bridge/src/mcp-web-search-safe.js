@@ -15,8 +15,11 @@
 //   - 响应体按字节流限量读取，避免超大响应拖垮进程。
 // - 搜索结果/抓取结果仅作为“候选解释”，最终是否入库仍由控制台人工确认。
 import path from 'node:path';
+import fs from 'node:fs';
 import { safeFetch } from './safe-fetch.js';
 import { webSearch, loadSearchConfig } from './web-search.js';
+// 离电省电：联网搜索是独立 MCP 进程，拿不到桥接内存状态，只能读桥接写的 data/power-state.json。
+import { powerAllowsCapability, powerRefusal, readPowerState } from './power.js';
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
 import { z } from 'zod';
@@ -58,6 +61,21 @@ const server = new McpServer({ name: 'web-search-safe', version: '0.2.0-r4' });
 function searchEnabled() {
   try { return loadSearchConfig(projectRoot()).enabled !== false; } catch { return true; }
 }
+
+// 电源策略（config.json 的 power 段）与桥接写的电源状态。读不到就放行（fail-open）。
+function powerConfig() {
+  try {
+    const text = fs.readFileSync(path.join(projectRoot(), 'config.json'), 'utf8');
+    const file = JSON.parse(text.charCodeAt(0) === 0xfeff ? text.slice(1) : text);
+    return file?.power ?? {};
+  } catch {
+    return {};
+  }
+}
+function searchPowerBlocked() {
+  const refusal = powerRefusal('webSearch');
+  return { content: [{ type: 'text', text: `${refusal.error}。${refusal.hint}` }], isError: true };
+}
 const SEARCH_DISABLED_TEXT = '联网搜索已在控制台关闭（webSearch.enabled=false）。需要时在「运行总览 → 大功能开关」里打开。';
 function searchDisabledResult() {
   return { content: [{ type: 'text', text: SEARCH_DISABLED_TEXT }], isError: true };
@@ -69,6 +87,7 @@ server.tool(
   { query: z.string().describe('要搜索确认的网络用语/黑话/梗/事实性问题') },
   async ({ query }) => {
     if (!searchEnabled()) return searchDisabledResult();
+    if (!powerAllowsCapability(powerConfig(), readPowerState(projectRoot()), 'webSearch')) return searchPowerBlocked();
     const clean = sanitizeQuery(query);
     if (!clean) {
       return { content: [{ type: 'text', text: '查询词为空，已拒绝。' }], isError: true };
@@ -91,6 +110,7 @@ server.tool(
   { url: z.string().describe('要抓取的 http(s) URL') },
   async ({ url }) => {
     if (!searchEnabled()) return searchDisabledResult();
+    if (!powerAllowsCapability(powerConfig(), readPowerState(projectRoot()), 'webSearch')) return searchPowerBlocked();
     try {
       const result = await safeFetch(url);
       return { content: [{ type: 'text', text: JSON.stringify(result, null, 2) }] };
@@ -144,6 +164,7 @@ server.tool(
   },
   async ({ query, count }) => {
     if (!searchEnabled()) return searchDisabledResult();
+    if (!powerAllowsCapability(powerConfig(), readPowerState(projectRoot()), 'webSearch')) return searchPowerBlocked();
     const clean = sanitizeQuery(query);
     const want = Math.min(20, Math.max(1, Math.round(Number(count) || 8)));
     if (!clean) {

@@ -430,6 +430,23 @@
   "features": {
     "biliCard": true
   },
+  "power": {
+    "enabled": true,
+    "pollMs": 30000,
+    "debounceMs": 20000,
+    "battery": {
+      "allow": ["sticker", "memory"],
+      "reasoningEffort": "low",
+      "pauseProactive": true
+    }
+  },
+  "stack": {
+    "autoStart": true,
+    "docker": true,
+    "container": "snowluma",
+    "composeFile": "docker-compose.snowluma.yml",
+    "dockerWaitMs": 120000
+  },
   "webSearch": {
     "enabled": true,
     "provider": "auto",
