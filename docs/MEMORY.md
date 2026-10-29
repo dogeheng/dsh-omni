@@ -229,6 +229,13 @@ CREATE VIRTUAL TABLE memory_fts USING fts5(grams, tokenize='unicode61');
 - **转义**：查询 token 只保留字母/数字/汉字并加双引号，`- * " OR/AND/NOT ( )` 等 FTS 语法字符进不去，
   空 token 直接退回结构化检索（绝不对空串 `MATCH`）。
 - 结构化条件（scope/群号/人物/状态/过期）全部走普通索引；FTS 只负责算相关度。
+- **精度处理**（都是灰度/评测里发现真实问题后加的）：
+  - 只命中人名不算相关：扣掉昵称 token 后仍无内容词命中 → 降权（不直接丢弃，中文词形差异会误杀）；
+  - 问题里点名了某人 → 这个人的记录 +0.12、其他人的 -0.12（**不硬过滤**：真实群里有人昵称就叫「可以」，
+    硬过滤会把正确结果一起干掉）；
+  - 结构化召回（人物档案/承诺/状态）只在问题明确提到这个人时参与；
+  - 补一层「单字覆盖率」（占 25% 权重），缓解"学做饭 / 在学什么"这种 bigram 对不上的情况；
+  - 档位越轻门槛越高（casual minScore 0.32、familiar 0.24、history 0.15）。
 - 结果先按内容去重，再和旧注入（`formatMemoryV2` 的话题/印象）做重叠检测，避免过渡期双份 Token。
 
 ---
@@ -246,7 +253,10 @@ CREATE VIRTUAL TABLE memory_fts USING fts5(grams, tokenize='unicode61');
 - 不需要记忆时返回 **空串**：提示词与关闭记忆时逐字节一致（桥接测试会对比两次完整 prompt）。
 - 渲染上限 = `min(档位预算, memory.prompt.maxTokens)`，且代码硬钳制 350；
   逐行试算（保守估算：CJK 1 token/字、其它 3.2 字符/token），放不下就停。
-- 有 `dm/owner_private/person_shared` 内容时，标题会追加「标注私聊/主人私聊的内容不要搬到群里」。
+- 有 `dm/owner_private/person_shared` 内容时，标题会追加「私聊内容勿外传」。
+- 头部随档位变短：casual 档用 `【记忆·背景】`（实测旧长头部会把 50 tokens 里唯一一条挤掉）。
+- 同一个人改过群名片时，记忆行显示「当前名（曾用名）」——否则模型会把 `明仔` 和 `小明`
+  当成两个人（真实灰度里就出现过这种回答）。
 - 内容被压成单行、去反引号/尖括号、截断；每行都是 `- ` 数据行，不能伪造出新的【】标题。
 - 每轮记录到 `data/memory/metrics.jsonl`：`{t,key,tier,retrieved,hits,tokens,ms,mode,cached}`，
   每 25 条附带一次 `rssMB/heapUsedMB`；内存里只留最近 200 条环形缓冲。
@@ -365,6 +375,23 @@ people: 3 个可解析身份建档
 }
 ```
 
+灰度期的覆盖值（当前 `config.json`）：
+
+```json
+{
+  "memory": {
+    "retrieval": { "mode": "live" },
+    "capture": {
+      "autoExtractionEnabled": true,
+      "maxExtraCallsPerDay": 2,
+      "batchCandidateThreshold": 15,
+      "minExtractionIntervalMs": 1800000,
+      "extractionConversations": ["private:952866364"]
+    }
+  }
+}
+```
+
 `retrieval.mode`：
 
 - `off`：完全不查（`enabled=false` 等价）；
@@ -425,6 +452,9 @@ node scripts/memory-bench.mjs --count 5000 --queries 500 --scale   # 5000 + 2000
 - 新增常驻堆内存 1.4~3.3MB，远低于 50MB 上限；RSS 增量包含 SQLite 页缓存与 V8 增长，仍在 20MB 内。
 - Token：混合消息（闲聊/历史提问/表情）平均 72~82，最大 129；单轮硬上限 350 由渲染器实测守住。
 - 2000 条单测（`test-memory.mjs` 16a）实测 median 0.03ms / p95 0.05ms / 堆增量 0.90MB。
+- **一次真实批量提炼（15 条候选，DSH deepseek-flash）**：7.6 秒，**17,645 输入 + 1,156 输出 tokens**，
+  写入 8 条、丢弃 7 条；其中同一批里 `音色偏好` 被后一条自动取代（事实更新在提炼路径也生效）。
+  按 2 次/天算约 3.8 万 tokens/天；这是"辅助会话带着完整工具面"的成本，后续可用更瘦的 preset 降下来。
 
 ---
 
@@ -434,8 +464,12 @@ node scripts/memory-bench.mjs --count 5000 --queries 500 --scale   # 5000 + 2000
 cd packages/bridge
 node scripts/test-memory.mjs          # 存储/ACL/检索/预算/迁移/注入（21 个用例）
 node scripts/test-memory-bridge.mjs   # 真实 bridge.js + 假 DSH/QQ（14 个用例）
+node scripts/memory-eval.mjs          # 50 个场景的质量评测（43 个问题 + 12 条无关闲聊）
 npm run test:audit                    # 既有全量回归（已包含上面两个文件）
 npm run test:memory                   # 只跑上面两个
+node scripts/memory-eval.mjs          # 50 个真实场景的质量评测（离线，不花钱）
+node scripts/memory-eval.mjs --live   # 额外让真实模型带注入块回答，算答案正确率/人格
+node scripts/memory-calibrate.mjs     # 用真实模型 usage 校准 350 token 估算
 ```
 
 `test-memory.mjs` 覆盖：A 群事件可回忆、B 群读不到 A 群（含诱导泄漏）、跨群同人身份关联但记录隔离、
@@ -458,6 +492,8 @@ B 群提示词无 A 群内容、主人私聊不进群、真实提示词 ≤350 t
 ## 12. 未完成 / 已知限制
 
 1. **没有向量检索**。中文同义改写（"找实习" ↔ "求职"）召回不到；这是第一版的明确取舍。
+   评测里 43 个问题的条件召回是 100%，但那是"记忆已经写进去 + 问题与原文有词面重叠"的前提下；
+   换成纯同义词提问（例如只说"求职"）仍会漏。
    需要时的扩展点是 `retrieval.mode` 之外再加一个可选 `embedding` 适配器（本次未安装模型）。
 2. **Level 3 的 LLM 巩固只做到"本地整理"**：过期清理、候选裁剪、同主题合并；没有"每晚总结人物档案"
    这类需要额外 LLM 的反思（任务书也要求不无条件每晚全量反思）。
@@ -468,5 +504,63 @@ B 群提示词无 A 群内容、主人私聊不进群、真实提示词 ≤350 t
 5. **删除不会追溯清理已导出的备份**（`.json`/`.sqlite` 备份）；见 §9 的保留策略，需要彻底清除时要手动删备份。
 6. **Token 计数仍非精确 tokenizer**：已用真实模型用量抽样校准（估算高估 12%~64%，方向安全），
    但没有内置分词器；如果以后要卡得更紧，需要引入一个不常驻的 tokenizer 或继续抽样。
-7. **RSS 无法在代码里硬限制**，只能通过"不整库加载 + 有界缓存 + LIMIT"控制；实测增量见 §10。
-8. 记忆块目前只在 `reserved2`（二代仿真）注入；一代 `reserved` 模式仍用旧轻量记忆，刻意不改，避免影响在跑的行为。
+7. **一次真实提炼 ≈ 1.8 万输入 tokens**（辅助会话带着完整工具面）。按 2 次/天灰度是约 3.8 万/天；
+   要长期开到 6 次/天，建议先给提炼换一个不带工具面的瘦 preset（本次未做，避免动 DSH 安装）。
+8. **MCP 工具 schema 需要 DSH 重启才会刷新**：桥接端已支持长期记忆类别，但 09:49 启动的
+   `mcp-snowluma-safe` 进程仍持有旧 schema；在 DSH 重启前，模型只能用旧类别
+   （`qq_get_prompt` 已经能看到 `longTermMemory` 段，桥接侧写入/召回接口是通的）。
+9. **RSS 无法在代码里硬限制**，只能通过"不整库加载 + 有界缓存 + LIMIT"控制；实测增量见 §10。
+10. 记忆块目前只在 `reserved2`（二代仿真）注入；一代 `reserved` 模式仍用旧轻量记忆，刻意不改，避免影响在跑的行为。
+
+---
+
+## 13. 灰度记录（2026-10-29）
+
+**上线顺序**
+
+1. 代码提交 `3dc2a4c`（P0–P3 + 测试 + 文档），`config.json` 备份两次（`data/config.json.bak-*`）。
+2. `retrieval.mode=shadow` → `bash start-mac.sh` 重启（pid 8929）。校验：
+   `/api/memory/status` 正常、WAL=true、库 18 条、`openError=null`、目录 700/文件 600。
+3. `retrieval.mode=live` → 再次重启（pid 9167）。真实唤醒投递时记忆块注入、`metrics.lastInjection` 有记录。
+4. 打开自动提炼但**只作用于测试私聊**、每日上限 2：
+   `capture.autoExtractionEnabled=true`、`maxExtraCallsPerDay=2`、
+   `extractionConversations=["private:952866364"]` → 重启（pid 14596）。
+
+**真实提炼验证（同一晚）**
+
+- 手工放入 15 条候选（测试私聊）→ `POST /api/memory/extract {"force":true}`；
+- 结果：**7.6 秒，写入 8 条、丢弃 7 条**；预算 `1/2`；其中「音色偏好」在同一批里被后一条自动取代；
+- 实际 token（从 `data/token-usage.jsonl` 按 memory 会话汇总）：**17,645 输入 + 1,156 输出**。
+
+**真实注入验证**
+
+- 重启后测试私聊有一次唤醒，`lastInjection`：`tier=casual, hits=1, tokens=45, ms=3, mode=live`；
+- 注入内容就是之前写入的 owner_private 记忆（`主人让我把之前的语音在 973614217 这个群里再发一遍`），
+  45 tokens 没有超过 50 的 casual 预算。
+
+**质量评测（`scripts/memory-eval.mjs`，50 个场景）**
+
+| 指标 | 结果 |
+|---|---|
+| 写入率（规则或显式路径） | **93.6%**（44/47；未捕获的 3 条都是隐私类事实，留给显式工具/提炼） |
+| Recall@5（条件：记忆已写入） | **100%**（43/43） |
+| 错误记忆率（张冠李戴） | **0%** |
+| 无关注入率（12 条闲聊） | **0%** |
+| 跨群/主人私聊泄漏 | **0%** |
+| live 答案正确率（真实 deepseek-flash） | **97.7%**（42/43，唯一失败是"明仔/小明"昵称措辞，见下） |
+| live 人格稳定率 | **100%**（43/43 没有 AI 自曝/提提示词/复述清单） |
+
+live 评测里发现并修掉的真实问题（修完后 43 题里仍有 1 题因昵称措辞被判失败；
+同一条用例单独跑时能答对，属于模型偶发混淆，不是权限/检索问题）：
+1. 头部 + 一条记忆超过 casual 50 tokens → 改成短头部（否则"命中了却不注入"）；
+2. 只命中人名就召回 → 加内容 token 校验 + 单字覆盖率；
+3. 问题里点名的人被常用词昵称（真实数据里有人叫「可以」）误过滤 → 过滤前排除常用词；
+4. 同一人换群名片后被当成两个人 → 渲染"问题里用的名字（曾用名）"；
+5. 问题句没有问号/历史词就不查 → 把"什么/为什么/几点…"纳入直接提问档。
+
+**尚未完成的手工步骤**
+
+- 真实 QQ 双向验证需要**另一个 QQ 账号发消息**（我只能以机器人身份发，不能冒充群友）。建议在
+  一个测试群 + 主人私聊里各发 3 条：一条事实、一条更新、一条删除，然后看
+  `data/memory/metrics.jsonl` 与 `/api/memory/status`。桥接侧与评测侧均已验证通过。
+- 新 MCP 工具 schema 需要重启 DSH（会中断当前 Web 会话，所以没有替用户执行）。

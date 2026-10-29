@@ -295,7 +295,7 @@ export function createMemoryManager({
   }
 
   /** 内部检索（不做 Token 裁剪），供 recall 与渲染共用。 */
-  function retrieveRows({ ctx, text, maxResults = 5, includeSession = false, queryText = '' }) {
+  function retrieveRows({ ctx, text, maxResults = 5, includeSession = false, minScore = cfg.retrieval.minScore }) {
     const s = store();
     if (!s) return { rows: [], ms: 0 };
     const started = process.hrtime.bigint();
@@ -307,6 +307,7 @@ export function createMemoryManager({
     const structuredRows = s.queryAboutPeople({
       ctx, subjectIds: ctx.senderIds, limit: Math.min(8, cfg.retrieval.candidateLimit), now: now()
     });
+    const subjectFilter = s.findPeopleMentioned({ personaId, text });
     const ranked = rankMemoryRows({
       ftsRows,
       structuredRows,
@@ -314,12 +315,14 @@ export function createMemoryManager({
       ctx,
       now: now(),
       halfLifeDays: cfg.retrieval.halfLifeDays,
-      minScore: cfg.retrieval.minScore,
-      limit: Math.max(maxResults, 1)
+      minScore,
+      limit: Math.max(maxResults, 1),
+      queryText: text,
+      subjectFilter
     });
     const ms = Number(process.hrtime.bigint() - started) / 1e6;
     state.lastRetrievalMs = ms;
-    return { rows: ranked, ms, queryText };
+    return { rows: ranked, ms };
   }
 
   /** 按权限检索（供 qq_memory_query / 控制台用）。 */
@@ -371,14 +374,26 @@ export function createMemoryManager({
     let cached = !!rows;
     if (!rows) {
       const result = retrieveRows({
-        ctx, text, maxResults: need.maxResults, includeSession: cfg.prompt.includeSessionState
+        ctx,
+        text,
+        maxResults: need.maxResults,
+        includeSession: cfg.prompt.includeSessionState,
+        // 档位越轻，门槛越严（闲聊宁可不说，也别翻旧账）。
+        minScore: Math.max(cfg.retrieval.minScore, need.minScore ?? 0)
       });
       rows = result.rows;
       ms = result.ms;
       if (rows.length) cache.set(cacheKey, rows, now());
     }
     const budget = Math.min(need.maxTokens, cfg.prompt.maxTokens);
-    const rendered = renderMemoryBlock({ rows, ctx, maxTokens: budget, avoidText: legacyText, now: now() });
+    let peopleByQq = null;
+    try {
+      peopleByQq = new Map(s.listPeople(personaId, { limit: 500 }).map((p) => [String(p.qqId), p]));
+    } catch { peopleByQq = null; }
+    const rendered = renderMemoryBlock({
+      rows, ctx, maxTokens: budget, avoidText: legacyText, now: now(), peopleByQq,
+      compact: need.tier === 'casual', queryText: text
+    });
     metrics.retrieved += 1;
     metrics.injections += 1;
     metrics.hits += rendered.lines.length;
@@ -512,7 +527,7 @@ export function createMemoryManager({
    * 后台 tick（由桥接的低频定时器调用，或在 CLI 里手动调）。
    * 同时负责 P3 提炼与本地巩固；两者都遵守同一份每日 LLM 预算。
    */
-  async function tick({ invoke = null, idleForMs = Number.POSITIVE_INFINITY, power = null } = {}) {
+  async function tick({ invoke = null, idleForMs = Number.POSITIVE_INFINITY, power = null, force = false } = {}) {
     if (!cfg.enabled) return { ran: false, reason: 'disabled' };
     const s = store();
     if (!s) return { ran: false, reason: 'store-unavailable' };
@@ -521,11 +536,11 @@ export function createMemoryManager({
       state.lastConsolidationAt = t;
       runConsolidation({ store: s, cfg, personaId, now: t });
     }
-    const plan = planExtraction({ store: s, cfg, personaId, now: t, power, idleForMs });
+    const plan = planExtraction({ store: s, cfg, personaId, now: t, power, idleForMs, force });
     if (!plan.run) return { ran: false, reason: plan.reason };
     if (typeof invoke !== 'function') return { ran: false, reason: '没有可用的 LLM 通道' };
     const result = await runExtractionOnce({
-      store: s, cfg, personaId, invoke, now: t, power, idleForMs, logger: log
+      store: s, cfg, personaId, invoke, now: t, power, idleForMs, logger: log, force
     });
     if (result.created) bumpGeneration();
     return result;

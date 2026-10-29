@@ -352,6 +352,30 @@ export class MemoryStore {
     };
   }
 
+  /**
+   * 找出问题里**明确提到的人**（昵称/别名）。用于检索时排除"另一个人的档案"：
+   * 问"小明最近在学什么"，不该把琪琪的在学记录排到前面。
+   * 人数很少（<几百），一次内存扫描比给昵称建 FTS 更简单可靠。
+   */
+  findPeopleMentioned({ personaId = 'default', text = '', limit = 8 } = {}) {
+    const hay = String(text ?? '').toLowerCase();
+    if (!hay) return [];
+    // 有些昵称本身就是常用词（真实数据里有人叫「可以」）。把它们当成"点名"会导致
+    // 检索把正确的人全过滤掉——这里直接不把这类名字作为过滤依据。
+    const COMMON = new Set(['可以', '知道', '现在', '什么', '大家', '有人', '明天', '今天',
+      '没有', '不是', '怎么', '这样', '那个', '这个', '他们', '我们', '你们', '自己',
+      '一个', '一下', '哈哈', '好的', '收到', '晚安']);
+    const out = [];
+    for (const person of this.listPeople(personaId, { limit: 500 })) {
+      const names = [person.displayName, ...(person.aliases ?? []).map((a) => a?.name)]
+        .map((n) => String(n ?? '').trim().toLowerCase())
+        .filter((n) => n.length >= 2 && !COMMON.has(n));
+      if (names.some((name) => hay.includes(name))) out.push(String(person.qqId));
+      if (out.length >= limit) break;
+    }
+    return out;
+  }
+
   listPeople(personaId, { limit = 50 } = {}) {
     return this._stmt('SELECT * FROM people WHERE persona_id = ? ORDER BY last_seen_at DESC LIMIT ?')
       .all(personaId, Math.min(200, Math.max(1, limit)))

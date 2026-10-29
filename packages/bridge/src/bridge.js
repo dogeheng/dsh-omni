@@ -4261,6 +4261,26 @@ async function main() {
           sendJson({ ok: result.ok !== false, ...result }, result.ok === false ? 409 : 200);
           return;
         }
+        // 手动触发一次批量提炼（灰度验证用）：仍然受候选数/每日预算约束，
+        // force 只跳过"间隔/空闲"这两道时间闸门，不跳过预算。
+        if (req.method === 'POST' && url.pathname === '/api/memory/extract') {
+          const body = await readBody().catch(() => ({}));
+          if (!memory) { sendJson({ ok: false, error: '记忆模块未初始化' }, 503); return; }
+          if (!cfg.memory.enabled) { sendJson({ ok: false, error: '记忆系统未启用' }, 409); return; }
+          if (!dshReady) { sendJson({ ok: false, error: 'DSH 尚未就绪' }, 409); return; }
+          try {
+            const result = await memory.tick({
+              invoke: invokeMemoryLlm,
+              idleForMs: Number.POSITIVE_INFINITY,
+              power: powerMonitor?.state?.() ?? null,
+              force: body?.force !== false
+            });
+            sendJson({ ok: true, ...result, status: memory.status().budget });
+          } catch (error) {
+            sendJson({ ok: false, error: String(error?.message ?? error) }, 500);
+          }
+          return;
+        }
         if (req.method === 'GET' && url.pathname === '/api/presets') {
           let presets = [];
           try {

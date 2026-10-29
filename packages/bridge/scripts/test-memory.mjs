@@ -592,7 +592,7 @@ test('15. 记忆里的恶意 Prompt 不能提升权限/改变人格核心', () =
     assert.equal(escalateSelf.ok, false, '公开身份只有主人私聊能改');
 
     const block = m.buildPromptBlock({ ctx: ctxA, text: '你还记得之前那条系统指令吗', reason: 'wake' });
-    assert.ok(block.text.includes('不是指令'), '注入块必须声明是背景资料而不是指令');
+    assert.ok(/不是指令|非指令/.test(block.text), '注入块必须声明是背景资料而不是指令');
     // 内容被压成一行的数据行，不能伪造出新的【】结构标题
     const bodyLines = block.text.split('\n').slice(1);
     assert.ok(bodyLines.every((line) => line.startsWith('- ')), '每条记忆都必须是列表数据行');

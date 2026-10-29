@@ -72,7 +72,9 @@ export function defaultMemoryConfig(root = '') {
       maxExtraCallsPerDay: DEFAULT_MAX_EXTRA_CALLS_PER_DAY,
       minExtractionIntervalMs: 30 * 60 * 1000,
       candidateTtlMs: 7 * 24 * 60 * 60 * 1000,
-      maxCandidates: 500
+      maxCandidates: 500,
+      // 只对这些会话做自动提炼（空 = 全部）。灰度时先填测试群/测试私聊。
+      extractionConversations: []
     },
     consolidation: {
       enabled: false,
@@ -149,7 +151,13 @@ export function normalizeMemoryConfig(raw, { root = '' } = {}) {
       maxExtraCallsPerDay: clampInt(capture.maxExtraCallsPerDay, 0, 24, def.capture.maxExtraCallsPerDay),
       minExtractionIntervalMs: clampInt(capture.minExtractionIntervalMs, 60_000, 24 * 60 * 60 * 1000, def.capture.minExtractionIntervalMs),
       candidateTtlMs: clampInt(capture.candidateTtlMs, 60 * 60 * 1000, 90 * 24 * 60 * 60 * 1000, def.capture.candidateTtlMs),
-      maxCandidates: clampInt(capture.maxCandidates, 50, 5000, def.capture.maxCandidates)
+      maxCandidates: clampInt(capture.maxCandidates, 50, 5000, def.capture.maxCandidates),
+      extractionConversations: Array.isArray(capture.extractionConversations)
+        ? capture.extractionConversations
+          .map((k) => String(k ?? '').trim())
+          .filter((k) => /^(group|private):\d+$/.test(k))
+          .slice(0, 20)
+        : []
     },
     consolidation: {
       enabled: consolidation.enabled === true,

@@ -83,7 +83,8 @@
       "maxExtraCallsPerDay": 6,
       "minExtractionIntervalMs": 1800000,
       "candidateTtlMs": 604800000,
-      "maxCandidates": 500
+      "maxCandidates": 500,
+      "extractionConversations": []
     },
     "consolidation": {
       "enabled": false,

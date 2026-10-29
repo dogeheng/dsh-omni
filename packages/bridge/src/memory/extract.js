@@ -82,17 +82,24 @@ export function parseExtractionOutput(text) {
  * @returns {{run:boolean, reason:string, candidates?:Array}}
  */
 export function planExtraction({
-  store, cfg, personaId = 'default', now = Date.now(), power = null, idleForMs = Number.POSITIVE_INFINITY
+  store, cfg, personaId = 'default', now = Date.now(), power = null, idleForMs = Number.POSITIVE_INFINITY,
+  force = false
 } = {}) {
   if (!cfg?.enabled) return { run: false, reason: '记忆系统未启用' };
   if (!cfg.capture?.autoExtractionEnabled) return { run: false, reason: '自动提炼未开启' };
   if (cfg.capture.maxExtraCallsPerDay <= 0) return { run: false, reason: '每日 LLM 预算为 0' };
-  const pending = store.listCandidates({ personaId, status: 'pending', limit: cfg.capture.batchCandidateThreshold });
+  const scoped = Array.isArray(cfg.capture.extractionConversations) && cfg.capture.extractionConversations.length
+    ? new Set(cfg.capture.extractionConversations)
+    : null;
+  const pending = store
+    .listCandidates({ personaId, status: 'pending', limit: Math.max(50, cfg.capture.batchCandidateThreshold * 4) })
+    .filter((candidate) => !scoped || scoped.has(candidate.conversationKey))
+    .slice(0, cfg.capture.batchCandidateThreshold);
   if (pending.length < cfg.capture.batchCandidateThreshold) {
     return { run: false, reason: `候选不足（${pending.length}/${cfg.capture.batchCandidateThreshold}）` };
   }
   const last = store.getSelfState(personaId, 'lastExtractionAt')?.value;
-  if (Number.isFinite(Number(last)) && now - Number(last) < cfg.capture.minExtractionIntervalMs) {
+  if (!force && Number.isFinite(Number(last)) && now - Number(last) < cfg.capture.minExtractionIntervalMs) {
     return { run: false, reason: '距上次提炼时间不足' };
   }
   const day = localDayKey(now);
@@ -100,7 +107,7 @@ export function planExtraction({
   if (used >= cfg.capture.maxExtraCallsPerDay) {
     return { run: false, reason: `今日 LLM 预算已用完（${used}/${cfg.capture.maxExtraCallsPerDay}）` };
   }
-  if (cfg.consolidation?.onlyWhenIdle && idleForMs < cfg.consolidation.idleMs) {
+  if (!force && cfg.consolidation?.onlyWhenIdle && idleForMs < cfg.consolidation.idleMs) {
     return { run: false, reason: '会话不空闲' };
   }
   if (cfg.consolidation?.preferACPower && power?.source === 'battery') {
@@ -122,9 +129,10 @@ export function planExtraction({
  * @returns {Promise<{ran:boolean, reason?:string, promoted?:number, discarded?:number, created?:number}>}
  */
 export async function runExtractionOnce({
-  store, cfg, personaId = 'default', invoke, now = Date.now(), power = null, idleForMs = Number.POSITIVE_INFINITY, logger = () => {}
+  store, cfg, personaId = 'default', invoke, now = Date.now(), power = null, idleForMs = Number.POSITIVE_INFINITY,
+  logger = () => {}, force = false
 } = {}) {
-  const plan = planExtraction({ store, cfg, personaId, now, power, idleForMs });
+  const plan = planExtraction({ store, cfg, personaId, now, power, idleForMs, force });
   if (!plan.run) return { ran: false, reason: plan.reason };
   // 先占额度再发请求：宁可浪费一次额度，也不能因并发/超时把真实调用次数算少。
   if (!store.reserveLlmCall({ personaId, day: plan.day, max: cfg.capture.maxExtraCallsPerDay, now })) {
