@@ -83,6 +83,9 @@ export function classifyCapture({ text = '', isSelf = false, hasMedia = false, k
   // 只剩表情/图片占位：没有可记的语义。
   if (!stripped || stripped.length < 4) return null;
   if (SECRET_RE.test(raw)) return null;
+  // "你还记得我喜欢喝什么吗" 是在考记忆，不是陈述；把它当偏好记下来会污染候选
+  // （真实灰度里出现过：两条待提炼候选都是这类问句）。
+  if (/(你还?记不记得|你还?记得|记不记得)/.test(stripped)) return null;
   if (QUESTION_ONLY_RE.test(stripped)) return null;
   // 全是同一个字符/连续哈哈哈：没有信息量。
   if (/^(.)\1{5,}$/.test(stripped)) return null;

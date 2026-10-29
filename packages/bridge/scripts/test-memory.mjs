@@ -13,6 +13,7 @@ import { test } from 'node:test';
 import {
   HARD_MAX_PROMPT_TOKENS,
   MemoryStore,
+  classifyCapture,
   buildReadContext,
   createMemoryManager,
   estimateTokens,
@@ -333,6 +334,9 @@ test('8b. 无标签的结构化记忆不会污染无关检索', () => {
 });
 
 test('9. 普通聊天不触发任何额外 LLM 调用（只落规则候选）', async () => {
+  // 问句不是陈述：真实灰度里"你还记得我喜欢喝什么吗？"曾被当成偏好候选。
+  assert.equal(classifyCapture({ text: '你还记得我喜欢喝什么吗？' }), null);
+  assert.equal(classifyCapture({ text: '记不记得我下周要去面试' }), null);
   const root = tempRoot();
   const m = makeManager(root);
   try {
