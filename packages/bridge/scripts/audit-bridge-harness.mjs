@@ -28,6 +28,7 @@ import * as presetPrompt from '../src/preset-prompt.js';
 import * as stateAcl from '../src/state-acl.mjs';
 import * as power from '../src/power.js';
 import * as roleCard from '../src/role-card.js';
+import * as memory from '../src/memory/index.js';
 import { unwrap, createTurnCollector } from '../src/dsh-client.js';
 
 const root = fileURLToPath(new URL('..', import.meta.url));
@@ -144,13 +145,19 @@ export async function bridgeHarness({ config = {}, savedState, files = {}, globa
       selfUserId = String(id ?? '');
       selfNickname = selfDisplayName.toLowerCase() || 'deepseek';
     },
-    flushQueue, retireSession,
+    flushQueue, retireSession, retireIdleSessionV2,
     voiceCfg, voiceLibrary, resolveVoicePathForV2, resolveVoicePathForOperator,
     voiceBudgetCheck, sendVoiceV2, sendVoiceForV2, assertOutboundAuditOk,
     speakCfg, speakForV2, maybeAutoSpeakV2, transcribeVoiceV2, asrService, ttsService, lastInboundVoiceAt, lastAutoSpeakAt,
     setMode(value) { currentMode = value; },
     // 电源监控：main 在这里提前 return，真实 monitor 不会被创建；测试可注入一个固定电源状态。
     setPowerMonitor(value) { powerMonitor = value; },
+    // 长期记忆：暴露门面与内部上下文构造，供注入/隔离/预算类断言直接使用。
+    memory, memorySystem: () => memorySystem,
+    memoryContextForV2, memoryPromptBlockV2, resolveMemorySubjectV2,
+    memoryActorForV2, noteMemoryActorV2, maybeReconcileTombstonesV2, scrubLegacyForTombstonesV2,
+    appendMemoryV2, saveSocialV2State,
+    getCfg() { return cfg; },
     powerSnapshot,
     setReady(value) { dshReady = value; },
     setPresets(value) { dshPresetIds = value; dshDefaultPreset = 'standard'; },
@@ -175,7 +182,7 @@ export async function bridgeHarness({ config = {}, savedState, files = {}, globa
     ...markdown, ...sensitive, ...wait, ...safeFetch, ...forward, ...slang, ...sticker,
     ...modelPrices, ...tokenLedger, ...voiceLib, ...stateAcl, ...presetPrompt,
     ...voiceAsr, ...voiceTts, ...singing, ...shortCover, ...shortCoverV2, ...shortCoverConfig,
-    ...power, ...roleCard,
+    ...power, ...roleCard, ...memory,
     // 电源监控在测试里必须确定：不 spawn pmset、不按宿主机当前电源改变策略、不留下轮询定时器。
     // 纯函数（normalizePowerConfig / powerAllowsCapability …）仍用 src/power.js 的真实现。
     createPowerMonitor: () => ({

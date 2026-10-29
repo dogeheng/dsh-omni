@@ -893,14 +893,16 @@ server.tool(
 
 server.tool(
   'qq_memory_append',
-  '记录一条轻量记忆：activeTopic=进行中的话题；pendingThought=你想说但还没说的话；memberImpression=对某位群友的印象。记忆会持久化，并在后续唤醒/qq_get_prompt 中自动出现。',
+  '记录一条记忆。轻量（会话内）：activeTopic=进行中的话题；pendingThought=你想说但还没说的话；memberImpression=对某位群友的印象。长期（跨会话、写入 SQLite，按群/私聊隔离）：fact=长期事实；preference=偏好习惯；episode=共同经历；promise=承诺/约定；state=当前状态。长期记忆只在自然相关时被少量注入，不会每轮全量出现。更新同一主题的旧事实时传 extra.subjectKey（同一主题用同一个值），旧记录会保留为历史但不再被当成现状。',
   {
     key: z.string().describe('会话 key，格式 group:群号 或 private:QQ号'),
     token: z.string().describe('会话令牌（见唤醒提示中的【会话令牌】）'),
-    category: z.enum(['activeTopic', 'pendingThought', 'memberImpression']).describe('记忆类别'),
-    content: z.string().describe('记忆内容，例如话题、想说的话、对某人的印象标签'),
+    category: z.enum(['activeTopic', 'pendingThought', 'memberImpression', 'fact', 'preference', 'episode', 'promise', 'state']).describe('记忆类别：前三个是会话内轻量记忆，后五个是长期记忆'),
+    content: z.string().describe('记忆内容。长期记忆请写成第三人称、具体、简短（≤80 字），例如「小明拿到 A 公司 offer 了」'),
     extra: z.object({
-      target: z.string().optional().describe('memberImpression 时的群友名字/昵称'),
+      target: z.string().optional().describe('相关的人：群友昵称或 QQ 号（长期记忆用来关联人物身份；解析不到就只记在当前会话作用域）'),
+      subjectKey: z.string().optional().describe('长期记忆的主题键（如「实习进展」）：同一作用域+人物+主题的新事实会取代旧记录'),
+      personShared: z.boolean().optional().describe('仅私聊：当事人明确说“这个可以跟别人说”时传 true，才允许这条记忆跨场景共享；群里传了会被拒绝'),
       participants: z.array(z.string()).optional().describe('activeTopic 的参与者列表'),
       pendingQuestion: z.string().optional().describe('activeTopic 里还没问出口的问题'),
       motivation: z.string().optional().describe('pendingThought 的动机，如 curiosity/sociability'),
@@ -923,14 +925,23 @@ server.tool(
 
 server.tool(
   'qq_memory_query',
-  '查看当前会话的轻量记忆：进行中的话题、你想说但还没说的话、对群友的印象（只读）。',
+  '查看记忆（只读）。轻量记忆：进行中的话题、你想说但还没说的话、对群友的印象。长期记忆（category="longTerm"）：按当前会话权限检索事实/偏好/经历/承诺/状态，可传 q 搜索关键词。只返回你这个会话读得到的部分，跨群/私聊内容不会出现。',
   {
     key: z.string().describe('会话 key，格式 group:群号 或 private:QQ号'),
     token: z.string().describe('会话令牌（见唤醒提示中的【会话令牌】）'),
-    category: z.enum(['activeTopic', 'pendingThought', 'memberImpression']).optional().describe('可选：只看某一类记忆')
+    category: z.enum(['activeTopic', 'pendingThought', 'memberImpression', 'longTerm']).optional().describe('可选：只看某一类；longTerm=长期记忆'),
+    q: z.string().optional().describe('longTerm 检索关键词（如「面试」「小明」）'),
+    limit: z.number().optional().describe('longTerm 最多返回几条，默认 5，最大 10')
   },
-  async ({ key, token, category }) => {
+  async ({ key, token, category, q: query, limit }) => {
     try {
+      if (category === 'longTerm') {
+        const params = new URLSearchParams({ key });
+        if (query) params.set('q', String(query));
+        if (limit) params.set('limit', String(limit));
+        const data = await agentApi(`/api/socialV2/memory-recall?${params.toString()}`, { headers: { 'x-agent-token': token } });
+        return { content: [{ type: 'text', text: serializeModelData(data) }] };
+      }
       const q = new URLSearchParams({ key });
       if (category) q.set('category', category);
       const data = await agentApi(`/api/socialV2/memory?${q.toString()}`, { headers: { 'x-agent-token': token } });
@@ -943,16 +954,25 @@ server.tool(
 
 server.tool(
   'qq_memory_remove',
-  '删除一条轻量记忆：activeTopic/pendingThought 用 content 匹配原文删除；memberImpression 用 target 参数指定群友名字删除。',
+  '删除记忆。轻量记忆：activeTopic/pendingThought 用 content 匹配原文；memberImpression 用 target 指定群友名字。长期记忆：传 memoryId（从 qq_memory_query category="longTerm" 拿到）或 category="longTerm" + content 关键词。长期记忆是**真删**（数据库与索引一起删），删了不会再被召回；只有这条记忆的当事人或主人能删。',
   {
     key: z.string().describe('会话 key，格式 group:群号 或 private:QQ号'),
     token: z.string().describe('会话令牌（见唤醒提示中的【会话令牌】）'),
-    category: z.enum(['activeTopic', 'pendingThought', 'memberImpression']).describe('记忆类别'),
-    content: z.string().optional().describe('要删除的话题/想法原文（memberImpression 不需要）'),
-    target: z.string().optional().describe('memberImpression 时要删除的群友名字')
+    category: z.enum(['activeTopic', 'pendingThought', 'memberImpression', 'longTerm']).optional().describe('记忆类别；删除长期记忆时传 longTerm'),
+    content: z.string().optional().describe('要删除的话题/想法原文，或长期记忆的匹配关键词'),
+    target: z.string().optional().describe('memberImpression 时要删除的群友名字'),
+    memoryId: z.number().optional().describe('长期记忆 id（qq_memory_query 返回的 id）')
   },
-  async ({ key, token, category, content, target }) => {
+  async ({ key, token, category, content, target, memoryId }) => {
     try {
+      if (category === 'longTerm' || memoryId) {
+        const data = await agentApi('/api/socialV2/memory-forget', {
+          method: 'POST',
+          body: JSON.stringify({ key, id: memoryId ?? null, content: content || '' }),
+          headers: { 'x-agent-token': token }
+        });
+        return { content: [{ type: 'text', text: serializeModelData(data) }] };
+      }
       const data = await agentApi('/api/socialV2/memory-remove', {
         method: 'POST',
         body: JSON.stringify({ key, category, content: content || '', target: target || '' }),

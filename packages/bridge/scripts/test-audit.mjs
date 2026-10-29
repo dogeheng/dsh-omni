@@ -46,6 +46,9 @@ const tests = [
   'test-console-static.mjs',
   // 离电省电：pmset 解析、配置归一化、策略判定、fail-open、状态文件与去抖状态机
   'test-power.mjs',
+  // 长期记忆：SQLite/FTS5 检索、作用域隔离、Token 预算、事实更新、删除、迁移回滚、
+  // 提炼预算、降级；以及桥接层的真实注入/隔离/工具路由（跑真 bridge.js + 假 DSH）。
+  'test-memory.mjs', 'test-memory-bridge.mjs',
   // 语音系统整体结构检查（入口/依赖/端点/开关/文档一致性）
   'test-voice-system.mjs',
   // SnowLuma 账号/token 自发现（换 QQ 账号后 token 会变，写死的工具会 401）

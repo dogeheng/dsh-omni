@@ -72,6 +72,14 @@ import {
   applyStickerNote,
   markStickerUsed
 } from './sticker-lib.js';
+// 长期记忆（SQLite + FTS5）。实现与设计见 src/memory/ 与 docs/MEMORY.md。
+// 注意：桥接只依赖这里的门面，读写/权限/裁剪全部在 memory 模块内部完成。
+import {
+  MEMORY_KINDS,
+  createMemoryManager,
+  normalizeForDedupe,
+  normalizeMemoryConfig
+} from './memory/index.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const ROOT = path.resolve(__dirname, '..');
@@ -81,6 +89,8 @@ const ROLE_STATE_FILE = path.join(STATE_DIR, 'current-role.json');
 const SLANG_FILE = path.join(STATE_DIR, 'slang.json');
 const SLANG_SESSION_FILE = path.join(STATE_DIR, 'slang-session.json');
 const SOCIAL_V2_FILE = path.join(STATE_DIR, 'social-v2.json');
+// 记忆提炼会话（P3，默认关闭）。和黑话学习会话一样：独立 workspace、不映射 QQ、不发消息。
+const MEMORY_SESSION_FILE = path.join(STATE_DIR, 'memory-agent-session.json');
 // 操作者为每个会话预写的「初始提示词」（见 main() 里的 initialPrompts）。
 // 单独一个文件：它属于操作者配置，不能随 social-v2.json 的会话状态一起被重置清掉。
 const INITIAL_PROMPTS_FILE = path.join(STATE_DIR, 'initial-prompts.json');
@@ -715,6 +725,9 @@ function loadConfig() {
       interceptNotify: true,
       ...(file.security ?? {})
     },
+    // 长期记忆：SQLite + FTS5，默认关闭。归一化会钳制硬上限（单轮 350 tokens、
+    // 每日自动 LLM 调用 6 次），配置里写更大的值也不会生效。见 docs/MEMORY.md。
+    memory: normalizeMemoryConfig(file.memory, { root: ROOT }),
     // 跨模式的功能总闸（控制台「运行总览 → 大功能开关」）。
     // biliCard=false 只停用 B 站短链/BV 解析，卡片本身仍以普通卡片文本注入。
     features: {
@@ -1515,6 +1528,9 @@ const REJECT_WORDS = new Set(['拒绝', '不同意', '不允许', '驳回', 'no'
 // 未收紧时给出可复制的提权命令）。null = 还没跑/平台不适用。
 let stateDirHardened = null;
 
+// 长期记忆门面。在 main() 里创建；SIGINT/SIGTERM 的收尾路径在 main 外，需要它来关库。
+let memorySystem = null;
+
 // ── 主流程 ──────────────────────────────────────────────────────────────────
 async function main() {
   const cfg = loadConfig();
@@ -1552,6 +1568,8 @@ async function main() {
   const learnerCollectors = new Map();  // sessionId -> turn collector
   const learnerWaiters = new Map();     // sessionId -> [{resolve,reject,timer}]
   let slangLearnerSessionId = null;
+  // 记忆提炼会话（P3，默认关闭）：和黑话学习同一种「辅助会话」，不映射 QQ、不发消息。
+  let memoryLearnerSessionId = null;
   let slangTaskChain = Promise.resolve();
 
   // ── 表情包体系（二代仿真）本地知识库 ────────────────────────────────────
@@ -2587,6 +2605,64 @@ async function main() {
     try { fs.unlinkSync(SLANG_SESSION_FILE); } catch {}
   }
 
+  /**
+   * 记忆提炼用的辅助会话（只有 P3 打开时才会创建）。
+   * 复用黑话学习的同一套 preset 校验与事件收集机制：不映射 QQ、不发消息、不注入记忆。
+   */
+  async function ensureMemoryLearnerSession() {
+    const preset = resolvePresetName(cfg.slang?.learnerPreset || cfg.agentPreset, { strict: true });
+    if (!preset) throw new Error('记忆提炼缺少已验证的安全 preset，拒绝创建或复用会话');
+    const saved = readJsonSafe(MEMORY_SESSION_FILE, null);
+    if (saved?.preset !== preset) {
+      const oldId = memoryLearnerSessionId;
+      memoryLearnerSessionId = null;
+      if (oldId && !learnerWaiters.has(oldId) && !learnerCollectors.has(oldId)) learnerSessions.delete(oldId);
+      try { fs.unlinkSync(MEMORY_SESSION_FILE); } catch {}
+    }
+    if (memoryLearnerSessionId) {
+      learnerSessions.add(memoryLearnerSessionId);
+      api.events.follow(memoryLearnerSessionId);
+      return memoryLearnerSessionId;
+    }
+    const reread = readJsonSafe(MEMORY_SESSION_FILE, null);
+    if (reread?.sessionId && reread.preset === preset) {
+      memoryLearnerSessionId = String(reread.sessionId);
+      learnerSessions.add(memoryLearnerSessionId);
+      api.events.follow(memoryLearnerSessionId);
+      await ensureChatModel(memoryLearnerSessionId);
+      return memoryLearnerSessionId;
+    }
+    const dir = path.join(STATE_DIR, 'memory-agent');
+    fs.mkdirSync(dir, { recursive: true });
+    const wsValue = unwrap(await api.workspace.create({ path: dir }), 'memory workspace.create');
+    const workspaceTitle = 'QQ 长期记忆整理';
+    if (workspaceTitle && wsValue.workspace.title !== workspaceTitle) {
+      try { await api.workspace.rename({ workspaceId: wsValue.workspace.workspaceId, title: workspaceTitle }); } catch {}
+    }
+    const params = { workspaceId: wsValue.workspace.workspaceId };
+    params.agentPreset = preset;
+    const value = unwrap(await api.sessions.create(params), 'memory session.create');
+    memoryLearnerSessionId = value.sessionId;
+    learnerSessions.add(memoryLearnerSessionId);
+    api.events.follow(memoryLearnerSessionId);
+    await ensureChatModel(memoryLearnerSessionId);
+    fs.mkdirSync(STATE_DIR, { recursive: true });
+    atomicWriteJson(MEMORY_SESSION_FILE, { sessionId: memoryLearnerSessionId, preset });
+    log(`记忆提炼会话已创建：${memoryLearnerSessionId}`);
+    return memoryLearnerSessionId;
+  }
+
+  /** 给 Memory Manager 的一次性 LLM 通道（P3 用）。失败抛错，由 manager 记日志并保留候选。 */
+  async function invokeMemoryLlm(promptText) {
+    if (!dshReady) throw new Error('DSH 尚未就绪');
+    const sessionId = await ensureMemoryLearnerSession();
+    const accepted = await api.sessions.prompt({ sessionId, mode: 'queue', content: [{ type: 'text', text: String(promptText) }] });
+    if (!accepted.result.ok) {
+      throw new Error(`${accepted.result.error.code}: ${accepted.result.error.message}`);
+    }
+    return await waitLearnerTurn(sessionId, 180000);
+  }
+
   function waitLearnerTurn(sessionId, timeoutMs = 120000) {
     return new Promise((resolve, reject) => {
       const timer = setTimeout(() => {
@@ -3294,6 +3370,11 @@ async function main() {
       // 新会话没「看过」任何消息，已读水位回执必须从零开始。
       st.modelSeenSeqs = new Set();
       st.lastIdleRetireAt = Date.now();
+    }
+    // 会话退役前把「不会过期的会话内状态」提升到群/私聊作用域：
+    // DSH 会话没了，但承诺、进行中的事、重要经历要能在下次重建后被检索到。
+    if (memory && cfg.memory.enabled) {
+      try { memory.onSessionRetire({ key }); } catch (error) { log(`memory: 会话退役状态提升失败：${error?.message ?? error}`); }
     }
     saveState();
     saveSocialV2State();
@@ -4149,6 +4230,35 @@ async function main() {
           }
           log('控制台：大功能开关已更新');
           sendJson({ ok: true, features: next });
+          return;
+        }
+        // ── 长期记忆 · 管理端（控制台/CLI 用 consoleToken；agent token 不在白名单，
+        //    上面的集中关卡会直接 403，避免 AI 自己改记忆库/跑迁移）───────────────
+        if (req.method === 'GET' && url.pathname === '/api/memory/status') {
+          if (!memory) { sendJson({ ok: false, error: '记忆模块未初始化' }, 503); return; }
+          sendJson({ ok: true, status: memory.status(), config: memory.cfg, mode: memory.mode });
+          return;
+        }
+        if (req.method === 'POST' && url.pathname === '/api/memory/migrate') {
+          const body = await readBody().catch(() => ({}));
+          if (!memory) { sendJson({ ok: false, error: '记忆模块未初始化' }, 503); return; }
+          const result = memory.migrateLegacy({
+            legacyFile: path.join(STATE_DIR, cfg.memory.migrate.legacySource),
+            force: body?.force === true
+          });
+          sendJson({ ok: result.ok !== false, ...result }, result.ok === false ? 409 : 200);
+          return;
+        }
+        if (req.method === 'POST' && url.pathname === '/api/memory/verify') {
+          if (!memory) { sendJson({ ok: false, error: '记忆模块未初始化' }, 503); return; }
+          const result = memory.verifyLegacy({ legacyFile: path.join(STATE_DIR, cfg.memory.migrate.legacySource) });
+          sendJson({ ok: result.ok === true, ...result, missing: result.missing?.slice(0, 20), mismatched: result.mismatched?.slice(0, 20) });
+          return;
+        }
+        if (req.method === 'POST' && url.pathname === '/api/memory/rollback') {
+          if (!memory) { sendJson({ ok: false, error: '记忆模块未初始化' }, 503); return; }
+          const result = memory.rollbackLegacy();
+          sendJson({ ok: result.ok !== false, ...result }, result.ok === false ? 409 : 200);
           return;
         }
         if (req.method === 'GET' && url.pathname === '/api/presets') {
@@ -5490,6 +5600,28 @@ async function main() {
             currentWakeConfig: st.wakeConfig,
             wakeSafety: computeWakeSafetyV2(st.wakeConfig),
             memory: formatMemoryV2(st),
+            // 长期记忆（SQLite）摘要：模型据此知道「真的记了哪些、还能记什么」。
+            // 只给计数与预算，不逐条倒出（列表走 qq_memory_query）。
+            longTermMemory: (!memory || !cfg.memory.enabled) ? { enabled: false } : (() => {
+              try {
+                const status = memory.status();
+                return {
+                  enabled: true,
+                  mode: memory.mode,
+                  memories: status.db?.memories ?? 0,
+                  people: status.db?.people ?? 0,
+                  byKind: status.db?.byKind ?? {},
+                  budget: status.budget,
+                  usage: {
+                    'qq_memory_append(category=...)': 'fact / preference / impression / episode / promise / state',
+                    'qq_memory_query(category="longTerm", q=...)': '按权限检索长期记忆',
+                    'qq_memory_remove(memoryId=...)': '删除一条长期记忆（会真删数据库与索引）'
+                  }
+                };
+              } catch {
+                return { enabled: true, mode: memory.mode, error: '状态读取失败' };
+              }
+            })(),
             participation: formatParticipationV2(st),
             slang: {
               enabled: cfg.slang?.enabled !== false,
@@ -7819,12 +7951,52 @@ async function main() {
           const content = String(body.content ?? '').trim();
           const extra = body.extra && typeof body.extra === 'object' ? body.extra : {};
           if (!key || !category || !content) { sendJson({ ok: false, error: 'key/category/content 不能为空' }, 400); return; }
-          if (!['activeTopic', 'pendingThought', 'memberImpression'].includes(category)) { sendJson({ ok: false, error: 'category 必须是 activeTopic / pendingThought / memberImpression' }, 400); return; }
-          if (category === 'memberImpression' && !String(extra.target || '').trim()) { sendJson({ ok: false, error: 'memberImpression 需要 extra.target 指定群友名字' }, 400); return; }
+          // 长期记忆类型（fact/preference/impression/episode/promise/state）走 MemoryStore；
+          // 老的三个类别继续写 social-v2.json（保留兼容，不迁移旧读取路径的行为）。
+          const longTermKind = MEMORY_KINDS.includes(category) ? category : null;
+          if (!longTermKind && !['activeTopic', 'pendingThought', 'memberImpression'].includes(category)) { sendJson({ ok: false, error: 'category 必须是 long-term kind（fact/preference/impression/episode/promise/state）或 activeTopic/pendingThought/memberImpression' }, 400); return; }
+          if (!longTermKind && category === 'memberImpression' && !String(extra.target || '').trim()) { sendJson({ ok: false, error: 'memberImpression 需要 extra.target 指定群友名字' }, 400); return; }
           if (req.headers['x-agent-token'] && !agentTokenOk(key, req.headers['x-agent-token'])) { sendJson({ ok: false, error: 'agent token 无效' }, 403); return; }
           if (req.headers['x-agent-token'] && !v2SessionAllowed(key)) { sendJson({ ok: false, error: '目标不在当前模式允许范围内' }, 403); return; }
           if (req.headers['x-agent-token'] && !v2ToolEnabled('memory')) { sendJson({ ok: false, error: '工具未启用：qq_memory_append' }, 403); return; }
           const st = getSocialV2State(key);
+          if (longTermKind) {
+            if (!memory || !cfg.memory.enabled) { sendJson({ ok: false, error: '长期记忆未启用（config.memory.enabled）' }, 409); return; }
+            // 作用域由桥接按当前会话算：模型只能提内容/主题，不能指定自己看不到的范围。
+            const ctx = memoryContextForV2(key, st);
+            // 跨场景共享（person_shared）是"当事人本人在私聊里明确同意"这一种情况：
+            // 主体固定成当前私聊对象（不是模型给的 target），群里调用会被 authorizeWrite 拒绝。
+            const personSharedRequested = extra.personShared === true || body.personShared === true;
+            if (personSharedRequested && ctx?.conversationKind !== 'private') {
+              sendJson({ ok: false, error: '跨场景共享只能在当事人私聊里授权（群里传 personShared 会被拒绝）' }, 400);
+              return;
+            }
+            const personShared = personSharedRequested;
+            const identity = personShared
+              ? { qqId: ctx.peerId, label: resolveMemorySubjectV2(st, ctx.peerId).label }
+              : resolveMemorySubjectV2(st, extra.target ?? body.target ?? '');
+            const result = memory.remember({
+              ctx,
+              kind: longTermKind,
+              content,
+              subjectId: identity.qqId,
+              subjectLabel: identity.label,
+              subjectKey: extra.subjectKey ?? body.subjectKey ?? null,
+              expiresAt: extra.expiresAt ?? null,
+              scope: personShared ? 'person_shared' : null,
+              sourceMessageId: extra.messageId ?? null,
+              origin: 'explicit'
+            });
+            sendJson({
+              ok: result.ok !== false,
+              key,
+              category,
+              ...result,
+              subject: { resolved: !!identity.qqId, label: identity.label ?? null },
+              hint: result.ok === false ? result.reason : '已写入长期记忆（跨会话可见，按作用域隔离）'
+            }, result.ok === false ? 400 : 200);
+            return;
+          }
           appendMemoryV2(st, category, content, extra);
           sendJson({ ok: true, key, category, content, memory: formatMemoryV2(st) });
           return;
@@ -7963,6 +8135,81 @@ async function main() {
           if (!category || category === 'memberImpression') st.memberImpressions = {};
           saveSocialV2State();
           sendJson({ ok: true, key, category: category || 'all', memory: formatMemoryV2(st) });
+          return;
+        }
+        // ── 长期记忆（MemoryStore）：召回 / 删除 / 状态 ─────────────────────
+        if (req.method === 'GET' && url.pathname === '/api/socialV2/memory-recall') {
+          const key = canonicalV2Key(url.searchParams.get('key'));
+          if (!key) { sendJson({ ok: false, error: 'key 无效' }, 400); return; }
+          if (req.headers['x-agent-token'] && !agentTokenOk(key, req.headers['x-agent-token'])) { sendJson({ ok: false, error: 'agent token 无效' }, 403); return; }
+          if (req.headers['x-agent-token'] && !v2SessionAllowed(key)) { sendJson({ ok: false, error: '目标不在当前模式允许范围内' }, 403); return; }
+          if (req.headers['x-agent-token'] && !v2ToolEnabled('memory')) { sendJson({ ok: false, error: '工具未启用：qq_memory_query' }, 403); return; }
+          if (!memory || !cfg.memory.enabled) { sendJson({ ok: false, error: '长期记忆未启用（config.memory.enabled）' }, 409); return; }
+          const q = String(url.searchParams.get('q') ?? '').trim().slice(0, 200);
+          const limit = Math.min(10, Math.max(1, Number(url.searchParams.get('limit')) || 5));
+          const st = getSocialV2State(key);
+          const result = memory.recall({ ctx: memoryContextForV2(key, st), text: q, limit, includeSession: true });
+          sendJson({
+            ok: result.ok !== false,
+            key,
+            query: q,
+            count: result.rows?.length ?? 0,
+            ms: result.ms,
+            memories: (result.rows ?? []).map((row) => ({
+              id: row.id,
+              kind: row.kind,
+              scope: row.scope,
+              subject: row.subjectLabel || (row.subjectId ? `QQ${row.subjectId}` : null),
+              content: row.content,
+              confidence: row.confidence,
+              updatedAt: new Date(row.updatedAt).toISOString(),
+              expiresAt: row.expiresAt ? new Date(row.expiresAt).toISOString() : null
+            })),
+            error: result.ok === false ? result.reason : undefined
+          }, result.ok === false ? 409 : 200);
+          return;
+        }
+        if (req.method === 'POST' && url.pathname === '/api/socialV2/memory-forget') {
+          const body = await readBody();
+          const key = canonicalV2Key(body.key);
+          if (!key) { sendJson({ ok: false, error: 'key 无效' }, 400); return; }
+          if (req.headers['x-agent-token'] && !agentTokenOk(key, req.headers['x-agent-token'])) { sendJson({ ok: false, error: 'agent token 无效' }, 403); return; }
+          if (req.headers['x-agent-token'] && !v2SessionAllowed(key)) { sendJson({ ok: false, error: '目标不在当前模式允许范围内' }, 403); return; }
+          if (req.headers['x-agent-token'] && !v2ToolEnabled('memory')) { sendJson({ ok: false, error: '工具未启用：qq_memory_remove' }, 403); return; }
+          if (!memory || !cfg.memory.enabled) { sendJson({ ok: false, error: '长期记忆未启用（config.memory.enabled）' }, 409); return; }
+          const st = getSocialV2State(key);
+          const result = memory.forget({
+            ctx: memoryContextForV2(key, st),
+            id: body.id ?? body.memoryId ?? null,
+            content: body.content ? String(body.content) : null,
+            subjectId: body.subjectId ? String(body.subjectId) : null
+          });
+          // 立刻清理旧 social-v2 副本：否则降级路径/旧格式注入还会把删掉的内容说出来。
+          const legacyScrub = result.ok ? maybeReconcileTombstonesV2({ force: true }) : { removed: 0 };
+          sendJson({ ok: result.ok !== false, ...result, legacyScrubbed: legacyScrub.removed ?? 0 }, result.ok === false ? 400 : 200);
+          return;
+        }
+        if (req.method === 'GET' && url.pathname === '/api/socialV2/memory-status') {
+          const key = canonicalV2Key(url.searchParams.get('key'));
+          if (!key) { sendJson({ ok: false, error: 'key 无效' }, 400); return; }
+          if (req.headers['x-agent-token'] && !agentTokenOk(key, req.headers['x-agent-token'])) { sendJson({ ok: false, error: 'agent token 无效' }, 403); return; }
+          if (req.headers['x-agent-token'] && !v2SessionAllowed(key)) { sendJson({ ok: false, error: '目标不在当前模式允许范围内' }, 403); return; }
+          if (req.headers['x-agent-token'] && !v2ToolEnabled('memory')) { sendJson({ ok: false, error: '工具未启用：qq_memory_*' }, 403); return; }
+          if (!memory || !cfg.memory.enabled) { sendJson({ ok: false, error: '长期记忆未启用' }, 409); return; }
+          // 只回模型用得上的摘要：不暴露其它会话、不暴露库路径与配置细节。
+          const status = memory.status();
+          sendJson({
+            ok: true,
+            enabled: true,
+            mode: memory.mode,
+            persona: memory.personaId,
+            memories: status.db?.memories ?? 0,
+            byKind: status.db?.byKind ?? {},
+            candidates: status.db?.candidates ?? 0,
+            budget: status.budget,
+            todayInjections: status.metrics?.injections ?? 0,
+            avgTokensPerTurn: status.metrics?.avgTokensPerInjection ?? 0
+          });
           return;
         }
         // ── 二代黑话学习（reserved2）：AI 查询/提交黑话候选 ─────────────────
@@ -10100,6 +10347,281 @@ async function main() {
   // 操作者预写的会话初始提示词（与控制台入口同样在 main() 里；损坏时只读降级，不阻塞启动）。
   loadInitialPrompts();
 
+  // ── 长期记忆（SQLite MemoryStore） ────────────────────────────────────────
+  // 初始化不打开数据库（懒加载：第一次真正检索/写入才建库），失败也只是降级，
+  // 绝不阻塞启动。`shadow` 模式下只记账、不改提示词，用于上线前对照。
+  const memory = (() => {
+    try {
+      const manager = createMemoryManager({
+        root: ROOT,
+        config: cfg.memory,
+        logger: (msg, err) => log(msg, err),
+        powerState: () => powerMonitor?.state?.() ?? null
+      });
+      memorySystem = manager;
+      if (cfg.memory.enabled) {
+        log(`长期记忆已启用（persona=${manager.personaId}，读取模式=${manager.mode}，库=${manager.dbFile}）`);
+      }
+      return manager;
+    } catch (error) {
+      log(`⚠️ 长期记忆初始化失败，降级为无记忆聊天：${error?.message ?? error}`);
+      return null;
+    }
+  })();
+
+  /**
+   * 本轮唤醒的「当前说话人」快照。
+   *
+   * 为什么不能现查 recentMessages：唤醒投递与工具调用是**异步**的。A 触发唤醒后，
+   * 模型可能在 B 已经发了新消息之后才调用 qq_memory_*；此时 recentMessages 的最后
+   * 一个人是 B，但这一轮处理的其实是 A 的消息。现查会把 B 当成当前用户
+   * （越权删 B 的记忆、把 B 的跨场景共享内容拿进来）。
+   *
+   * 所以：投递 prompt 的那一刻就把「这一轮真正包含的发送者 + 消息文本」冻结在会话状态里，
+   * 之后所有工具调用/注入都读这份快照。身份仍然只来自桥接记录的消息 userId（可信来源）。
+   */
+  function memoryActorFromMessagesV2(messages) {
+    const userIds = [];
+    const names = new Map();
+    const texts = [];
+    for (const msg of Array.isArray(messages) ? messages : []) {
+      if (!msg || msg.isSelf === true) continue;
+      const uid = String(msg.userId ?? '').trim();
+      if (/^\d+$/.test(uid)) {
+        if (!userIds.includes(uid)) userIds.push(uid);
+        const name = String(msg.sender ?? '').trim();
+        if (name && !names.has(uid)) names.set(uid, name);
+      }
+      const text = String(msg.plain ?? msg.text ?? '').trim();
+      if (text) texts.push(text);
+    }
+    return {
+      userIds: userIds.slice(0, 12),
+      primary: userIds.length ? userIds[userIds.length - 1] : null,
+      names: Object.fromEntries(names),
+      texts: texts.join(' ').slice(-400),
+      at: Date.now()
+    };
+  }
+
+  function noteMemoryActorV2(st, messages, reason) {
+    if (!st) return null;
+    const actor = memoryActorFromMessagesV2(messages);
+    if (!actor.userIds.length) return null;
+    st.memoryActor = { ...actor, reason: String(reason ?? '') };
+    return st.memoryActor;
+  }
+
+  function memoryActorForV2(st) {
+    const actor = st?.memoryActor;
+    if (!actor || !Array.isArray(actor.userIds) || !actor.userIds.length) return null;
+    // 2 小时足够覆盖一个回合；过期后回退到 recentMessages。
+    if (Date.now() - Number(actor.at || 0) > 2 * 60 * 60 * 1000) return null;
+    return actor;
+  }
+
+  /**
+   * 由可信的会话状态构造记忆读取上下文。
+   *
+   * senderIds 优先取**本轮冻结的发言者快照**（见 noteMemoryActorV2），没有快照才回退到
+   * recentMessages。模型不参与——作用域只由 conversation key 推出。
+   */
+  function memoryContextForV2(key, st, overrideSenders = null) {
+    if (!memory) return null;
+    const senders = [];
+    const seen = new Set();
+    const push = (uid, name) => {
+      const id = String(uid ?? '').trim();
+      if (!/^\d+$/.test(id) || seen.has(id)) return;
+      seen.add(id);
+      senders.push({ userId: id, name: String(name ?? '') });
+    };
+    if (Array.isArray(overrideSenders)) {
+      for (const sender of overrideSenders) push(sender?.userId, sender?.name);
+    } else {
+      const actor = memoryActorForV2(st);
+      if (actor) {
+        for (const uid of actor.userIds) push(uid, actor.names?.[uid]);
+      } else {
+        for (const msg of Array.isArray(st?.recentMessages) ? st.recentMessages.slice(-16) : []) {
+          if (!msg || msg.isSelf) continue;
+          push(msg.userId, msg.sender);
+        }
+      }
+    }
+    return memory.buildContext({ conversationKey: key, ownerQQ: cfg.ownerQQ ?? '', senders });
+  }
+
+  /** 最近几条「对方说的话」，作为检索依据（有界，不把整段历史喂进检索）。 */
+  function lastIncomingTextV2(st, maxMessages = 3, maxChars = 400) {
+    const picked = [];
+    const recent = Array.isArray(st?.recentMessages) ? st.recentMessages : [];
+    for (let i = recent.length - 1; i >= 0 && picked.length < maxMessages; i -= 1) {
+      const msg = recent[i];
+      if (!msg || msg.isSelf) continue;
+      const text = String(msg.plain ?? msg.text ?? '').trim();
+      if (text) picked.unshift(text);
+    }
+    return picked.join(' ').slice(-maxChars);
+  }
+
+  /**
+   * 本轮的记忆注入块。返回空串 = 这轮不需要记忆（**提示词一个字都不加**）。
+   * 异常一律吞掉：记忆坏了不能影响聊天。
+   */
+  function memoryPromptBlockV2(key, promptText, reason) {
+    if (!memory || !cfg.memory.enabled) return { text: '', tokens: 0, hits: 0 };
+    try {
+      const st = getSocialV2State(key);
+      const ctx = memoryContextForV2(key, st);
+      if (!ctx) return { text: '', tokens: 0, hits: 0 };
+      // 检索依据也取本轮快照：否则唤醒后新到的消息会把检索带偏。
+      const actor = memoryActorForV2(st);
+      const text = (actor?.texts && actor.texts.length ? actor.texts : lastIncomingTextV2(st))
+        || String(promptText ?? '').slice(0, 300);
+      return memory.buildPromptBlock({ ctx, text, reason, legacyText: formatMemoryV2(st), key });
+    } catch (error) {
+      log(`memory: 记忆注入失败（本轮按无记忆处理）：${error?.message ?? error}`);
+      return { text: '', tokens: 0, hits: 0 };
+    }
+  }
+
+  /**
+   * 把工具传入的 target（昵称或 QQ 号）解析成稳定身份。
+   * 只在本会话的 recentMessages 里找，且**唯一命中**才算解析成功；
+   * 否则保留昵称、subject 留空（保守隔离，绝不猜身份跨群合并）。
+   */
+  function resolveMemorySubjectV2(st, raw) {
+    const value = String(raw ?? '').trim();
+    if (!value) return { qqId: null, label: null };
+    if (/^\d{5,}$/.test(value)) return { qqId: value, label: null };
+    const hits = new Set();
+    let label = value;
+    for (const msg of Array.isArray(st?.recentMessages) ? st.recentMessages : []) {
+      if (!msg || msg.isSelf) continue;
+      if (String(msg.sender ?? '').trim() !== value) continue;
+      const uid = String(msg.userId ?? '').trim();
+      if (/^\d+$/.test(uid)) hits.add(uid);
+    }
+    if (hits.size === 1) return { qqId: [...hits][0], label };
+    return { qqId: null, label };
+  }
+
+  // ── 删除墓碑 → 旧 social-v2 物理清理 ────────────────────────────────────
+  //
+  // 为什么必须做：`social-v2.json` 里的 topics / thoughts / impressions 仍然会被
+  // `formatMemoryV2` 每轮注入（尤其是 SQLite 打不开的降级路径）。如果只删 SQLite 里的
+  // 新记忆，被删内容会从旧路径**继续出现**——用户说"忘掉"，结果下一轮又说出来了。
+  //
+  // 所以删除时同步写墓碑（SQLite），再把墓碑对应的旧记录从 social-v2 里删掉。
+  // 墓碑同时会阻止迁移/提炼把同样的内容自动复活；用户再次明确要求记住时才会覆盖。
+  let lastTombstoneSignature = '';
+
+  function tombstoneAppliesToConversationV2(tomb, key) {
+    if (!tomb) return false;
+    if (tomb.scope === 'group') return key === `group:${tomb.scopeKey}`;
+    if (tomb.scope === 'dm') return key === `private:${tomb.scopeKey}`;
+    if (tomb.scope === 'session') return key === tomb.scopeKey;
+    // self_public / owner_private / person_shared 不存在于旧的 social-v2 结构里。
+    return false;
+  }
+
+  function legacyTextHitV2(tomb, text) {
+    const hay = normalizeForDedupe(text);
+    const needle = String(tomb?.normalizedContent ?? '');
+    if (!hay || !needle) return false;
+    return hay.includes(needle) || needle.includes(hay);
+  }
+
+  /**
+   * 把墓碑对应的旧记录从所有（或指定）会话的 social-v2 状态里清掉。
+   * 只清理**同一作用域**的会话：在 A 群删的记忆不会去动 B 群的同名话题。
+   */
+  function scrubLegacyForTombstonesV2(tombstones, { keys = null } = {}) {
+    if (!Array.isArray(tombstones) || !tombstones.length) return { removed: 0, keys: [] };
+    let removed = 0;
+    const touched = [];
+    for (const [key, st] of socialV2.conversations) {
+      if (keys && !keys.includes(key)) continue;
+      const applicable = tombstones.filter((tomb) => tombstoneAppliesToConversationV2(tomb, key));
+      if (!applicable.length) continue;
+      let changed = 0;
+      if (Array.isArray(st.activeTopics)) {
+        const kept = st.activeTopics.filter((t) => !applicable.some((tomb) => legacyTextHitV2(tomb, t?.text)));
+        changed += st.activeTopics.length - kept.length;
+        st.activeTopics = kept;
+      }
+      if (Array.isArray(st.pendingThoughts)) {
+        const kept = st.pendingThoughts.filter((t) => !applicable.some((tomb) => legacyTextHitV2(tomb, t?.text)));
+        changed += st.pendingThoughts.length - kept.length;
+        st.pendingThoughts = kept;
+      }
+      const impressions = st.memberImpressions && typeof st.memberImpressions === 'object' ? st.memberImpressions : null;
+      if (impressions) {
+        // 旧印象按"昵称"存：把昵称解析回 QQ 号，才能和墓碑里的稳定身份对上。
+        const nameToUid = new Map();
+        for (const msg of Array.isArray(st.recentMessages) ? st.recentMessages : []) {
+          if (!msg || msg.isSelf) continue;
+          const uid = String(msg.userId ?? '').trim();
+          const name = String(msg.sender ?? '').trim();
+          if (/^\d+$/.test(uid) && name && !nameToUid.has(name)) nameToUid.set(name, uid);
+        }
+        for (const [name, im] of Object.entries(impressions)) {
+          const traits = Array.isArray(im?.traits) ? im.traits : [];
+          const dropWhole = applicable.some((tomb) => {
+            if (tomb.kind !== 'impression') return false;
+            const uid = nameToUid.get(name);
+            return (tomb.subjectId && uid && String(tomb.subjectId) === uid)
+              || (tomb.subjectLabel && tomb.subjectLabel === name);
+          });
+          if (dropWhole) {
+            changed += Math.max(1, traits.length);
+            delete impressions[name];
+            continue;
+          }
+          const kept = traits.filter((trait) => !applicable.some((tomb) => legacyTextHitV2(tomb, trait)));
+          if (kept.length !== traits.length) {
+            changed += traits.length - kept.length;
+            if (!kept.length) delete impressions[name];
+            else im.traits = kept;
+          }
+        }
+      }
+      if (changed) {
+        removed += changed;
+        touched.push(key);
+      }
+    }
+    if (removed) saveSocialV2State();
+    return { removed, keys: touched };
+  }
+
+  /**
+   * 墓碑有变化才清理（每次唤醒前调用；没有墓碑时只是一次很小的 SELECT）。
+   * 这样 CLI 删除后不需要重启桥接，下一次唤醒就会把旧副本清掉。
+   */
+  function maybeReconcileTombstonesV2({ force = false } = {}) {
+    if (!memory || !cfg.memory.enabled) return { removed: 0 };
+    try {
+      const tombstones = memory.listTombstones({ limit: 2000 });
+      const signature = `${tombstones.length}:${tombstones[0]?.createdAt ?? 0}`;
+      if (!force && signature === lastTombstoneSignature) return { removed: 0, keys: [] };
+      lastTombstoneSignature = signature;
+      if (!tombstones.length) return { removed: 0, keys: [] };
+      const result = scrubLegacyForTombstonesV2(tombstones);
+      if (result.removed) {
+        log(`memory: 已从旧 social-v2 清理 ${result.removed} 条已删除内容（防止降级路径重新注入）`);
+      }
+      return result;
+    } catch (error) {
+      log(`memory: 清理旧记忆副本失败（不影响聊天）：${error?.message ?? error}`);
+      return { removed: 0, keys: [] };
+    }
+  }
+
+  // 启动时先对账一次：CLI/上一次进程删过的内容，不能等到下一次唤醒才消失。
+  maybeReconcileTombstonesV2();
+
   function isSocialEnabled() {
     return currentMode === 'reserved' && cfg.social?.enabled !== false;
   }
@@ -10348,6 +10870,27 @@ async function main() {
       wakeSnapshot = buildWakeSnapshotV2(key);
       if (wakeSnapshot) {
         promptText += `\n\n【本次消息快照】\n${JSON.stringify(wakeSnapshot)}\n以上消息已提供，无需重复查询；partial=true 时用 qq_get_unread_messages(afterSeq=readThroughSeq) 继续读取。先处理当前消息；回复前如需确认后续补充，用 qq_wait_for_messages(purpose="reply") 补足短静默，已安静够久会立即返回，不要先长等。收尾只确认你已处理的 readThroughSeq（本地 seq，非 QQ messageId），传给 qq_mark_read 或 qq_set_wake_config 的 throughSeq；新到消息留待处理。`;
+        // 冻结本轮发言者：异步工具调用必须认这一批消息的人，而不是稍后说话的人。
+        noteMemoryActorV2(wakeState, [...wakeSnapshot.messages, ...wakeSnapshot.recent], opts.wakeReason);
+      } else {
+        noteMemoryActorV2(wakeState, [...wakeState.unread.slice(-12), ...wakeState.recentMessages.slice(-4)], opts.wakeReason);
+      }
+    } else {
+      // 非唤醒投递（控制台通知/排队消息）：用最近几条对方消息作为本轮发言者。
+      try {
+        const stForActor = getSocialV2State(key);
+        noteMemoryActorV2(stForActor, stForActor.recentMessages.slice(-3), 'prompt');
+      } catch { /* 身份快照失败不影响投递 */ }
+    }
+    // 长期记忆注入：在会话创建、唤醒提示词与消息快照都拼好之后再做 ——
+    // 这样「是否需要记忆、要几条」可以基于真实的当前消息判断，而不是猜。
+    // 不需要时 memoryPromptBlockV2 返回空串，提示词一字不加（普通闲聊 0 token）。
+    if (memory && cfg.memory.enabled && currentMode === 'reserved2') {
+      try {
+        const block = memoryPromptBlockV2(key, promptText, opts.wakeReason || 'prompt');
+        if (block?.text) promptText = `${promptText}\n\n${block.text}`;
+      } catch (error) {
+        log(`memory: 注入异常（本轮无记忆）：${error?.message ?? error}`);
       }
     }
     let content = [{ type: 'text', text: withSlangContext(promptText) }];
@@ -11067,6 +11610,15 @@ async function main() {
       const participantHit = Array.isArray(t.participants) && t.participants.some((p) => p && lowerPlain.includes(String(p)));
       if (topicHit || participantHit) t.lastMentionAt = Date.now();
     }
+    // Level 2：规则命中的消息进候选缓冲（不调 LLM、不写长期记忆）。
+    if (memory && cfg.memory.enabled && currentMode === 'reserved2' && cfg.memory.capture.candidateBufferEnabled) {
+      try {
+        const captureSenders = msg?.userId ? [{ userId: msg.userId, name: msg.sender }] : null;
+        memory.observeMessage({ ctx: memoryContextForV2(canonicalV2Key(key) || key, st, captureSenders), msg });
+      } catch (error) {
+        log(`memory: 候选捕获失败（忽略）：${error?.message ?? error}`);
+      }
+    }
     saveSocialV2State();
   }
 
@@ -11584,6 +12136,7 @@ async function main() {
     } else {
       maybeRetireIdleSessionV2(key, st);
     }
+    maybeReconcileTombstonesV2();
     const promptText = buildWakePromptV2(key, reason);
     log(`[reserved2] 唤醒 ${key}（${reason}）`);
     const rollbackWakeTime = () => {
@@ -13294,16 +13847,53 @@ async function main() {
   startSnowlumaWatch();
   startConsoleServer();
 
+  /**
+   * 后台记忆整理（P3，默认关闭）。
+   *
+   * 这是一个**低频、unref、串行**的定时器：即使开着，也还要再过 Memory Manager 里
+   * 的「候选数 / 间隔 / 每日预算 / 空闲 / 插电」五道闸门才会真的发一次 LLM 调用。
+   * 定时器本身不碰事件循环的退出（unref），不会拖住进程退出。
+   */
+  if (memory && cfg.memory.enabled && (cfg.memory.capture.autoExtractionEnabled || cfg.memory.consolidation.enabled)) {
+    const interval = Math.max(5 * 60 * 1000, Math.min(Number(cfg.memory.consolidation.intervalMs) || 3600000, 3600000));
+    let ticking = false;
+    const timer = setInterval(() => {
+      if (ticking) return;
+      ticking = true;
+      void (async () => {
+        try {
+          let lastActivity = 0;
+          for (const conv of socialV2.conversations.values()) lastActivity = Math.max(lastActivity, Number(conv.lastIncomingAt) || 0);
+          const idleForMs = lastActivity ? Date.now() - lastActivity : Number.POSITIVE_INFINITY;
+          const result = await memory.tick({
+            invoke: invokeMemoryLlm,
+            idleForMs,
+            power: powerMonitor?.state?.() ?? null
+          });
+          if (result?.ran) log(`[memory] 后台整理：${JSON.stringify(result)}`);
+        } catch (error) {
+          log(`[memory] 后台整理失败：${error?.message ?? error}`);
+        } finally {
+          ticking = false;
+        }
+      })();
+    }, interval);
+    timer.unref?.();
+    log(`长期记忆后台整理已启动（每 ${Math.round(interval / 60000)} 分钟检查一次；每日预算 ${cfg.memory.capture.maxExtraCallsPerDay} 次）`);
+  }
+
   await pumpMux();
 }
 
 process.on('SIGINT', () => {
   log('退出中…');
+  try { memorySystem?.close(); } catch { /* 关库失败不应阻塞退出 */ }
   saveState();
   releaseLock();
   process.exit(0);
 });
 process.on('SIGTERM', () => {
+  try { memorySystem?.close(); } catch { /* 关库失败不应阻塞退出 */ }
   saveState();
   releaseLock();
   process.exit(0);

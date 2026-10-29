@@ -51,6 +51,54 @@
       }
     }
   },
+  "memory": {
+    "enabled": true,
+    "backend": "sqlite",
+    "dbPath": "data/memory/memory.sqlite",
+    "personaId": "default",
+    "maxAdditionalRamMB": 50,
+    "cache": {
+      "maxEntries": 32,
+      "ttlMs": 60000
+    },
+    "retrieval": {
+      "mode": "shadow",
+      "embeddingEnabled": false,
+      "maxResults": 5,
+      "candidateLimit": 40,
+      "targetP95Ms": 20,
+      "minScore": 0.18,
+      "halfLifeDays": 30
+    },
+    "prompt": {
+      "targetAverageTokens": 150,
+      "maxTokens": 350,
+      "includeSessionState": false
+    },
+    "capture": {
+      "explicitMemoryEnabled": true,
+      "candidateBufferEnabled": true,
+      "autoExtractionEnabled": false,
+      "batchCandidateThreshold": 15,
+      "maxExtraCallsPerDay": 6,
+      "minExtractionIntervalMs": 1800000,
+      "candidateTtlMs": 604800000,
+      "maxCandidates": 500
+    },
+    "consolidation": {
+      "enabled": false,
+      "onlyWhenIdle": true,
+      "idleMs": 900000,
+      "preferACPower": true,
+      "intervalMs": 3600000
+    },
+    "security": {
+      "crossGroupPrivateMemory": false
+    },
+    "migrate": {
+      "legacySource": "social-v2.json"
+    }
+  },
   "security": {
     "interceptNotify": true
   },
@@ -336,8 +384,8 @@
       "maxSeconds": 20,
       "maxRssMb": 6500,
       "minFreeMb": 2500,
-        "maxMemoryRetries": 2,
-        "memoryRetryDelayMs": 30000,
+      "maxMemoryRetries": 2,
+      "memoryRetryDelayMs": 30000,
       "diffusionSteps": 30,
       "semiToneShift": 0,
       "fp16": false,
@@ -435,7 +483,10 @@
     "pollMs": 15000,
     "debounceMs": 10000,
     "battery": {
-      "allow": ["sticker", "memory"],
+      "allow": [
+        "sticker",
+        "memory"
+      ],
       "reasoningEffort": "low",
       "pauseProactive": true
     }

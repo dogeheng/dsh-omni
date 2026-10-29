@@ -44,6 +44,10 @@ QQ
 - `src/mcp-host-server.js` — host-side MCP tools (admin/config).
 - `src/mcp-web-search-safe.js` — read-only web search/image search.
 - `src/sticker-lib.js` — sticker store, annotation, prompt context/strategy.
+- `src/memory/` — long-term memory: SQLite (`node:sqlite`) + FTS5 with a CJK
+  bigram index, scope/ACL, rule-based capture buffer, dynamic token-budgeted
+  injection, legacy `social-v2.json` migration with backup/verify/rollback.
+  Design, schema and measured numbers: `docs/MEMORY.md`.
 - `src/safe-fetch.js` — SSRF-checked HTTP fetch (b23 resolution, image/sticker
   downloads).
 - `dsh/agent-presets/*` — preset sources; generated into
@@ -54,7 +58,8 @@ QQ
 - `scripts/setup-dsh.mjs` — installs presets/MCP rows and bundle links into a
   DSH profile.
 - `data/` — runtime state (gitignored): sessions, sticker store, social-v2
-  state, console token, mode, logs, pid/lock.
+  state, console token, mode, logs, pid/lock, and `data/memory/memory.sqlite`
+  (long-term memory, WAL; backups under `data/memory/backups/`).
 
 ### `packages/launcher` (optional)
 
