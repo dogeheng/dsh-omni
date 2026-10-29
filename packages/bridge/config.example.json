@@ -145,6 +145,13 @@
       "sendVoice": false,
       "speak": true
     },
+    "sandbox": {
+      "enabled": true,
+      "root": "",
+      "maxReadBytes": 1048576,
+      "maxWriteBytes": 1048576,
+      "maxEntries": 500
+    },
     "wake": {
       "defaultMode": "diving",
       "preSleepWaitEnabled": true,

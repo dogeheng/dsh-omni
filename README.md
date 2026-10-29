@@ -22,6 +22,7 @@
 - **B 站卡片**：解析 QQ 小程序卡（`b23.tv` → `BV...`），把标题/BV 注入消息；AI 可按需调用 `bili_video_info` / `bili_subtitle`，再决定回复还是安静。
 - **听懂语音 / 开口说话**：群友的 QQ 语音用本地 SenseVoice-Small 转写成「[语音 6秒·语气开心] 原话」（免费、单条约 1 秒）；可选让 AI 用自己的声音说话（`qq_speak` 主动说 + 短句随机转语音，默认百炼 CosyVoice 3.5，也支持小米 MiMo / 豆包 / OpenAI 兼容 / GPT-SoVITS）。想唱 15–20 秒短歌时，可以用曲库干声 + [Seed-VC](https://github.com/Plachtaa/seed-vc) 按需换嗓，不常驻、不跑整首。见 [docs/VOICE_IO.md](docs/VOICE_IO.md) 与 [docs/SINGING.md](docs/SINGING.md)。
 - **Web 控制台**：白名单、唤醒参数、人格卡、表情参数、令牌与花费看板。
+- **受限文件工作区**：`sandbox_*` 工具把 agent 的文件读写限制在 `~/dsh-sandbox/workspace`，拒绝绝对路径、`..`、symlink 和目录删除；不提供 shell/网络，完整命令执行需另接 VM/容器。见 [docs/SANDBOX.md](docs/SANDBOX.md)。
 - **群内短翻唱**：群友说「唱15秒雨爱」时，`sing_short_cover` 自动搜索本地授权曲库、QQ 音乐/网易云（可选，付费门禁）或 CC 音源，找副歌、Demucs 分离、Seed-VC 换成 yuki 音色、混音并回发 10–20 秒 QQ 语音；异步队列、缓存、语音失败文件兜底和自动回收。见 [docs/SHORT_COVER.md](docs/SHORT_COVER.md)。
 
 - **DSH 集成**：两个 agent preset（`qq-chat` / `qq-chat-v2`）、模式控制台 bundle、可选的设置页入口 launcher。

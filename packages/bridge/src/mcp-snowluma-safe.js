@@ -19,6 +19,7 @@ import { z } from 'zod';
 // 在 MCP 里拦会连「安全拒绝理由」都拿不到，反而让模型无法把话说清楚。
 import { SENSITIVE_RE } from './sensitive.js';
 import { serializeModelData } from './qq-model-view.js';
+import { deleteSandboxFile, listSandbox, mkdirSandbox, normalizeSandboxConfig, readSandboxFile, sandboxInfo, writeSandboxFile } from './sandbox.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const ROOT = path.resolve(__dirname, '..');
@@ -1369,6 +1370,19 @@ if (cfg.socialV2?.singing?.enabled === true && cfg.socialV2?.tools?.sing !== fal
       }
     }
   );
+}
+if (cfg.socialV2?.sandbox?.enabled === true) {
+  const sCfg = () => normalizeSandboxConfig(getConfig().socialV2?.sandbox);
+  const safe = (fn) => async (args) => {
+    try { return { content: [{ type: 'text', text: serializeModelData(await fn(args)) }] }; }
+    catch (e) { return { content: [{ type: 'text', text: `sandbox 拒绝：${e?.message ?? e}` }], isError: true }; }
+  };
+  server.tool('sandbox_list', '列出沙箱工作区内的文件。路径必须是相对路径（默认 .），不允许绝对路径/..；只能访问 ~/dsh-sandbox/workspace。', { path: z.string().optional().describe('相对路径，默认 .') }, safe(({ path: p }) => listSandbox(sCfg(), p || '.')));
+  server.tool('sandbox_read', '读取沙箱工作区内的文本文件。只接受相对路径；不允许绝对路径、..、symlink；不提供 shell。', { path: z.string().describe('相对路径，例如 notes/todo.md') }, safe(({ path: p }) => readSandboxFile(sCfg(), p)));
+  server.tool('sandbox_write', '写入沙箱工作区内的文本文件。只接受相对路径；父目录必须已存在（可先用 sandbox_mkdir）；不允许绝对路径、..、symlink。', { path: z.string().describe('相对路径'), content: z.string().describe('文本内容'), append: z.boolean().optional().describe('是否追加') }, safe(({ path: p, content, append }) => writeSandboxFile(sCfg(), p, content, { append: append === true })));
+  server.tool('sandbox_mkdir', '在沙箱工作区内创建目录。只接受相对路径。', { path: z.string().describe('相对目录') }, safe(({ path: p }) => mkdirSandbox(sCfg(), p)));
+  server.tool('sandbox_delete', '删除沙箱工作区内的单个普通文件（不删目录、不递归、不跟随 symlink）。', { path: z.string().describe('相对文件路径') }, safe(({ path: p }) => deleteSandboxFile(sCfg(), p)));
+  server.tool('sandbox_info', '查看沙箱根目录/工作区/配额。这是文件工作区，不提供 shell、网络或宿主文件访问。', {}, safe(() => sandboxInfo(getConfig().socialV2?.sandbox)));
 }
 if (cfg.socialV2?.tools?.getSelfImage !== false) {
   server.tool(
