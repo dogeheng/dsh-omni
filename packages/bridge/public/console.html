@@ -1813,7 +1813,7 @@ button:active:not(:disabled) {
     </section>
 <section id="section-power" data-page="overview" class="card span-all">
       <h2>电源与省电</h2>
-      <div class="meta">插电时全部能力可用；离电时只放行下面勾选的能力，其余工具调用会被拒绝并告诉 AI「省电模式关了」。核心聊天（收发文字、读消息、等待）永远可用。电源状态来自 <code>pmset</code>，默认每 30 秒采样一次，插拔有 20 秒去抖。</div>
+      <div class="meta">插电时全部能力可用；离电时只放行下面勾选的能力，其余工具调用会被拒绝并告诉 AI「省电模式关了」。核心聊天（收发文字、读消息、等待）永远可用。电源状态来自 <code>pmset</code>，每 15 秒采样一次，插拔有 10 秒去抖。</div>
       <div class="row" style="margin-top:10px;gap:10px;flex-wrap:wrap">
         <span class="pill" id="powerSourcePill">读取中…</span>
         <span class="meta" id="powerDetail">—</span>

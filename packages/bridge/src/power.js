@@ -41,8 +41,8 @@ export const POWER_EFFORT_VALUES = ['', 'low', 'high', 'max'];
 
 export const POWER_DEFAULTS = Object.freeze({
   enabled: true,
-  pollMs: 30_000,
-  debounceMs: 20_000,
+  pollMs: 15_000,
+  debounceMs: 10_000,
   battery: Object.freeze({
     allow: Object.freeze([...DEFAULT_BATTERY_ALLOW]),
     reasoningEffort: 'low',

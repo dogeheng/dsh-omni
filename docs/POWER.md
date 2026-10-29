@@ -35,8 +35,8 @@ dsh-omni 的常驻开销主要来自三处：
 ```json
 "power": {
   "enabled": true,
-  "pollMs": 30000,
-  "debounceMs": 20000,
+  "pollMs": 15000,
+  "debounceMs": 10000,
   "battery": {
     "allow": ["sticker", "memory"],
     "reasoningEffort": "low",
@@ -49,7 +49,7 @@ dsh-omni 的常驻开销主要来自三处：
 |---|---|
 | `enabled` | 总开关；关掉后一律全放行（不改别的配置） |
 | `pollMs` | 采样间隔，5s–600s |
-| `debounceMs` | 插拔去抖，0–300s；默认 20s，避免 PD 协商抖动导致反复切档 |
+| `debounceMs` | 插拔去抖，0–300s；默认 10s，避免 PD 协商抖动导致反复切档 |
 | `battery.allow` | 离电放行的能力 id；空数组会回退默认 `["sticker","memory"]` |
 | `battery.reasoningEffort` | 离电自动切到的档位：`""`（不切）/ `low` / `high` / `max` |
 | `battery.pauseProactive` | 离电暂停主动冒泡调度（不打断正在跑的回合） |

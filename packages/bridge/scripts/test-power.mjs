@@ -42,8 +42,8 @@ test('pmset 输出解析：插电 / 电池 / 台式机 / 垃圾输入', () => {
 test('配置归一化：默认值、非法值收敛、未知能力被丢弃', () => {
   const d = normalizePowerConfig(undefined);
   assert.equal(d.enabled, true);
-  assert.equal(d.pollMs, 30_000);
-  assert.equal(d.debounceMs, 20_000);
+  assert.equal(d.pollMs, 15_000);
+  assert.equal(d.debounceMs, 10_000);
   assert.deepEqual(d.battery.allow, DEFAULT_BATTERY_ALLOW);
   assert.equal(d.battery.reasoningEffort, 'low');
 

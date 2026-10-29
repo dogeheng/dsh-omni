@@ -432,8 +432,8 @@
   },
   "power": {
     "enabled": true,
-    "pollMs": 30000,
-    "debounceMs": 20000,
+    "pollMs": 15000,
+    "debounceMs": 10000,
     "battery": {
       "allow": ["sticker", "memory"],
       "reasoningEffort": "low",
