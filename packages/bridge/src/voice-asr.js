@@ -6,7 +6,6 @@
 //   3. 识别失败时可选回退到 SnowLuma `fetch_ptt_text`（QQ 自带的语音转文字）
 // 识别引擎默认是本地 SenseVoice-Small（sherpa-onnx-node，CPU，int8 模型 ~230MB）。模型跑在独立子进程
 // （asr-worker.mjs）里按需加载：第一条语音到来时才启动，闲置 idleUnloadMs 后结束进程，~850MB 内存随之归还；
-// 也可以切到任何 OpenAI 兼容的 `/audio/transcriptions` 云端接口（硅基流动 SenseVoice / Qwen3-ASR 等）。
 //
 // 设计参考（只借鉴思路，代码为本项目独立实现）：
 //   - AstrBot `astrbot/core/provider/sources/sensevoice_selfhosted_source.py`（AGPL-3.0）：
@@ -36,7 +35,7 @@ export const SENSEVOICE_MODEL_URL = 'https://github.com/k2-fsa/sherpa-onnx/relea
 
 export const ASR_DEFAULTS = Object.freeze({
   enabled: true,
-  // sensevoice：本地 SenseVoice-Small；openai：OpenAI 兼容云端；qq：只用 QQ 自带转写；off：关闭
+  // sensevoice：本地 SenseVoice-Small；qq：只用 QQ 自带转写；off：关闭
   engine: 'sensevoice',
   modelDir: DEFAULT_SENSEVOICE_DIR,
   numThreads: 2,
@@ -52,16 +51,10 @@ export const ASR_DEFAULTS = Object.freeze({
   showEmotion: true,          // 在标注里带上 SenseVoice 识别的情绪（开心/难过/生气…）
   showEvent: true,            // 在标注里带上声学事件（笑声/掌声/背景音乐…）
   maxTextChars: 300,
-  cacheSize: 500,
-  openai: Object.freeze({
-    baseUrl: 'https://api.siliconflow.cn/v1',
-    model: 'FunAudioLLM/SenseVoiceSmall',
-    apiKey: '',
-    apiKeyEnv: 'SILICONFLOW_API_KEY'
-  })
+  cacheSize: 500
 });
 
-const ENGINES = new Set(['sensevoice', 'openai', 'qq', 'off']);
+const ENGINES = new Set(['sensevoice', 'qq', 'off']);
 
 function num(v, fallback, { min = -Infinity, max = Infinity, int = false } = {}) {
   const n = Number(v);
@@ -73,7 +66,6 @@ function num(v, fallback, { min = -Infinity, max = Infinity, int = false } = {})
 /** 把 config.json 里的 socialV2.asr 与默认值合并并做类型收敛（用户手写配置常见字符串数字）。 */
 export function normalizeAsrConfig(raw = {}) {
   const r = raw && typeof raw === 'object' && !Array.isArray(raw) ? raw : {};
-  const o = r.openai && typeof r.openai === 'object' && !Array.isArray(r.openai) ? r.openai : {};
   const engine = ENGINES.has(String(r.engine)) ? String(r.engine) : ASR_DEFAULTS.engine;
   const idle = num(r.idleUnloadMs, ASR_DEFAULTS.idleUnloadMs, { min: 0, max: 7 * 86_400_000, int: true });
   return {
@@ -94,23 +86,7 @@ export function normalizeAsrConfig(raw = {}) {
     showEvent: r.showEvent !== false,
     maxTextChars: num(r.maxTextChars, ASR_DEFAULTS.maxTextChars, { min: 20, max: 2000, int: true }),
     cacheSize: num(r.cacheSize, ASR_DEFAULTS.cacheSize, { min: 10, max: 5000, int: true }),
-    openai: {
-      baseUrl: String(o.baseUrl || ASR_DEFAULTS.openai.baseUrl).replace(/\/+$/, ''),
-      model: String(o.model || ASR_DEFAULTS.openai.model),
-      apiKey: typeof o.apiKey === 'string' ? o.apiKey : '',
-      apiKeyEnv: typeof o.apiKeyEnv === 'string' && o.apiKeyEnv.trim() ? o.apiKeyEnv.trim() : ASR_DEFAULTS.openai.apiKeyEnv
-    }
   };
-}
-
-/** 控制台/状态接口返回配置时去掉云端 ASR 的明文密钥，只告诉对方「有没有」。 */
-export function redactAsrConfig(raw = {}) {
-  const r = JSON.parse(JSON.stringify(raw && typeof raw === 'object' && !Array.isArray(raw) ? raw : {}));
-  if (r.openai && typeof r.openai === 'object' && typeof r.openai.apiKey === 'string') {
-    r.openai.apiKeySet = r.openai.apiKey.length > 0;
-    r.openai.apiKey = r.openai.apiKey ? '********' : '';
-  }
-  return r;
 }
 
 // ── 音频工具 ─────────────────────────────────────────────────────────────────
@@ -198,7 +174,7 @@ export function resampleLinear(x, from, to) {
   return y;
 }
 
-/** Float32 单声道 → 16bit PCM WAV（上传给云端 ASR 用）。 */
+/** Float32 单声道 → 16bit PCM WAV（测试/音频工具用）。 */
 export function encodeWavPcm16(samples, sampleRate) {
   const data = Buffer.alloc(samples.length * 2);
   for (let i = 0; i < samples.length; i++) {
@@ -504,27 +480,6 @@ export function createAsrService({ getConfig, root, oneBot, log = () => {}, fetc
     return { text: String(r?.text ?? ''), ...tags, engine: 'sensevoice' };
   }
 
-  async function recognizeOpenAI(cfg, pcm16k) {
-    const key = cfg.openai.apiKey || process.env[cfg.openai.apiKeyEnv] || '';
-    if (!key) throw new Error(`云端 ASR 缺少 API Key（socialV2.asr.openai.apiKey 或环境变量 ${cfg.openai.apiKeyEnv}）`);
-    const form = new FormData();
-    form.append('model', cfg.openai.model);
-    form.append('file', new Blob([encodeWavPcm16(pcm16k, 16000)], { type: 'audio/wav' }), 'voice.wav');
-    const res = await fetchImpl(`${cfg.openai.baseUrl}/audio/transcriptions`, {
-      method: 'POST',
-      headers: { authorization: `Bearer ${key}` },
-      body: form,
-      signal: AbortSignal.timeout(cfg.timeoutMs)
-    });
-    const body = await res.json().catch(() => ({}));
-    if (!res.ok) throw new Error(`云端 ASR HTTP ${res.status}：${String(body?.error?.message ?? body?.message ?? '').slice(0, 160)}`);
-    // SenseVoice 类云端模型可能把 <|HAPPY|> 等标签带在文本里，统一抽出来
-    const raw = String(body?.text ?? '');
-    const emo = /<\|(HAPPY|SAD|ANGRY|FEARFUL|DISGUSTED|SURPRISED)\|>/.exec(raw)?.[1];
-    const evt = /<\|(BGM|Applause|Laughter|Cry|Sneeze|Breath|Cough)\|>/.exec(raw)?.[1];
-    return { text: raw, lang: '', emotion: EMOTION_LABELS[emo] ?? '', event: EVENT_LABELS[evt] ?? '', engine: 'openai' };
-  }
-
   /** 拿到 16k 单声道 PCM：先走网关转码，失败再直接下载原始 SILK 自己解码。 */
   async function fetchPcm(cfg, d) {
     const errors = [];
@@ -605,7 +560,7 @@ export function createAsrService({ getConfig, root, oneBot, log = () => {}, fetc
     }
     let r;
     try {
-      r = cfg.engine === 'openai' ? await recognizeOpenAI(cfg, audio.pcm) : await recognizeLocal(cfg, audio.pcm);
+      r = await recognizeLocal(cfg, audio.pcm);
     } catch (error) {
       if (cfg.qqFallback) {
         const text = sanitizeTranscript(await qqTranscript(cfg, ctx.messageId), cfg.maxTextChars);

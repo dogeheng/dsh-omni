@@ -29,7 +29,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import crypto from 'node:crypto';
 
-export const SPEAK_PROVIDERS = ['mimo', 'doubao', 'openai', 'gptsovits', 'feiyu', 'cosyvoice'];
+export const SPEAK_PROVIDERS = ['cosyvoice', 'mimo', 'doubao', 'openai', 'gptsovits'];
 
 // 统一的情绪词表（工具参数用）。各服务商在 mapEmotion 里各自翻译。
 export const SPEAK_EMOTIONS = ['开心', '难过', '生气', '惊讶', '害怕', '温柔', '撒娇', '无奈', '委屈', '兴奋', '慵懒', '俏皮', '平静', '嫌弃', '小声'];
@@ -111,17 +111,6 @@ export const SPEAK_DEFAULTS = Object.freeze({
     // 按情绪切换参考音频：{ "default": { "audio": "绝对路径.wav", "text": "参考音频原文", "lang": "zh" }, "开心": {...} }
     refs: Object.freeze({})
   }),
-  // FeiyuVoice：独立的 Python/GPU 声音服务（CosyVoice3 cute/gentle），通过 HTTP 调用；
-  // 本项目不复制它的源码，只做客户端适配（其 NOTICE 未给本地源码授权）。
-  feiyu: Object.freeze({
-    baseUrl: 'http://127.0.0.1:9880',
-    apiKey: '',
-    apiKeyEnv: 'FEIYU_VOICE_API_KEY',
-    voice: 'feiyu',
-    style: 'cute',           // cute | gentle
-    timeoutMs: 120000,
-    pollMs: 800
-  }),
   // 百炼 DashScope CosyVoice 3.5：远程 TTS，不占本机模型内存。
   // 音色先用百炼控制台/API 的声音设计或复刻创建，把 voiceId 填进来。
   cosyvoice: Object.freeze({
@@ -156,7 +145,6 @@ export function normalizeSpeakConfig(raw = {}) {
   const d = obj(r.doubao);
   const o = obj(r.openai);
   const g = obj(r.gptsovits);
-  const fy = obj(r.feiyu);
   const cv = obj(r.cosyvoice);
   const D = SPEAK_DEFAULTS;
   return {
@@ -219,15 +207,6 @@ export function normalizeSpeakConfig(raw = {}) {
       textLang: str(g.textLang, D.gptsovits.textLang) || D.gptsovits.textLang,
       format: ['wav', 'ogg', 'aac', 'raw'].includes(g.format) ? g.format : D.gptsovits.format,
       refs: Object.fromEntries(Object.entries(obj(g.refs)).filter(([, v]) => v && typeof v === 'object' && typeof v.audio === 'string'))
-    },
-    feiyu: {
-      baseUrl: str(fy.baseUrl, D.feiyu.baseUrl).replace(/\/+$/, '') || D.feiyu.baseUrl,
-      apiKey: str(fy.apiKey),
-      apiKeyEnv: str(fy.apiKeyEnv, D.feiyu.apiKeyEnv) || D.feiyu.apiKeyEnv,
-      voice: str(fy.voice, D.feiyu.voice) || D.feiyu.voice,
-      style: fy.style === 'gentle' ? 'gentle' : 'cute',
-      timeoutMs: num(fy.timeoutMs, D.feiyu.timeoutMs, { min: 5000, max: 300000, int: true }),
-      pollMs: num(fy.pollMs, D.feiyu.pollMs, { min: 200, max: 5000, int: true })
     },
     cosyvoice: {
       baseUrl: str(cv.baseUrl, D.cosyvoice.baseUrl).replace(/\/+$/, ''),
@@ -811,59 +790,6 @@ export function createTtsService({ getConfig, root, log = () => {}, fetchImpl = 
     return Buffer.from(await res.arrayBuffer());
   }
 
-  async function feiyuJson(url, options, timeoutMs) {
-    const res = await fetchImpl(url, { ...options, signal: AbortSignal.timeout(timeoutMs) });
-    const text = await res.text().catch(() => '');
-    let body = {};
-    try { body = text ? JSON.parse(text) : {}; } catch {}
-    if (!res.ok) {
-      throw new Error(`FeiyuVoice HTTP ${res.status}：${String(body?.detail ?? body?.error ?? text).replace(/\s+/g, ' ').slice(0, 160)}`);
-    }
-    return body;
-  }
-
-  /**
-   * FeiyuVoice 是独立的 Python/GPU 服务（CosyVoice3 cute/gentle），不是 OpenAI 兼容接口：
-   * POST /v1/speech 返回 202 + job id，轮询 /v1/jobs/{id}，成功后下载 /v1/jobs/{id}/audio。
-   * 这里只做 HTTP 客户端；服务需要另装（见 docs/VOICE_IO.md 与 setup-feiyu.mjs）。
-   */
-  async function synthFeiyu(cfg, prepared, { style }) {
-    const f = cfg.feiyu;
-    if (!f.baseUrl) throw new Error('FeiyuVoice 未配置 baseUrl');
-    const key = keyFor(f);
-    if (!key) throw new Error(`FeiyuVoice 缺少 API Key（socialV2.speak.feiyu.apiKey 或环境变量 ${f.apiKeyEnv}）`);
-    const mapped = /温柔|gentle/i.test(style) ? 'gentle' : /可爱|cute/i.test(style) ? 'cute' : f.style;
-    const auth = { authorization: `Bearer ${key}` };
-    const submit = await feiyuJson(`${f.baseUrl}/v1/speech`, {
-      method: 'POST',
-      headers: { ...auth, 'content-type': 'application/json' },
-      body: JSON.stringify({ voice: f.voice, text: prepared.text, style: mapped })
-    }, f.timeoutMs);
-    const id = String(submit?.id ?? '');
-    if (!/^[0-9a-f]{32}$/.test(id)) throw new Error('FeiyuVoice 没有返回合法的 job id');
-    const deadline = Date.now() + f.timeoutMs;
-    for (;;) {
-      if (Date.now() > deadline) throw new Error(`FeiyuVoice 合成超时（${Math.round(f.timeoutMs / 1000)}s）`);
-      const job = await feiyuJson(`${f.baseUrl}/v1/jobs/${id}`, { headers: auth }, Math.min(15000, f.timeoutMs));
-      const status = String(job?.status ?? '');
-      if (status === 'success') break;
-      if (status === 'failed' || status === 'interrupted') {
-        throw new Error(`FeiyuVoice 合成失败（${status}）：${String(job?.error ?? '').slice(0, 160)}`);
-      }
-      await new Promise((resolve) => setTimeout(resolve, f.pollMs));
-    }
-    const res = await fetchImpl(`${f.baseUrl}/v1/jobs/${id}/audio`, {
-      headers: auth,
-      signal: AbortSignal.timeout(Math.min(60000, f.timeoutMs))
-    });
-    if (!res.ok) throw new Error(`FeiyuVoice 下载音频 HTTP ${res.status}`);
-    const buf = Buffer.from(await res.arrayBuffer());
-    if (buf.length < MIN_AUDIO_BYTES || buf.length > 128 * 1024 * 1024 || buf.slice(0, 4).toString('latin1') !== 'RIFF') {
-      throw new Error('FeiyuVoice 返回的 WAV 无效或过大');
-    }
-    return buf;
-  }
-
   function cosyBase(c) {
     if (c.baseUrl) return c.baseUrl;
     if (!c.workspaceId) return '';
@@ -929,9 +855,6 @@ export function createTtsService({ getConfig, root, log = () => {}, fetchImpl = 
     const cfg0 = cfgNow();
     const cfg = timeoutMs ? { ...cfg0, timeoutMs: Math.min(cfg0.timeoutMs, timeoutMs) } : cfg0;
     const provider = cfg.provider;
-    if (provider === 'feiyu' && (isSingingStyle(style) || hasSingingTag(rawText))) {
-      throw new Error('FeiyuVoice TTS 只支持说话，不支持唱歌；唱歌请切回 MiMo 预置音色，或使用 Feiyu 的 SVS 按谱唱歌接口');
-    }
     if (provider === 'cosyvoice' && (isSingingStyle(style) || hasSingingTag(rawText))) {
       throw new Error('CosyVoice TTS 只支持说话，不支持唱歌；唱歌请用 Seed-VC 唱歌功能');
     }
@@ -958,7 +881,6 @@ export function createTtsService({ getConfig, root, log = () => {}, fetchImpl = 
       if (provider === 'mimo') buffer = await synthMimo(cfg, spoken, { style });
       else if (provider === 'doubao') buffer = await synthDoubao(cfg, prepared, { emotion: emo });
       else if (provider === 'openai') buffer = await synthOpenAI(cfg, prepared, { emotion: emo });
-      else if (provider === 'feiyu') buffer = await synthFeiyu(cfg, prepared, { style });
       else if (provider === 'cosyvoice') buffer = await synthCosyVoice(cfg, prepared, { style, emotion: emo });
       else buffer = await synthGptSovits(cfg, prepared, { emotion: emo });
     } catch (error) {
@@ -989,12 +911,6 @@ export function createTtsService({ getConfig, root, log = () => {}, fetchImpl = 
     if (p === 'mimo') return keyFor(cfg.mimo) ? { ok: true } : { ok: false, reason: `缺少 MiMo API Key（环境变量 ${cfg.mimo.apiKeyEnv}）` };
     if (p === 'doubao') return keyFor(cfg.doubao) ? { ok: true } : { ok: false, reason: `缺少豆包 API Key（环境变量 ${cfg.doubao.apiKeyEnv}）` };
     if (p === 'gptsovits') return Object.keys(cfg.gptsovits.refs).length ? { ok: true } : { ok: false, reason: '缺少 GPT-SoVITS 参考音频配置' };
-    if (p === 'feiyu') {
-      if (!cfg.feiyu.baseUrl) return { ok: false, reason: 'FeiyuVoice 缺少 baseUrl' };
-      return keyFor(cfg.feiyu)
-        ? { ok: true, note: 'FeiyuVoice 服务需要另行运行，准备好后用试听确认连通性' }
-        : { ok: false, reason: `缺少 FeiyuVoice API Key（环境变量 ${cfg.feiyu.apiKeyEnv}）` };
-    }
     if (p === 'cosyvoice') {
       if (!cosyBase(cfg.cosyvoice)) return { ok: false, reason: 'CosyVoice 缺少 baseUrl 或 workspaceId' };
       if (!cfg.cosyvoice.voiceId) return { ok: false, reason: 'CosyVoice 缺少 voiceId（先在百炼创建声音设计/复刻音色）' };

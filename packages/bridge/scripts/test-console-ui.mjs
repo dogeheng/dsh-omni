@@ -276,10 +276,6 @@ try {
     assert(await page.isVisible('#v2SpeakMimoBox') && !await page.isVisible('#v2SpeakDoubaoBox'));
     await page.selectOption('#v2SpeakProvider', 'gptsovits');
     assert(await page.isVisible('#v2SpeakGsvBox') && !await page.isVisible('#v2SpeakMimoBox'));
-    assert(!await page.isVisible('#v2AsrOpenaiBox'));
-    await page.selectOption('#v2AsrEngine', 'openai');
-    assert(await page.isVisible('#v2AsrOpenaiBox'));
-    await page.selectOption('#v2AsrEngine', 'sensevoice');
     // GPT-SoVITS 参考音频 JSON 写错：拦在前端，不发保存请求
     const before = fixture.requests.length;
     await fill('v2GsvRefs', '{"default": ');
@@ -317,7 +313,6 @@ try {
     const saved = await clickWrite('#v2ConfigSave', '/api/socialV2/config');
     assert.equal(saved.asr.idleUnloadMs, 30000, '0.5 分钟 = 30000ms');
     assert.equal(saved.asr.preload, true);
-    assert.equal(saved.asr.openai.apiKey, '', '未设置的 Key 保持为空');
     assert.equal(saved.speak.enabled, true);
     assert.equal(saved.speak.provider, 'doubao');
     assert.equal(saved.speak.autoConvert.enabled, true);

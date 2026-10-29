@@ -343,6 +343,8 @@ const TOOL_CONFIG_FLAGS = {
   qq_send_voice: 'sendVoice',
   qq_list_voices: 'sendVoice',
   qq_speak: 'speak',
+  qq_sing: 'sing',
+  sing_short_cover: 'sing',
   // 下面这些曾经漏登记。漏一个不是"多注册一个工具"那么轻：桥接那边按 `v2ToolEnabled(flag)`
   // 在**调用期**一律 403，而这里不登记就等于"控制台显示已关闭、模型每次请求仍收到它的完整
   // 描述与参数 schema，然后调用它、再拿到 403"——既白烧 token（本文件开头 176 行起就是为省这份
@@ -1311,6 +1313,59 @@ if (cfg.socialV2?.speak?.enabled === true && cfg.socialV2?.tools?.speak !== fals
         return { content: [{ type: 'text', text: serializeModelData(data) }] };
       } catch (error) {
         return { content: [{ type: 'text', text: `语音没发出去：${error?.message ?? error}（改用 qq_send_message 打字即可）` }], isError: true };
+      }
+    }
+  );
+}
+if (cfg.socialV2?.singing?.enabled === true && cfg.socialV2?.tools?.sing !== false) {
+  server.tool(
+    'qq_sing',
+    '唱一首 15–20 秒的短歌：从本地曲库选一首已经分离好干声的歌，用 Seed-VC 换成你固定的音色，唱完发到当前会话。注意：这不是「给歌词就唱」的工具，必须点曲库里已有的歌；曲库没有会返回可用歌单，不要假装唱了。只支持短片段，不唱整首。',
+    {
+      key: z.string().describe('会话 key，格式 group:群号 或 private:QQ号'),
+      token: z.string().describe('会话令牌（见唤醒提示中的【会话令牌】）'),
+      song: z.string().describe('曲库里的歌名或 ID，例如「雨爱」；不确定就先传一个名字，失败回包会列出曲库')
+    },
+    async ({ key, token, song }) => {
+      try {
+        const data = await agentApi('/api/socialV2/sing', {
+          method: 'POST',
+          body: JSON.stringify({ key, song: String(song ?? ''), token }),
+          headers: { 'x-agent-token': token },
+          timeoutMs: 180000
+        });
+        return { content: [{ type: 'text', text: serializeModelData(data) }] };
+      } catch (error) {
+        return { content: [{ type: 'text', text: `这次没唱成：${error?.message ?? error}（改用 qq_send_message 打字即可，不要反复重试）` }], isError: true };
+      }
+    }
+  );
+}
+if (cfg.socialV2?.singing?.enabled === true && cfg.socialV2?.tools?.sing !== false) {
+  server.tool(
+    'sing_short_cover',
+    '用大肥鱼的音色唱 10–20 秒歌曲片段。适合群友自然语言点歌（如「唱15秒雨爱」「来一段起风了副歌」）。工具会后台搜索合法音源、选段、分离、Seed-VC 换嗓和混音，完成后自动发语音；不需要用户上传、选模型或输入命令。只支持本地授权曲库/CC 音源，不支持整首、不绕过版权；找不到音源会明确返回。调用后先回一句符合人设的“去找调子”，不要重复点歌。',
+    {
+      key: z.string().describe('会话 key，格式 group:群号 或 private:QQ号'),
+      token: z.string().describe('会话令牌（见唤醒提示中的【会话令牌】）'),
+      song: z.string().describe('歌名，如「雨爱」「起风了」'),
+      artist: z.string().optional().describe('歌手，可选'),
+      version: z.string().optional().describe('版本/翻唱关键词，如「司凤版」「某某翻唱版」，优先精确匹配'),
+      duration: z.number().optional().describe('片段秒数，默认 15，范围 10–20'),
+      segment: z.enum(['chorus', 'verse', 'random']).optional().describe('片段类型，默认副歌'),
+      start_time: z.number().optional().describe('可选的起始秒数；通常不要填，让系统自动找副歌')
+    },
+    async ({ key, token, song, artist, version, duration, segment, start_time }) => {
+      try {
+        const data = await agentApi('/api/socialV2/cover', {
+          method: 'POST',
+          body: JSON.stringify({ key, token, song: String(song ?? ''), artist: artist || '', version: version || '', duration, segment, start_time }),
+          headers: { 'x-agent-token': token },
+          timeoutMs: 60000
+        });
+        return { content: [{ type: 'text', text: serializeModelData(data) }] };
+      } catch (error) {
+        return { content: [{ type: 'text', text: `这次点歌没开始：${error?.message ?? error}（直接告诉群友原因即可，不要反复重试）` }], isError: true };
       }
     }
   );

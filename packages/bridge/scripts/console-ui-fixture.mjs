@@ -329,7 +329,6 @@ export function makeFixtureState() {
         enabled: true, engine: 'sensevoice', modelDir: 'data/models/sherpa-onnx-sense-voice-zh-en-ja-ko-yue-int8-2024-07-17',
         numThreads: 2, language: 'auto', useItn: true, preload: false, idleUnloadMs: 600000, maxSeconds: 60, maxBytes: 4194304,
         timeoutMs: 15000, maxConcurrent: 2, qqFallback: true, showEmotion: true, showEvent: true, maxTextChars: 300, cacheSize: 500,
-        openai: { baseUrl: 'https://api.siliconflow.cn/v1', model: 'FunAudioLLM/SenseVoiceSmall', apiKey: '', apiKeySet: false, apiKeyEnv: 'SILICONFLOW_API_KEY' },
       },
       speak: {
         enabled: false, provider: 'mimo', maxChars: 80, maxSeconds: 30, timeoutMs: 30000, maxPerMinute: 2, maxPerHour: 20, dailyCharBudget: 0,
@@ -339,6 +338,13 @@ export function makeFixtureState() {
         doubao: { url: 'https://openspeech.bytedance.com/api/v3/tts/unidirectional', apiKey: '', apiKeySet: false, apiKeyEnv: 'DOUBAO_TTS_API_KEY', resourceId: 'seed-tts-2.0', speaker: 'zh_female_vv_uranus_bigtts', format: 'mp3', sampleRate: 24000, speechRate: 0, emotionScale: 3 },
         openai: { baseUrl: 'https://api.siliconflow.cn/v1', model: 'FunAudioLLM/CosyVoice2-0.5B', voice: 'FunAudioLLM/CosyVoice2-0.5B:anna', format: 'wav', speed: 1, apiKey: '', apiKeySet: false, apiKeyEnv: 'SILICONFLOW_API_KEY', instructTemplate: '' },
         gptsovits: { baseUrl: 'http://127.0.0.1:9880', textLang: 'zh', format: 'wav', refs: {} },
+        cosyvoice: { baseUrl: '', workspaceId: '', region: 'cn-beijing', model: 'cosyvoice-v3.5-flash', voiceId: '', format: 'wav', sampleRate: 24000, instruction: '', apiKey: '', apiKeySet: false, apiKeyEnv: 'DASHSCOPE_API_KEY' },
+      },
+      singing: {
+        enabled: false, engine: 'seed-vc', maxSeconds: 20, maxRssMb: 6500, minFreeMb: 3000,
+        diffusionSteps: 30, semiToneShift: 0, fp16: false, timeoutMs: 180000, maxQueue: 1, cooldownMs: 180000,
+        seedVcDir: '', pythonPath: '', refAudio: '', songsDir: '', tmpDir: '', ffmpegPath: 'ffmpeg',
+        pythonPathSet: true, refAudioSet: true,
       },
     },
     asrLoaded: false,
@@ -508,6 +514,11 @@ export async function startConsoleFixture({ port = 0, original = false, htmlPath
               unavailable: null, cached: 0, transcribed: 3, failed: 0, fallbackQq: 0, viaGateway: 3, viaSilk: 0, lastMs: 610, lastError: '',
             },
             speak: { enabled: false, provider: 'mimo', ready: { ok: true }, todayChars: 12, dailyCharBudget: 0, synthesized: 1, failed: 0, lastMs: 1800, lastError: '', lastProvider: 'mimo' },
+          });
+          case '/api/singing/status': return json({
+            ok: true, enabled: false, engine: 'seed-vc',
+            engineStatus: { ok: false, missing: ['演示环境未安装 Seed-VC'], songs: 0, ffmpeg: true },
+            running: false, queue: 0, last: null, lastError: '', peakRssMb: 0, availableMemoryMb: 4096,
           });
           // 试听音频：离线生成 0.2 秒静音 WAV（真实环境返回最近一次试听合成的音频）
           case '/api/voice/preview-audio': {

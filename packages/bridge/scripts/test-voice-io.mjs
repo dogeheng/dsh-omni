@@ -15,7 +15,7 @@ import {
   sniffAudio, spokenChars, trimWavSilence, wavInfo
 } from '../src/voice-tts.js';
 import {
-  createAsrService, DEFAULT_SENSEVOICE_DIR, encodeWavPcm16, formatVoiceText, normalizeAsrConfig, redactAsrConfig, sanitizeTranscript
+  createAsrService, DEFAULT_SENSEVOICE_DIR, encodeWavPcm16, formatVoiceText, normalizeAsrConfig, sanitizeTranscript
 } from '../src/voice-asr.js';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
@@ -120,14 +120,6 @@ await test('ASR 默认按需加载：不预加载、闲置 10 分钟释放；0 =
   assert.equal(normalizeAsrConfig({ idleUnloadMs: -3 }).idleUnloadMs, 0);
   assert.equal(normalizeAsrConfig({ preload: 'yes' }).preload, false, '只有 true 才算预加载');
 });
-await test('ASR 云端 Key 脱敏', () => {
-  const r = redactAsrConfig(normalizeAsrConfig({ openai: { apiKey: 'sk-asr-secret' } }));
-  assert.equal(r.openai.apiKey, '********');
-  assert.equal(r.openai.apiKeySet, true);
-  assert.equal(JSON.stringify(r).includes('sk-asr-secret'), false);
-  assert.equal(redactAsrConfig(normalizeAsrConfig({})).openai.apiKeySet, false);
-});
-
 console.log('TTS 服务商请求格式（假 fetch）');
 function fakeFetch(handler) {
   const calls = [];
@@ -178,32 +170,6 @@ await test('MiMo：voiceDesign 只设计一次，之后都用 voiceclone 复刻'
   assert.deepEqual(models, ['mimo-v2.5-tts-voicedesign', 'mimo-v2.5-tts-voiceclone', 'mimo-v2.5-tts-voiceclone']);
   assert.ok(f.calls[1].body.audio.voice.startsWith('data:audio/wav;base64,'));
   assert.ok(fs.readdirSync(path.join(tmpRoot, 'data', 'tts')).some((n) => n.startsWith('mimo-design-')));
-});
-await test('FeiyuVoice：HTTP 202 job → 轮询 → 下载 WAV；唱歌明确拒绝', async () => {
-  const id = 'a'.repeat(32);
-  const f = fakeFetch((call) => {
-    if (call.url.endsWith('/v1/speech')) return new Response(JSON.stringify({ id, status: 'queued' }), { status: 202 });
-    if (call.url.endsWith(`/v1/jobs/${id}`)) return new Response(JSON.stringify({ id, status: 'success' }), { status: 200 });
-    if (call.url.endsWith(`/v1/jobs/${id}/audio`)) return new Response(wav, { status: 200, headers: { 'content-type': 'audio/wav' } });
-    throw new Error(`unexpected FeiyuVoice request ${call.url}`);
-  });
-  const tts = createTtsService({
-    getConfig: () => ({ provider: 'feiyu', feiyu: { baseUrl: 'http://feiyu.test', apiKey: 'fk', style: 'cute', pollMs: 1 } }),
-    root: tmpRoot,
-    fetchImpl: f
-  });
-  const r = await tts.synthesize('你好呀');
-  assert.equal(f.calls[0].url, 'http://feiyu.test/v1/speech');
-  assert.equal(f.calls[0].init.headers.authorization, 'Bearer fk');
-  assert.equal(f.calls[0].body.voice, 'feiyu');
-  assert.equal(f.calls[0].body.style, 'cute');
-  assert.equal(r.ext, 'wav');
-  const tts2 = createTtsService({
-    getConfig: () => ({ provider: 'feiyu', feiyu: { baseUrl: 'http://feiyu.test', apiKey: 'fk' } }),
-    root: tmpRoot,
-    fetchImpl: f
-  });
-  await assert.rejects(() => tts2.synthesize('小星星', { style: '唱歌' }), /不支持唱歌/);
 });
 await test('CosyVoice 3.5：远程 TTS 请求、instruction 与音频 URL 下载；唱歌拒绝', async () => {
   const f = fakeFetch((call) => {
@@ -446,7 +412,7 @@ console.log('桥接接入（audit harness）');
         config: {
           allow: { groups: ['456'] },
           socialV2: {
-            speak: { enabled: true, maxChars: 80, provider: 'mimo', mimo: { apiKey: 'test' } },
+            speak: { enabled: true, provider: 'mimo', maxChars: 80, mimo: { apiKey: 'test' } },
             voice: { autoReadback: false },
             tools: { speak: true }
           }
@@ -462,39 +428,6 @@ console.log('桥接接入（audit harness）');
     } finally {
       globalThis.fetch = realFetch;
       if (h) await h.close();
-    }
-  });
-  await test('保存配置回包不泄露 asr.openai.apiKey，GET 同样脱敏', async () => {
-    const http = await import('node:http');
-    const SECRET = 'unit-test-asr-key-abc123';
-    const h = await bridgeHarness({ config: { socialV2: { asr: { enabled: true, openai: { apiKey: SECRET } } } } });
-    const server = h.startConsoleServer();
-    try {
-      if (!server.listening) await new Promise((resolve) => server.once('listening', resolve));
-      const port = server.address().port;
-      const call = (method, urlPath, body) => new Promise((resolve, reject) => {
-        const req = http.request({
-          host: '127.0.0.1', port, path: urlPath, method,
-          headers: { 'content-type': 'application/json', 'x-console-token': 'fixture-console-token' }
-        }, (res) => {
-          let data = '';
-          res.on('data', (chunk) => { data += chunk; });
-          res.on('end', () => resolve(data));
-        });
-        req.on('error', reject);
-        req.end(body ? JSON.stringify(body) : undefined);
-      });
-      const get = await call('GET', '/api/socialV2/config');
-      assert.equal(get.includes(SECRET), false, 'GET 不应泄露 ASR key');
-      const post = await call('POST', '/api/socialV2/config', {
-        asr: { enabled: true, openai: { apiKey: '********' } },
-        speak: { enabled: false }
-      });
-      assert.equal(post.includes(SECRET), false, '保存回包不应泄露 ASR key');
-      assert.equal(post.includes('********'), true, '保存回包应返回脱敏占位');
-    } finally {
-      await new Promise((resolve) => server.close(resolve));
-      await h.close();
     }
   });
   await test('MCP：qq_speak 受 speak 开关控制且只在总开关打开时注册', () => {
@@ -517,6 +450,21 @@ console.log('桥接接入（audit harness）');
     assert.ok(guardAt > 0 && guardAt < op.indexOf('await readBody()'), '/api/voice/speak 要先拒绝 agent 调用');
     assert.ok(op.slice(guardAt, guardAt + 300).includes('403'));
   });
+  await test('qq_sing 路由与工具闸门；唱歌配置也走脱敏读取', () => {
+    const bridge = fs.readFileSync(path.join(ROOT, 'src', 'bridge.js'), 'utf8');
+    const route = bridge.slice(bridge.indexOf("url.pathname === '/api/socialV2/sing'"), bridge.indexOf("url.pathname === '/api/singing/status'"));
+    for (const gate of ['agentTokenOk(key, token)', "v2ToolEnabled('sing')", 'v2SessionAllowed(key)', 'shouldBlockSilentReply(key)', 'modeAllowed(key, kind, id, cfg, currentMode)']) {
+      assert.ok(route.includes(gate), `唱歌缺少闸门 ${gate}`);
+    }
+    const fn = bridge.slice(bridge.indexOf('async function singForV2'), bridge.indexOf('async function maybeAutoSpeakV2'));
+    assert.ok(fn.includes('singingService.sing') && fn.includes('sendSynthVoiceV2'), '唱歌要经过 worker 并发送语音');
+    assert.ok(fn.includes('cooldownMs'), '唱歌要有冷却');
+    const get = bridge.slice(bridge.indexOf("req.method === 'GET' && url.pathname === '/api/socialV2/config'"));
+    assert.match(get.slice(0, 1400), /redactSingingConfig\(v2\.singing, ROOT\)/);
+    const mcp = fs.readFileSync(path.join(ROOT, 'src', 'mcp-snowluma-safe.js'), 'utf8');
+    assert.ok(mcp.includes("qq_sing: 'sing'"), 'qq_sing 要登记工具开关');
+    assert.ok(mcp.includes("'qq_sing'"), 'qq_sing 工具要注册');
+  });
   await test('控制台新接口：加载/释放与试听音频都拒绝 agent 调用；配置读取接口返回脱敏后的 asr/speak', () => {
     const bridge = fs.readFileSync(path.join(ROOT, 'src', 'bridge.js'), 'utf8');
     for (const p of ['/api/voice/asr', '/api/voice/preview-audio']) {
@@ -526,7 +474,7 @@ console.log('桥接接入（audit harness）');
       assert.ok(head.includes("req.headers['x-agent-call'] !== undefined") && head.includes('403'), `${p} 要先拒绝 agent 调用`);
     }
     const get = bridge.slice(bridge.indexOf("req.method === 'GET' && url.pathname === '/api/socialV2/config'"));
-    assert.match(get.slice(0, 900), /redactAsrConfig\(normalizeAsrConfig\(v2\.asr\)\)/);
+    assert.match(get.slice(0, 900), /normalizeAsrConfig\(v2\.asr\)/);
     assert.match(get.slice(0, 900), /redactSpeakConfig\(normalizeSpeakConfig\(v2\.speak\)\)/);
   });
   await test('大功能开关：asr 默认开 / speak 默认关；只改被点到的项；引擎为 off 时打开会切回 SenseVoice', async () => {

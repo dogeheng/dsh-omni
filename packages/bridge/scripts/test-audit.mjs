@@ -35,12 +35,13 @@ const tests = [
   'test-token-usage.mjs', 'test-hardening.mjs',
   // 语音发送（纯函数 + 端点存在性；真发语音只在 --live 或 CLI 里做）
   'test-voice.mjs',
+  // 语音 I/O + Seed-VC 按需 worker（假 fetch / 假 Python，不访问真实服务）
+  'test-voice-io.mjs', 'test-singing.mjs', 'test-short-cover.mjs', 'test-online-cover.mjs',
   // 音量：参数校验 + 真的调用 ffmpeg 调音量 + 自算 RMS 验证增益
   'test-voice-volume.mjs',
   // 边界：并发/异常输入/上传限额/越权（纯函数段 + 可选的 live 段）
   'test-voice-edge.mjs',
   // 语音图形界面（参数解析/鉴权/路径穿越/文件名净化；live 段需普通终端）
-  'test-voice-gui.mjs',
   // 控制台静态契约（跑不了 Playwright 的环境下的替代回归）
   'test-console-static.mjs',
   // 语音系统整体结构检查（入口/依赖/端点/开关/文档一致性）

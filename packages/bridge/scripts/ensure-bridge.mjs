@@ -67,12 +67,17 @@ function findDshPort() {
   } catch {
     return 0;
   }
+  let fallback = 0;
   for (const line of output.split('\n')) {
     if (!/DeepSeek/.test(line)) continue;
+    const name = line.split(/\s+/)[8] || '';
     const match = /:(\d+)\s*\(LISTEN\)/.exec(line);
-    if (match) return Number(match[1]);
+    if (!match) continue;
+    // DSH also listens on an internal *:3081; the bridge needs the loopback Web port.
+    if (name.startsWith('127.0.0.1:')) return Number(match[1]);
+    if (!fallback) fallback = Number(match[1]);
   }
-  return 0;
+  return fallback;
 }
 
 function takeLock() {

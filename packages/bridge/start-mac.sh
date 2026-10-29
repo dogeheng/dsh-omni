@@ -14,7 +14,12 @@
 set -euo pipefail
 cd "$(dirname "$0")"
 
-PORT="$(lsof -nP -iTCP -sTCP:LISTEN 2>/dev/null | awk '/DeepSeek/ { n=split($9, a, ":"); if (a[n] ~ /^[0-9]+$/) { print a[n]; exit } }')"
+# DeepSeek 可能同时监听 *:3081（内部）和 127.0.0.1:<随机>（Web GUI）。
+# 桥接必须连后者；优先选 127.0.0.1 上的端口。
+PORT="$(lsof -nP -iTCP -sTCP:LISTEN 2>/dev/null | awk '/DeepSeek/ { name=$9; if (name ~ /^127\.0\.0\.1:/) { n=split(name, a, ":"); if (a[n] ~ /^[0-9]+$/) { print a[n]; exit } } }')"
+if [ -z "${PORT:-}" ]; then
+  PORT="$(lsof -nP -iTCP -sTCP:LISTEN 2>/dev/null | awk '/DeepSeek/ { name=$9; n=split(name, a, ":"); if (a[n] ~ /^[0-9]+$/) { print a[n]; exit } }')"
+fi
 if [ -n "${PORT:-}" ]; then
   DSH_URL="http://127.0.0.1:${PORT}" node -e '
     const fs = require("fs");

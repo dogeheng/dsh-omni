@@ -14,6 +14,12 @@ audio/
 packages/bridge/roles/yuki.md
 packages/bridge/roles/猫娘.md
 
-# Optional local checkout of the separately-licensed FeiyuVoice service
-# (setup:feiyu clones it here; its code/models are not redistributed by this repo)
-packages/feiyu-voice/
+# Optional Seed-VC checkout (GPL-3.0; invoked as a separate process)
+packages/seed-vc/
+
+# Generated singing reference audio (not a source asset)
+assets/voices/*.wav
+packages/bridge/data/singing/
+
+# Isolated QQ Music search helper venv (optional online source)
+packages/bridge/.music-venv/

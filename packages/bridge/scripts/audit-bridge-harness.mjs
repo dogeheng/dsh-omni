@@ -20,6 +20,9 @@ import * as tokenLedger from '../src/token-ledger.js';
 import * as voiceLib from '../src/send-voice-lib.js';
 import * as voiceAsr from '../src/voice-asr.js';
 import * as voiceTts from '../src/voice-tts.js';
+import * as singing from '../src/singing.js';
+import * as shortCover from '../src/short-cover/manager.js';
+import * as shortCoverConfig from '../src/short-cover/config.js';
 import * as presetPrompt from '../src/preset-prompt.js';
 import * as stateAcl from '../src/state-acl.mjs';
 import { unwrap, createTurnCollector } from '../src/dsh-client.js';
@@ -165,7 +168,7 @@ export async function bridgeHarness({ config = {}, savedState, files = {}, globa
     discoverDshLaunchToken: () => '', unwrap, createTurnCollector,
     ...markdown, ...sensitive, ...wait, ...safeFetch, ...forward, ...slang, ...sticker,
     ...modelPrices, ...tokenLedger, ...voiceLib, ...stateAcl, ...presetPrompt,
-    ...voiceAsr, ...voiceTts,
+    ...voiceAsr, ...voiceTts, ...singing, ...shortCover, ...shortCoverConfig,
     // ACL 收紧会 spawn icacls 去改**真实**文件系统；测试不该做这件事（同理见下面的
     // cleanupTemp / processAudioVolume 桩）。桩成成功，让 hardenStateDirAcl 走正常分支。
     hardenDir: () => ({ ok: true, detail: 'stub' }),

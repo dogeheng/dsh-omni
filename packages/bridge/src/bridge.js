@@ -25,8 +25,11 @@ import { safeFetch, safeFetchBuffer, looksLikeImageBuffer } from './safe-fetch.j
 import { AUDIO_EXTS, cleanupTemp, describeAudio, formatBytes, formatDuration, inspectAudio, listAudioFiles, parseTargetKey, processAudioVolume, resolveAudioProcessing, resolveAudioSource, safeJoinLibrary } from './send-voice-lib.js';
 import { discoverSnowLumaConnection, persistSnowLumaEndpoint, persistToken } from './snowluma-conn.js';
 // 听懂语音（ASR）与开口说话（TTS）。策略与出处见 docs/VOICE_IO.md。
-import { createAsrService, formatVoiceText, normalizeAsrConfig, redactAsrConfig } from './voice-asr.js';
+import { createAsrService, formatVoiceText, normalizeAsrConfig } from './voice-asr.js';
 import { autoSpeakable, createTtsService, normalizeSpeakConfig, redactSpeakConfig, SPEAK_EMOTIONS } from './voice-tts.js';
+import { createSingingService, normalizeSingingConfig, redactSingingConfig } from './singing.js';
+import { createShortCoverService } from './short-cover/manager.js';
+import { normalizeCoverConfig } from './short-cover/config.js';
 import { hardenDir, manualDirCommand } from './state-acl.mjs';
 import { extractForwardIds, forwardIdFromData, sanitizeForwardId, formatForwardResponse } from './forward.js';
 import { resolvePriceTable } from './model-prices.js';
@@ -791,8 +794,10 @@ function loadConfig() {
         setStickerRemark: false,
         stickerNote: true,
         collectSticker: true,
-        getSelfImage: true
+        getSelfImage: true,
+        sing: false
       },
+      singing: normalizeSingingConfig({}, ROOT),
       wake: {
         defaultMode: 'diving',
         preSleepWaitEnabled: true,      // 沉睡前强制观察窗口开关：防止 AI 聊两句就潜水
@@ -1995,9 +2000,19 @@ async function main() {
   //   3. 对方刚发过语音时提高回语音的概率（CowAgent voice_reply_voice 的思路，做成概率而不是硬开关）。
   const lastInboundVoiceAt = new Map(); // key → 最近一次收到别人语音的时间
   const lastAutoSpeakAt = new Map();    // key → 最近一次随机语音的时间（冷却用）
+  const lastSingAt = new Map();         // key → 最近一次唱歌的时间（冷却用）
+  const lastCoverAt = new Map();        // key → 最近一次短翻唱的时间（冷却用）
 
   function speakCfg() {
     return normalizeSpeakConfig(cfg.socialV2?.speak);
+  }
+
+  function singingCfg() {
+    return normalizeSingingConfig(cfg.socialV2?.singing, ROOT);
+  }
+
+  function coverCfg() {
+    return normalizeCoverConfig(cfg.socialV2?.singing?.cover, ROOT, cfg.socialV2?.singing);
   }
 
   /** 调 SnowLuma 的 OneBot HTTP 动作，返回原始 body（附 httpStatus）。不抛业务错误，由调用方判断 status/retcode。 */
@@ -2018,6 +2033,53 @@ async function main() {
 
   const asrService = createAsrService({ getConfig: () => cfg.socialV2?.asr, root: ROOT, oneBot: snowLumaAction, log });
   const ttsService = createTtsService({ getConfig: () => cfg.socialV2?.speak, root: ROOT, log });
+  // 唱歌 worker 不预热、不常驻：每次点歌时才由 singing.js 启动独立 Python 子进程，
+  // 处理 15–20 秒后退出；峰值 RSS / 超时 / 可用内存都在子进程层面兜底。
+  const singingService = createSingingService({ getConfig: () => cfg.socialV2?.singing, root: ROOT, log });
+  // Generated-audio retention: TTS messages themselves are in-memory Buffers,
+  // but console previews and MiMo design references are files. Expire previews
+  // quickly and keep design references for a bounded time.
+  function cleanupTtsArtifacts() {
+    const dir = path.join(ROOT, 'data', 'tts');
+    if (!fs.existsSync(dir)) return;
+    let removed = 0;
+    for (const ent of fs.readdirSync(dir, { withFileTypes: true })) {
+      if (!ent.isFile()) continue;
+      const p = path.join(dir, ent.name);
+      try {
+        const st = fs.statSync(p);
+        const age = Date.now() - st.mtimeMs;
+        const isPreview = /^last-preview\./.test(ent.name);
+        const isDesign = /^mimo-design-.*\.wav$/i.test(ent.name);
+        if ((isPreview && age > 10 * 60 * 1000) || (isDesign && age > 30 * 86400000)) {
+          fs.rmSync(p, { force: true }); removed++;
+        }
+      } catch {}
+    }
+    if (removed) log(`[tts] 回收 ${removed} 个旧试听/设计音频`);
+  }
+  cleanupTtsArtifacts();
+  const ttsCleanupTimer = setInterval(cleanupTtsArtifacts, 10 * 60 * 1000);
+  if (ttsCleanupTimer.unref) ttsCleanupTimer.unref();
+
+  const shortCoverService = createShortCoverService({
+    getConfig: () => ({ cover: cfg.socialV2?.singing?.cover, singing: cfg.socialV2?.singing }),
+    root: ROOT,
+    log,
+    onAudio: async (key, result) => {
+      let sent;
+      try {
+        sent = await sendSynthVoiceV2(key, result);
+      } catch (voiceError) {
+        log(`[cover] 语音发送失败，改用文件：${voiceError?.message ?? voiceError}`);
+        sent = await sendAudioFileV2(key, result);
+      }
+      const secs = result.seconds ? Math.max(1, Math.round(result.seconds)) : null;
+      recordVoiceSentV2(key, { ...sent, detail: sent.detail || '' }, `[翻唱${secs ? ` ${secs}秒` : ''}] ${result.song?.title || result.candidate?.title || ''}`);
+      appendActivity(`${key} [cover] ${result.song?.title || result.candidate?.title || ''} ${result.seconds?.toFixed?.(1) ?? '?'}s`);
+    },
+    onText: async (key, text) => { await sendToQQ(key, text); },
+  });
   // 按需加载：SenseVoice 跑在独立子进程里（加载后约占 850MB），默认第一条语音到来时才启动，
   // 闲置 socialV2.asr.idleUnloadMs（默认 10 分钟）后结束子进程、内存归还系统。
   // 只有配置了 socialV2.asr.preload=true 才会在启动 2 秒后预加载；模型缺失时只打一行提示。
@@ -2108,6 +2170,76 @@ async function main() {
       notes: synth.notes,
       verified: wantVerify ? (verification ? verification.confirmed === true : null) : null
     };
+  }
+
+  /**
+   * 唱一首：曲库里已分离好的 15–20 秒干声 → Seed-VC 换嗓 → 混音 → 发语音。
+   * 不做人声分离；不预热模型；内存上限和超时由 singingService 的子进程守卫负责。
+   */
+  async function singForV2(key, songId, { source = 'tool' } = {}) {
+    const sc = singingCfg();
+    if (!sc.enabled) throw new Error('唱歌功能未开启（socialV2.singing.enabled=false）');
+    if (!v2ToolEnabled('sing')) throw new Error('工具未启用：qq_sing');
+    const now = Date.now();
+    const prev = lastSingAt.get(key) ?? 0;
+    if (sc.cooldownMs > 0 && now - prev < sc.cooldownMs) {
+      throw new Error(`唱歌冷却中，还要等 ${Math.ceil((sc.cooldownMs - (now - prev)) / 1000)} 秒`);
+    }
+    const result = await singingService.sing(songId, { maxSeconds: sc.maxSeconds });
+    const sent = await sendSynthVoiceV2(key, result);
+    lastSingAt.set(key, Date.now());
+    const secs = result.seconds ? Math.max(1, Math.round(result.seconds)) : null;
+    recordVoiceSentV2(key, { ...sent, detail: '' }, `[唱歌${secs ? ` ${secs}秒` : ''}] ${result.song.title}`);
+    log(`[sing] ${key} ${source === 'tool' ? '点歌' : '试唱'}：${result.song.title} / ${result.seconds.toFixed(1)}s（峰值 ${result.peakRssMb}MB，耗时 ${result.elapsedMs}ms，messageId=${sent.messageId ?? '?'}）`);
+    appendActivity(`${key} [sing] ${result.song.title} ${result.seconds.toFixed(1)}s`);
+    return { ...sent, sent: true, seconds: result.seconds, song: result.song, peakRssMb: result.peakRssMb, elapsedMs: result.elapsedMs };
+  }
+
+  /**
+   * QQ 语音发送失败时的文件兜底：OneBot v11 的 upload_group_file / upload_private_file。
+   * 文件只短暂保存在 data/singing/tmp，发送后由 retention 清理。
+   */
+  async function sendAudioFileV2(key, result) {
+    const [kind, id] = String(key).split(':');
+    if (!['group', 'private'].includes(kind) || !Number(id)) throw new Error('无法识别的 QQ 会话');
+    const dir = path.join(ROOT, 'data', 'singing', 'tmp');
+    fs.mkdirSync(dir, { recursive: true });
+    const ext = result.ext === 'wav' ? 'wav' : 'mp3';
+    const file = path.join(dir, `cover-fallback-${Date.now()}.${ext}`);
+    fs.writeFileSync(file, result.buffer);
+    const action = kind === 'group' ? 'upload_group_file' : 'upload_private_file';
+    const params = kind === 'group'
+      ? { group_id: Number(id), file, name: `dsh-cover.${ext}` }
+      : { user_id: Number(id), file, name: `dsh-cover.${ext}` };
+    try {
+      const r = await snowLumaAction(action, params, 30000);
+      if (r?.status === 'failed' || (r?.retcode != null && r.retcode !== 0)) throw new Error(r?.wording || r?.message || `OneBot ${action} 失败`);
+      setTimeout(() => { try { fs.rmSync(file, { force: true }); } catch {} }, 5 * 60 * 1000).unref?.();
+      return { sent: true, messageId: r?.data?.message_id ?? null, verified: null, detail: 'file' };
+    } catch (e) {
+      try { fs.rmSync(file, { force: true }); } catch {}
+      throw e;
+    }
+  }
+
+  /**
+   * 自然语言短翻唱：搜索/选段/分离/Seed-VC/混音都在后台跑，route 只返回 job id。
+   */
+  async function startCoverForV2(key, input) {
+    const sc = singingCfg();
+    if (!sc.enabled) throw new Error('唱歌功能未开启（socialV2.singing.enabled=false）');
+    if (!v2ToolEnabled('sing')) throw new Error('工具未启用：sing_short_cover');
+    const cc = coverCfg();
+    if (!cc.enabled) throw new Error('短翻唱功能未开启（socialV2.singing.cover.enabled=false）');
+    const now = Date.now();
+    const prev = lastCoverAt.get(key) ?? 0;
+    if (cc.cooldownMs > 0 && now - prev < cc.cooldownMs) {
+      throw new Error(`点歌冷却中，还要等 ${Math.ceil((cc.cooldownMs - (now - prev)) / 1000)} 秒`);
+    }
+    const r = await shortCoverService.start(input, key);
+    lastCoverAt.set(key, Date.now());
+    log(`[cover] ${key} 点歌：${input.song}${input.version ? `（${input.version}）` : ''} → ${r.status} ${r.jobId}`);
+    return r;
   }
 
   /**
@@ -4876,8 +5008,9 @@ async function main() {
             ok: true,
             config: {
               ...v2,
-              asr: redactAsrConfig(normalizeAsrConfig(v2.asr)),
-              speak: redactSpeakConfig(normalizeSpeakConfig(v2.speak))
+              asr: normalizeAsrConfig(v2.asr),
+              speak: redactSpeakConfig(normalizeSpeakConfig(v2.speak)),
+              singing: redactSingingConfig(v2.singing, ROOT)
             }
           });
           return;
@@ -5008,23 +5141,28 @@ async function main() {
             if (merged.voice.enabled !== undefined) merged.voice.enabled = merged.voice.enabled === true;
             if (merged.voice.autoReadback !== undefined) merged.voice.autoReadback = merged.voice.autoReadback === true;
           }
-          // asr / speak：逐层合并后交给各自的 normalize 收敛类型；脱敏占位「********」不覆盖已存的密钥。
+          // asr / speak：逐层合并后交给各自的 normalize 收敛类型。
           if (body.asr && typeof body.asr === 'object' && !Array.isArray(body.asr)) {
-            merged.asr = normalizeAsrConfig({
-              ...(current.asr ?? {}),
-              ...body.asr,
-              openai: { ...(current.asr?.openai ?? {}), ...((body.asr.openai && typeof body.asr.openai === 'object') ? body.asr.openai : {}) }
-            });
-            if (body.asr.openai?.apiKey === '********') merged.asr.openai.apiKey = current.asr?.openai?.apiKey ?? '';
+            merged.asr = normalizeAsrConfig({ ...(current.asr ?? {}), ...body.asr });
           }
           if (body.speak && typeof body.speak === 'object' && !Array.isArray(body.speak)) {
             const nextSpeak = { ...(current.speak ?? {}), ...body.speak };
-            for (const sub of ['autoConvert', 'mimo', 'doubao', 'openai', 'gptsovits', 'feiyu', 'cosyvoice']) {
+            for (const sub of ['autoConvert', 'cosyvoice', 'mimo', 'doubao', 'openai', 'gptsovits']) {
               const patch = body.speak[sub];
               nextSpeak[sub] = { ...(current.speak?.[sub] ?? {}), ...((patch && typeof patch === 'object' && !Array.isArray(patch)) ? patch : {}) };
               if (patch?.apiKey === '********') nextSpeak[sub].apiKey = current.speak?.[sub]?.apiKey ?? '';
             }
             merged.speak = normalizeSpeakConfig(nextSpeak);
+          }
+          if (body.singing && typeof body.singing === 'object' && !Array.isArray(body.singing)) {
+            merged.singing = normalizeSingingConfig({ ...(current.singing ?? {}), ...body.singing }, ROOT);
+            // The console receives a redacted Netease cookie; keep the stored one.
+            if (body.singing?.cover?.online?.neteaseCookie === '********' && current.singing?.cover?.online?.neteaseCookie) {
+              merged.singing.cover = { ...(merged.singing.cover || {}), online: { ...(merged.singing.cover?.online || {}), neteaseCookie: current.singing.cover.online.neteaseCookie } };
+            }
+            if (body.singing?.cover?.online?.thirdPartyResolverUrl === '********' && current.singing?.cover?.online?.thirdPartyResolverUrl) {
+              merged.singing.cover = { ...(merged.singing.cover || {}), online: { ...(merged.singing.cover?.online || {}), thirdPartyResolverUrl: current.singing.cover.online.thirdPartyResolverUrl } };
+            }
           }
           // feedback：数值/布尔归一化
           if (body.feedback && typeof body.feedback === 'object') {
@@ -5069,14 +5207,13 @@ async function main() {
             WAKE_DEFAULT_KEYS.some((k) => Object.prototype.hasOwnProperty.call(body.wake, k));
           if (wakeDefaultChanged) refreshAllDefaultWakeConfigsV2();
           log('控制台：二代仿真配置已更新');
-          // 回包也要脱敏：GET 已经脱敏，保存回包若只脱敏 speak，会在一瞬间把
-          // asr.openai.apiKey 明文回给浏览器（VOICE_IO.md 明确承诺两个接口都脱敏）。
           sendJson({
             ok: true,
             config: {
               ...cfg.socialV2,
-              asr: redactAsrConfig(normalizeAsrConfig(cfg.socialV2.asr)),
-              speak: redactSpeakConfig(normalizeSpeakConfig(cfg.socialV2.speak))
+              asr: normalizeAsrConfig(cfg.socialV2.asr),
+              speak: redactSpeakConfig(normalizeSpeakConfig(cfg.socialV2.speak)),
+              singing: redactSingingConfig(cfg.socialV2.singing, ROOT)
             }
           });
           return;
@@ -6382,6 +6519,147 @@ async function main() {
           return;
         }
 
+        // ── 唱歌（agent 通道：qq_sing）────────────────────────────────────────
+        if (req.method === 'POST' && url.pathname === '/api/socialV2/sing') {
+          const body = await readBody();
+          const token = String(body.token ?? req.headers['x-agent-token'] ?? '').trim();
+          const key = String(body.key ?? '').trim();
+          const sc = singingCfg();
+          const fallbackHint = '这次没唱成，改用文字回复即可，不要反复重试 qq_sing';
+          if (!sc.enabled) { sendJson({ ok: false, error: '唱歌功能未开启，继续打字即可，不要重试', hint: fallbackHint }, 403); return; }
+          if (!key) { sendJson({ ok: false, error: 'key 不能为空（格式 group:群号 或 private:QQ号）' }, 400); return; }
+          if (currentMode !== 'reserved2') { sendJson({ ok: false, error: '该接口仅 reserved2 模式可用' }, 403); return; }
+          if (!token) { sendJson({ ok: false, error: 'reserved2 模式发送必须携带 agent token' }, 403); return; }
+          if (!agentTokenOk(key, token)) { sendJson({ ok: false, error: 'agent token 无效' }, 403); return; }
+          if (!v2ToolEnabled('sing')) { sendJson({ ok: false, error: '工具未启用：qq_sing', hint: fallbackHint }, 403); return; }
+          if (!v2SessionAllowed(key)) { sendJson({ ok: false, error: '目标不在当前模式允许范围内' }, 403); return; }
+          if (shouldBlockSilentReply(key)) { sendJson({ ok: false, error: '静默模式已开启，当前不允许发送' }, 403); return; }
+          const keyMatch = /^(group|private):(\d+)$/.exec(key);
+          if (!keyMatch) { sendJson({ ok: false, error: 'key 格式应为 group:群号 或 private:QQ号' }, 400); return; }
+          const kind = keyMatch[1];
+          const id = Number(keyMatch[2]);
+          if (!Number.isFinite(id) || id <= 0 || !modeAllowed(key, kind, id, cfg, currentMode)) {
+            sendJson({ ok: false, error: '目标不在当前模式允许范围内' }, 403);
+            return;
+          }
+          const song = String(body.song ?? body.title ?? '').trim();
+          if (!song) { sendJson({ ok: false, error: 'song 不能为空：写曲库里的歌名/ID' }, 400); return; }
+          if (song.length > 80) { sendJson({ ok: false, error: '歌名太长' }, 400); return; }
+          try {
+            const r = await singForV2(key, song, { source: 'tool' });
+            scheduleReplyCheckV2(key);
+            sendJson({
+              ok: true,
+              key,
+              sent: true,
+              messageId: r.messageId,
+              song: r.song,
+              seconds: r.seconds != null ? Math.round(r.seconds * 10) / 10 : null,
+              peakRssMb: r.peakRssMb,
+              elapsedMs: r.elapsedMs
+            });
+          } catch (error) {
+            const msg = error?.message ?? String(error);
+            const status = /冷却|前面还有/.test(msg) ? 429 : /未开启|未启用|不在当前|静默/.test(msg) ? 403 : /歌曲|歌名|不合法/.test(msg) ? 400 : 500;
+            sendJson({ ok: false, error: msg, hint: fallbackHint }, status);
+          }
+          return;
+        }
+
+        // ── 自然语言短翻唱（agent 通道：sing_short_cover）────────────────────────
+        if (req.method === 'POST' && url.pathname === '/api/socialV2/cover') {
+          const body = await readBody();
+          const token = String(body.token ?? req.headers['x-agent-token'] ?? '').trim();
+          const key = String(body.key ?? '').trim();
+          const sc = singingCfg();
+          const fallbackHint = '这次没唱成，改用文字回复即可，不要反复重试 sing_short_cover';
+          if (!sc.enabled) { sendJson({ ok: false, error: '唱歌功能未开启，继续打字即可，不要重试', hint: fallbackHint }, 403); return; }
+          if (!key) { sendJson({ ok: false, error: 'key 不能为空（格式 group:群号 或 private:QQ号）' }, 400); return; }
+          if (currentMode !== 'reserved2') { sendJson({ ok: false, error: '该接口仅 reserved2 模式可用' }, 403); return; }
+          if (!token) { sendJson({ ok: false, error: 'reserved2 模式发送必须携带 agent token' }, 403); return; }
+          if (!agentTokenOk(key, token)) { sendJson({ ok: false, error: 'agent token 无效' }, 403); return; }
+          if (!v2ToolEnabled('sing')) { sendJson({ ok: false, error: '工具未启用：sing_short_cover', hint: fallbackHint }, 403); return; }
+          if (!v2SessionAllowed(key)) { sendJson({ ok: false, error: '目标不在当前模式允许范围内' }, 403); return; }
+          if (shouldBlockSilentReply(key)) { sendJson({ ok: false, error: '静默模式已开启，当前不允许发送' }, 403); return; }
+          const keyMatch = /^(group|private):(\d+)$/.exec(key);
+          if (!keyMatch) { sendJson({ ok: false, error: 'key 格式应为 group:群号 或 private:QQ号' }, 400); return; }
+          const kind = keyMatch[1];
+          const id = Number(keyMatch[2]);
+          if (!Number.isFinite(id) || id <= 0 || !modeAllowed(key, kind, id, cfg, currentMode)) {
+            sendJson({ ok: false, error: '目标不在当前模式允许范围内' }, 403);
+            return;
+          }
+          const song = String(body.song ?? body.title ?? '').trim();
+          if (!song) { sendJson({ ok: false, error: 'song 不能为空' }, 400); return; }
+          if (song.length > 80) { sendJson({ ok: false, error: '歌名太长' }, 400); return; }
+          try {
+            const r = await startCoverForV2(key, {
+              song,
+              artist: body.artist ? String(body.artist).slice(0, 80) : '',
+              version: body.version ? String(body.version).slice(0, 80) : '',
+              duration: body.duration,
+              segment: body.segment,
+              start_time: body.start_time
+            });
+            sendJson({ ok: true, key, jobId: r.jobId, status: r.status, cached: r.cached === true, title: r.title, duration: r.duration ?? null, hint: r.cached === true ? '命中缓存，已经直接发送语音' : '后台处理中，完成后会自动发语音；先回一句“去找调子”即可，不要重复点歌' });
+          } catch (error) {
+            const msg = error?.message ?? String(error);
+            const stage = error?.stage || '';
+            const status = stage === 'source_not_found' ? 404 : /冷却|队列|前面还有/.test(msg) ? 429 : /未开启|未启用|不在当前|静默/.test(msg) ? 403 : /song|歌名|输入/.test(msg) ? 400 : 500;
+            sendJson({ ok: false, error: msg, stage, hint: fallbackHint }, status);
+          }
+          return;
+        }
+
+        // ── 唱歌（操作者通道：控制台试唱 / 状态）────────────────────────────────
+        if (req.method === 'GET' && url.pathname === '/api/singing/status') {
+          if (req.headers['x-agent-call'] !== undefined || String(req.headers['x-agent-token'] ?? '').trim()) {
+            sendJson({ ok: false, error: '仅限控制台操作' }, 403);
+            return;
+          }
+          sendJson({ ok: true, ...singingService.status(), cover: shortCoverService.status() });
+          return;
+        }
+        if (req.method === 'GET' && url.pathname === '/api/singing/songs') {
+          if (req.headers['x-agent-call'] !== undefined || String(req.headers['x-agent-token'] ?? '').trim()) {
+            sendJson({ ok: false, error: '仅限控制台操作' }, 403);
+            return;
+          }
+          sendJson({ ok: true, songs: singingService.songs().map(({ id, title, source, license }) => ({ id, title, source, license })) });
+          return;
+        }
+        if (req.method === 'POST' && url.pathname === '/api/singing/sing') {
+          if (req.headers['x-agent-call'] !== undefined || String(req.headers['x-agent-token'] ?? '').trim()) {
+            sendJson({ ok: false, error: 'AI 请改用 qq_sing' }, 403);
+            return;
+          }
+          const body = await readBody();
+          const song = String(body.song ?? '').trim();
+          if (!song) { sendJson({ ok: false, error: 'song 不能为空' }, 400); return; }
+          try {
+            const r = await singingService.sing(song, { maxSeconds: body.maxSeconds });
+            const dir = path.join(ROOT, 'data', 'singing', 'preview');
+            fs.mkdirSync(dir, { recursive: true });
+            const file = path.join(dir, `last-preview.${r.ext}`);
+            fs.writeFileSync(file, r.buffer);
+            sendJson({ ok: true, song: r.song, seconds: r.seconds, elapsedMs: r.elapsedMs, peakRssMb: r.peakRssMb, file, previewUrl: '/api/singing/preview-audio' });
+          } catch (error) {
+            sendJson({ ok: false, error: error?.message ?? String(error) }, 500);
+          }
+          return;
+        }
+        if (req.method === 'GET' && url.pathname === '/api/singing/preview-audio') {
+          if (req.headers['x-agent-call'] !== undefined || String(req.headers['x-agent-token'] ?? '').trim()) {
+            sendJson({ ok: false, error: '仅限控制台操作' }, 403);
+            return;
+          }
+          const file = path.join(ROOT, 'data', 'singing', 'preview', 'last-preview.mp3');
+          if (!fs.existsSync(file)) { sendJson({ ok: false, error: '还没有试唱音频' }, 404); return; }
+          res.writeHead(200, { 'content-type': 'audio/mpeg', 'cache-control': 'no-store' });
+          fs.createReadStream(file).pipe(res);
+          return;
+        }
+
         // ── 开口说话（操作者通道：试听 / 手动发一句，凭 consoleToken）────────────
         // 不看 socialV2.speak.enabled（那是「AI 能不能说」的总闸），方便你先试好音色再开放给 AI。
         // dryRun=true 只合成不发送，音频写到 data/tts/last-preview.<ext> 供试听。
@@ -6402,6 +6680,7 @@ async function main() {
               const synth = await ttsService.synthesize(text, { emotion: body.emotion, style: body.style ? String(body.style).slice(0, 200) : '' });
               const dir = path.join(ROOT, 'data', 'tts');
               fs.mkdirSync(dir, { recursive: true });
+              for (const name of fs.readdirSync(dir)) { if (/^last-preview\./.test(name) && !name.endsWith(`.${synth.ext}`)) { try { fs.rmSync(path.join(dir, name), { force: true }); } catch {} } }
               const file = path.join(dir, `last-preview.${synth.ext}`);
               fs.writeFileSync(file, synth.buffer);
               lastTtsPreview = { file, mime: TTS_MIME[synth.ext] ?? 'application/octet-stream', at: Date.now() };
@@ -11017,7 +11296,11 @@ async function main() {
     // 开口说话：只在总开关打开时注入，默认关闭时唤醒 prompt 一个字都不多。
     const speakNow = speakCfg();
     const speakLine = speakNow.enabled && v2ToolEnabled('speak')
-      ? `【开口说话】可以用 qq_speak(text, emotion, style) 把一句话直接说成语音条（≤${speakNow.maxChars} 字）。适合对方发语音时回一句、打招呼/吐槽/惊叹/撒娇这类短句；长解释、链接、代码、列表、数字密集的内容照常打字。大多数时候还是打字，别连着发语音。CosyVoice 只负责说话，不能把 style 设成「唱歌」；唱歌是另一条独立链路。${speakNow.autoConvert.enabled ? '你发的短句偶尔会被系统随机改成语音（返回 spokenAsVoice=true），不用再补发文字。' : ''}\n\n`
+      ? `【开口说话】可以用 qq_speak(text, emotion, style) 把一句话直接说成语音条（≤${speakNow.maxChars} 字）。适合对方发语音时回一句、打招呼/吐槽/惊叹/撒娇这类短句；长解释、链接、代码、列表、数字密集的内容照常打字。大多数时候还是打字，别连着发语音。${speakNow.autoConvert.enabled ? '你发的短句偶尔会被系统随机改成语音（返回 spokenAsVoice=true），不用再补发文字。' : ''}\n\n`
+      : '';
+    const singNow = singingCfg();
+    const singLine = singNow.enabled && v2ToolEnabled('sing')
+      ? `【唱歌】群友自然语言点歌时用 sing_short_cover(song, artist?, version?, duration?, segment?)：后台搜索合法音源、选副歌/短片段、分离人声、Seed-VC 换成你的音色、混音，完成后自动发语音；先回一句“去找调子”，不要重复点歌。只支持本地授权曲库/CC 音源、只唱 10–20 秒，不唱整首、不绕过版权；找不到音源要明确说明。qq_sing 只用于曲库中已分离好的短片段。\n\n`
       : '';
     const preSleepMs = Math.max(0, Number(cfg.socialV2?.wake?.preSleepWaitMs) || 300000);
     const proactiveLine = '【积极性】不要习惯性潜水：群里有你能接的话题就主动参与，偶尔插一句别人的话题也很正常；只有确实没话可说、对方已明确结束、或长时间没人说话时才潜水。\n\n';
@@ -11056,7 +11339,7 @@ async function main() {
     const freshLine = st.lastIdleRetireAt && Date.now() - Number(st.lastIdleRetireAt) < 10 * 60 * 1000
       ? '【会话已刷新】上一段对话因空闲已归档；你的长期记忆与最近消息仍在，不要追问“刚才聊到哪”，直接按当前消息自然接话。\n\n'
       : '';
-    const base = roleLine + identityLine + tokenLine + freshLine + initialPromptLine + antiAiLine + proactiveLine + stickerLine + speakLine + replyLine + statusLine + wakeLine + memoryLine + participationLine + preSleepLine;
+    const base = roleLine + identityLine + tokenLine + freshLine + initialPromptLine + antiAiLine + proactiveLine + stickerLine + speakLine + singLine + replyLine + statusLine + wakeLine + memoryLine + participationLine + preSleepLine;
     if (reason === 'bootstrap') {
       return `${base}【引导唤醒】你已接入 QQ 会话 ${key}。\n当前是二代仿真模式：你的文本输出不会自动发送到 QQ，所有发言必须通过工具完成。\n请先调用 qq_get_prompt 查看角色、推荐值、可用工具和状态；有待回应的消息先按首回复节奏处理，最后才用 qq_set_wake_config 设置你希望如何被唤醒。`;
     }

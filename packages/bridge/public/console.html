@@ -2103,7 +2103,7 @@ button:active:not(:disabled) {
       <div id="voiceList" class="meta" style="margin-top:8px">点「刷新语音库」加载…</div>
       <div class="meta" style="margin-top:6px">
         上限：时长 <code>maxSeconds</code>、体积 <code>maxBytes</code>、频率 <code>maxPerMinute</code>/<code>maxPerHour</code>（见下方配置区）。
-        命令行等价工具：<code>node scripts/send-voice.mjs list-voice</code>（经桥接）或 <code>node voice-cli.mjs</code>（独立工具，在上级 <code>voice-tool/</code> 里直连 SnowLuma）。
+        命令行等价工具：<code>node scripts/send-voice.mjs list-voice</code>（经桥接）。
       </div>
 
       </div></details>
@@ -2120,7 +2120,6 @@ button:active:not(:disabled) {
         <label style="flex:1">识别引擎</label>
         <select id="v2AsrEngine" style="width:230px">
           <option value="sensevoice">本地 SenseVoice（推荐，免费）</option>
-          <option value="openai">云端（OpenAI 兼容接口）</option>
           <option value="qq">QQ 自带转写（无语气标注）</option>
           <option value="off">关闭</option>
         </select>
@@ -2154,17 +2153,6 @@ button:active:not(:disabled) {
         <label style="flex:1">原始语音下载上限（MB）</label><input type="number" id="v2AsrMaxBytesMb" min="0.1" max="32" step="0.5" style="width:80px">
         <label style="flex:1">转写缓存条数</label><input type="number" id="v2AsrCacheSize" min="10" max="5000" style="width:80px">
       </div>
-      <div id="v2AsrOpenaiBox" style="display:none">
-        <div class="row">
-          <label style="flex:1">云端接口地址</label><input type="text" id="v2AsrOpenaiBaseUrl" placeholder="https://api.siliconflow.cn/v1" style="flex:2">
-          <label style="flex:1">模型</label><input type="text" id="v2AsrOpenaiModel" placeholder="FunAudioLLM/SenseVoiceSmall" style="flex:2">
-        </div>
-        <div class="row">
-          <label style="flex:1">API Key</label><input type="password" id="v2AsrOpenaiApiKey" autocomplete="off" style="flex:2">
-          <label style="flex:1">或从环境变量读取</label><input type="text" id="v2AsrOpenaiApiKeyEnv" placeholder="SILICONFLOW_API_KEY" style="flex:2">
-        </div>
-        <div class="meta" style="margin-bottom:6px">云端识别会把群友的语音上传给服务商，不占本机内存。</div>
-      </div>
       <div class="row" style="flex-wrap:wrap;gap:8px;align-items:center">
         <button id="asrStatusBtn" type="button" class="btn-secondary">刷新识别状态</button>
         <button id="asrLoadBtn" type="button" class="btn-secondary">立即加载模型</button>
@@ -2179,11 +2167,10 @@ button:active:not(:disabled) {
         <label style="flex:1">语音合成服务商</label>
         <select id="v2SpeakProvider" style="width:260px">
           <option value="cosyvoice">百炼 CosyVoice 3.5（默认，远程）</option>
-          <option value="mimo">小米 MiMo（目前限时免费）</option>
+          <option value="mimo">小米 MiMo</option>
           <option value="doubao">火山引擎豆包语音</option>
           <option value="openai">OpenAI 兼容（硅基流动 / mlx-audio 等）</option>
           <option value="gptsovits">GPT-SoVITS（本地 api_v2）</option>
-          <option value="feiyu">FeiyuVoice（肥鱼声线，需单独服务）</option>
         </select>
       </div>
       <div class="row">
@@ -2303,26 +2290,10 @@ button:active:not(:disabled) {
           <label style="flex:1">音色 ID</label><input type="text" id="v2CosyVoiceId" placeholder="voiceId" style="flex:2">
         </div>
         <div class="row">
-          <label style="flex:1">默认指令</label><textarea id="v2CosyInstruction" rows="2" style="flex:3" placeholder="留空就保持复刻音色本来的声线"></textarea>
+          <label style="flex:1">默认指令</label><textarea id="v2CosyInstruction" rows="2" style="flex:3" placeholder="用可爱、活泼、稍微撒娇的语气说，像在 QQ 上随口发语音，不要播音腔。"></textarea>
         </div>
         <div class="row">
           <label style="flex:1">可选 baseUrl</label><input type="text" id="v2CosyBaseUrl" placeholder="留空则用 workspaceId.region.maas.aliyuncs.com" style="flex:3">
-        </div>
-      </div>
-      <div id="v2SpeakFeiyuBox" data-speak-provider="feiyu" style="display:none">
-        <div class="meta" style="margin:8px 0 4px"><b>FeiyuVoice 参数</b>：独立的 Python/GPU 声音服务（CosyVoice3 <code>cute</code> / <code>gentle</code>），不是 OpenAI 兼容接口。本仓库只带 HTTP 客户端，<b>不复制它的源码和模型</b>；需要按上游文档单独部署（推荐 WSL + NVIDIA/AMD GPU，macOS 官方未提供运行时）。</div>
-        <div class="row">
-          <label style="flex:1">服务地址</label><input type="text" id="v2FeiyuBaseUrl" placeholder="http://127.0.0.1:9880" style="flex:2">
-          <label style="flex:1">Voice</label><input type="text" id="v2FeiyuVoice" placeholder="feiyu" style="width:100px">
-        </div>
-        <div class="row">
-          <label style="flex:1">API Key</label><input type="password" id="v2FeiyuApiKey" autocomplete="off" style="flex:2">
-          <label style="flex:1">或从环境变量读取</label><input type="text" id="v2FeiyuApiKeyEnv" placeholder="FEIYU_VOICE_API_KEY" style="flex:2">
-        </div>
-        <div class="row">
-          <label style="flex:1">默认声线</label>
-          <select id="v2FeiyuStyle" style="width:140px"><option value="cute">cute（可爱，默认）</option><option value="gentle">gentle（温柔）</option></select>
-          <span class="meta" style="flex:2">API Key 在服务端的 <code>.runtime/voice-service/api_key.txt</code>；服务未启动时试听会报连接失败。</span>
         </div>
       </div>
       <div id="v2SpeakGsvBox" data-speak-provider="gptsovits" style="display:none">
@@ -2337,6 +2308,40 @@ button:active:not(:disabled) {
         </div>
       </div>
       <div class="meta" style="margin:6px 0">API Key 输入框留空表示保持已保存的值不变；推荐用环境变量提供 Key，不写进 config.json。</div>
+
+      <details id="v2SingingBox" style="margin:14px 0 6px">
+        <summary><b>唱歌（Seed-VC，本地按需）</b> <span class="meta">—— 只唱曲库里 15–20 秒的干声；进程用完退出，不常驻</span></summary>
+        <div class="meta" style="margin:8px 0 4px">先运行 <code>npm --prefix packages/bridge run setup:seedvc</code> 准备引擎，把分离好的 <code>vocal.wav</code>/<code>instrumental.wav</code> 放进曲库。运行时不在 Mac 上做人声分离。启用后需要重启 DSH，<code>qq_sing</code> 才会注册。</div>
+        <div class="row">
+          <label style="flex:1">启用唱歌</label><input type="checkbox" id="v2SingEnabled" data-v2-tool="sing" style="width:auto">
+          <label style="flex:1">单首最长时间（秒）</label><input type="number" id="v2SingMaxSeconds" min="5" max="30" style="width:80px">
+          <label style="flex:1">diffusion steps</label><input type="number" id="v2SingSteps" min="10" max="50" style="width:80px">
+        </div>
+        <div class="row">
+          <label style="flex:1">峰值内存上限（MB）</label><input type="number" id="v2SingMaxRss" min="2000" max="12000" style="width:100px">
+          <label style="flex:1">最低可用内存（MB）</label><input type="number" id="v2SingMinFree" min="500" max="8000" style="width:100px">
+          <label style="flex:1">超时（秒）</label><input type="number" id="v2SingTimeout" min="60" max="300" style="width:80px">
+        </div>
+        <div class="row">
+          <label style="flex:1">同时队列上限</label><input type="number" id="v2SingQueue" min="0" max="3" style="width:70px">
+          <label style="flex:1">冷却（秒）</label><input type="number" id="v2SingCooldown" min="0" max="600" style="width:80px">
+          <label style="flex:1">半音移调</label><input type="number" id="v2SingShift" min="-12" max="12" style="width:70px">
+          <label style="flex:1">fp16</label><input type="checkbox" id="v2SingFp16" style="width:auto">
+        </div>
+        <div class="row">
+          <label style="flex:1">Seed-VC 目录</label><input type="text" id="v2SingSeedVcDir" placeholder="packages/seed-vc" style="flex:2">
+          <label style="flex:1">Python</label><input type="text" id="v2SingPython" placeholder="packages/seed-vc/.venv/bin/python" style="flex:2">
+        </div>
+        <div class="row">
+          <label style="flex:1">参考音频</label><input type="text" id="v2SingRef" placeholder="data/voice/dsh-ref.wav" style="flex:2">
+          <label style="flex:1">曲库目录</label><input type="text" id="v2SingSongsDir" placeholder="data/singing/songs" style="flex:2">
+        </div>
+        <div class="row">
+          <button type="button" id="v2SingRefresh">刷新唱歌状态</button>
+          <span id="v2SingStatus" class="meta" style="flex:3"></span>
+        </div>
+        <div class="meta" style="margin:6px 0 0">安全阀：子进程峰值内存 超过上限、超时、或可用内存低于下限时会直接杀掉，不会让 Seed-VC 拖死 DSH。</div>
+      </details>
 
       <div class="meta" style="margin:10px 0 4px"><b>试听与试发</b>：用的是<b>已保存</b>的参数，改完先点「保存当前参数」。试听不受「允许 AI 开口说话」总开关限制，方便先调好音色再开放给 AI。</div>
       <div class="row" style="flex-wrap:wrap;gap:8px;align-items:center">
@@ -3632,7 +3637,8 @@ async function loadV2Config() {
     const v = c.voice || {};
     document.getElementById('v2VoiceEnabled').checked = v.enabled === true;
     document.getElementById('v2VoiceAutoReadback').checked = v.autoReadback !== false;
-    fillVoiceIoForm(c.asr || {}, c.speak || {});
+    fillVoiceIoForm(c.asr || {}, { ...(c.speak || {}), singing: c.singing || {} });
+    refreshSingingStatus();
     const ctx = c.context || {};
     document.getElementById('v2ContextRecentLimit').value = ctx.recentLimit ?? 100;
     document.getElementById('v2ContextUnreadLimit').value = ctx.unreadLimit ?? 30;
@@ -3717,6 +3723,7 @@ async function saveV2Config() {
     },
     asr: voiceIo.asr,
     speak: voiceIo.speak,
+    singing: voiceIo.singing,
     sticker: {
       enabled: document.getElementById('v2StickerEnabled').checked,
       syncTtlMs: Math.max(1000, Math.round(Number(document.getElementById('v2StickerSyncTtlSec').value) || 60) * 1000),
@@ -3773,7 +3780,6 @@ function vioGetKey(id) {
   return voiceIoKeySaved[id] ? '********' : '';
 }
 function syncVoiceIoBoxes() {
-  vioEl('v2AsrOpenaiBox').style.display = vioEl('v2AsrEngine').value === 'openai' ? '' : 'none';
   const p = vioEl('v2SpeakProvider').value;
   document.querySelectorAll('[data-speak-provider]').forEach(el => { el.style.display = el.dataset.speakProvider === p ? '' : 'none'; });
 }
@@ -3781,7 +3787,7 @@ const round1 = (x) => Math.round(x * 10) / 10;
 
 function fillVoiceIoForm(a, s) {
   vioEl('v2AsrEnabled').checked = a.enabled !== false;
-  vioEl('v2AsrEngine').value = ['sensevoice', 'openai', 'qq', 'off'].includes(a.engine) ? a.engine : 'sensevoice';
+  vioEl('v2AsrEngine').value = ['sensevoice', 'qq', 'off'].includes(a.engine) ? a.engine : 'sensevoice';
   vioEl('v2AsrPreload').checked = a.preload === true;
   const idle = Number.isFinite(Number(a.idleUnloadMs)) ? Number(a.idleUnloadMs) : 600000;
   vioEl('v2AsrIdleUnloadMin').value = round1(idle / 60000);
@@ -3798,14 +3804,9 @@ function fillVoiceIoForm(a, s) {
   vioEl('v2AsrModelDir').value = a.modelDir || 'data/models/sherpa-onnx-sense-voice-zh-en-ja-ko-yue-int8-2024-07-17';
   vioEl('v2AsrMaxBytesMb').value = round1((a.maxBytes ?? 4194304) / 1048576);
   vioEl('v2AsrCacheSize').value = a.cacheSize ?? 500;
-  const ao = a.openai || {};
-  vioEl('v2AsrOpenaiBaseUrl').value = ao.baseUrl || '';
-  vioEl('v2AsrOpenaiModel').value = ao.model || '';
-  vioEl('v2AsrOpenaiApiKeyEnv').value = ao.apiKeyEnv || '';
-  vioSetKey('v2AsrOpenaiApiKey', ao);
 
   vioEl('v2SpeakEnabled').checked = s.enabled === true;
-  vioEl('v2SpeakProvider').value = ['cosyvoice', 'mimo', 'doubao', 'openai', 'gptsovits', 'feiyu'].includes(s.provider) ? s.provider : 'cosyvoice';
+  vioEl('v2SpeakProvider').value = ['cosyvoice', 'mimo', 'doubao', 'openai', 'gptsovits'].includes(s.provider) ? s.provider : 'cosyvoice';
   vioEl('v2SpeakMaxChars').value = s.maxChars ?? 80;
   vioEl('v2SpeakMaxSeconds').value = s.maxSeconds ?? 30;
   vioEl('v2SpeakTimeoutSec').value = round1((s.timeoutMs ?? 30000) / 1000);
@@ -3863,12 +3864,21 @@ function fillVoiceIoForm(a, s) {
   vioEl('v2CosyVoiceId').value = cv.voiceId || '';
   vioEl('v2CosyInstruction').value = cv.instruction || '';
   vioSetKey('v2CosyApiKey', cv);
-  const fy = s.feiyu || {};
-  vioEl('v2FeiyuBaseUrl').value = fy.baseUrl || '';
-  vioEl('v2FeiyuVoice').value = fy.voice || '';
-  vioEl('v2FeiyuApiKeyEnv').value = fy.apiKeyEnv || '';
-  vioEl('v2FeiyuStyle').value = fy.style === 'gentle' ? 'gentle' : 'cute';
-  vioSetKey('v2FeiyuApiKey', fy);
+  const sing = s.singing || {};
+  vioEl('v2SingEnabled').checked = sing.enabled === true;
+  vioEl('v2SingMaxSeconds').value = sing.maxSeconds ?? 20;
+  vioEl('v2SingSteps').value = sing.diffusionSteps ?? 30;
+  vioEl('v2SingMaxRss').value = sing.maxRssMb ?? 6500;
+  vioEl('v2SingMinFree').value = sing.minFreeMb ?? 3000;
+  vioEl('v2SingTimeout').value = Math.round((sing.timeoutMs ?? 180000) / 1000);
+  vioEl('v2SingQueue').value = sing.maxQueue ?? 1;
+  vioEl('v2SingCooldown').value = Math.round((sing.cooldownMs ?? 180000) / 1000);
+  vioEl('v2SingShift').value = sing.semiToneShift ?? 0;
+  vioEl('v2SingFp16').checked = sing.fp16 === true;
+  vioEl('v2SingSeedVcDir').value = sing.seedVcDir || '';
+  vioEl('v2SingPython').value = sing.pythonPath || '';
+  vioEl('v2SingRef').value = sing.refAudio || '';
+  vioEl('v2SingSongsDir').value = sing.songsDir || '';
   const g = s.gptsovits || {};
   vioEl('v2GsvBaseUrl').value = g.baseUrl || '';
   vioEl('v2GsvTextLang').value = g.textLang || '';
@@ -3909,97 +3919,28 @@ function collectVoiceIoForm() {
     modelDir: vioStr('v2AsrModelDir'),
     maxBytes: ms('v2AsrMaxBytesMb', 1048576, 4),
     cacheSize: Math.round(vioNum('v2AsrCacheSize', 500)),
-    openai: {
-      baseUrl: vioStr('v2AsrOpenaiBaseUrl'),
-      model: vioStr('v2AsrOpenaiModel'),
-      apiKey: vioGetKey('v2AsrOpenaiApiKey'),
-      apiKeyEnv: vioStr('v2AsrOpenaiApiKeyEnv')
-    }
   };
-  const speak = {
-    enabled: vioEl('v2SpeakEnabled').checked,
-    provider: vioEl('v2SpeakProvider').value,
-    maxChars: Math.round(vioNum('v2SpeakMaxChars', 80)),
-    maxSeconds: vioNum('v2SpeakMaxSeconds', 30),
-    timeoutMs: ms('v2SpeakTimeoutSec', 1000, 30),
-    maxPerMinute: Math.round(vioNum('v2SpeakPerMin', 2)),
-    maxPerHour: Math.round(vioNum('v2SpeakPerHour', 20)),
-    dailyCharBudget: Math.max(0, Math.round(vioNum('v2SpeakDailyBudget', 0))),
-    trimSilence: vioEl('v2SpeakTrim').checked,
-    allowEmotion: vioEl('v2SpeakAllowEmotion').checked,
-    autoConvert: {
-      enabled: vioEl('v2SpeakAutoEnabled').checked,
-      probability: pct('v2SpeakAutoProb', 5),
-      mirrorProbability: pct('v2SpeakAutoMirrorProb', 35),
-      mirrorWindowMs: ms('v2SpeakAutoMirrorMin', 60000, 10),
-      cooldownMs: ms('v2SpeakAutoCooldownMin', 60000, 3),
-      timeoutMs: ms('v2SpeakAutoTimeoutSec', 1000, 15),
-      minChars: Math.round(vioNum('v2SpeakAutoMinChars', 2)),
-      maxChars: Math.round(vioNum('v2SpeakAutoMaxChars', 40)),
-      privateOnly: vioEl('v2SpeakAutoPrivateOnly').checked
-    },
-    mimo: {
-      baseUrl: vioStr('v2MimoBaseUrl'),
-      model: vioStr('v2MimoModel'),
-      voice: vioStr('v2MimoVoice'),
-      format: vioEl('v2MimoFormat').value,
-      apiKey: vioGetKey('v2MimoApiKey'),
-      apiKeyEnv: vioStr('v2MimoApiKeyEnv'),
-      styleInstruction: vioEl('v2MimoStyle').value.trim(),
-      cloneAudio: vioStr('v2MimoCloneAudio'),
-      voiceDesign: vioStr('v2MimoVoiceDesign'),
-      designSampleText: vioStr('v2MimoDesignSample')
-    },
-    doubao: {
-      url: vioStr('v2DoubaoUrl'),
-      resourceId: vioStr('v2DoubaoResourceId'),
-      speaker: vioStr('v2DoubaoSpeaker'),
-      format: vioEl('v2DoubaoFormat').value,
-      sampleRate: Math.round(vioNum('v2DoubaoSampleRate', 24000)),
-      speechRate: Math.round(vioNum('v2DoubaoSpeechRate', 0)),
-      emotionScale: vioNum('v2DoubaoEmotionScale', 3),
-      apiKey: vioGetKey('v2DoubaoApiKey'),
-      apiKeyEnv: vioStr('v2DoubaoApiKeyEnv')
-    },
-    openai: {
-      baseUrl: vioStr('v2OaiTtsBaseUrl'),
-      model: vioStr('v2OaiTtsModel'),
-      voice: vioStr('v2OaiTtsVoice'),
-      format: vioEl('v2OaiTtsFormat').value,
-      speed: vioNum('v2OaiTtsSpeed', 1),
-      apiKey: vioGetKey('v2OaiTtsApiKey'),
-      apiKeyEnv: vioStr('v2OaiTtsApiKeyEnv'),
-      instructTemplate: vioStr('v2OaiTtsInstruct')
-    },
-    gptsovits: {
-      baseUrl: vioStr('v2GsvBaseUrl'),
-      textLang: vioStr('v2GsvTextLang'),
-      format: vioEl('v2GsvFormat').value,
-      refs
-    },
-    cosyvoice: {
-      baseUrl: vioStr('v2CosyBaseUrl'),
-      workspaceId: vioStr('v2CosyWorkspaceId'),
-      region: vioStr('v2CosyRegion') || 'cn-beijing',
-      apiKey: vioGetKey('v2CosyApiKey'),
-      apiKeyEnv: vioStr('v2CosyApiKeyEnv'),
-      model: vioEl('v2CosyModel').value,
-      voiceId: vioStr('v2CosyVoiceId'),
-      instruction: vioStr('v2CosyInstruction')
-    },
-    feiyu: {
-      baseUrl: vioStr('v2FeiyuBaseUrl'),
-      apiKey: vioGetKey('v2FeiyuApiKey'),
-      apiKeyEnv: vioStr('v2FeiyuApiKeyEnv'),
-      voice: vioStr('v2FeiyuVoice') || 'feiyu',
-      style: vioEl('v2FeiyuStyle').value === 'gentle' ? 'gentle' : 'cute'
-    }
+  const singing = {
+    enabled: vioEl('v2SingEnabled').checked,
+    maxSeconds: vioNum('v2SingMaxSeconds', 20),
+    diffusionSteps: vioNum('v2SingSteps', 30),
+    maxRssMb: vioNum('v2SingMaxRss', 6500),
+    minFreeMb: vioNum('v2SingMinFree', 3000),
+    timeoutMs: vioNum('v2SingTimeout', 180) * 1000,
+    maxQueue: vioNum('v2SingQueue', 1),
+    cooldownMs: vioNum('v2SingCooldown', 180) * 1000,
+    semiToneShift: vioNum('v2SingShift', 0),
+    fp16: vioEl('v2SingFp16').checked,
+    seedVcDir: vioStr('v2SingSeedVcDir'),
+    pythonPath: vioStr('v2SingPython'),
+    refAudio: vioStr('v2SingRef'),
+    songsDir: vioStr('v2SingSongsDir')
   };
-  return { asr, speak };
+  return { asr, speak, singing };
 }
 
-const VOICE_ENGINE_NAMES = { sensevoice: '本地 SenseVoice', openai: '云端（OpenAI 兼容）', qq: 'QQ 自带转写', off: '关闭' };
-const SPEAK_PROVIDER_NAMES = { cosyvoice: '百炼 CosyVoice 3.5', mimo: '小米 MiMo', doubao: '火山豆包', openai: 'OpenAI 兼容', gptsovits: 'GPT-SoVITS', feiyu: 'FeiyuVoice（肥鱼声线）' };
+const VOICE_ENGINE_NAMES = { sensevoice: '本地 SenseVoice', qq: 'QQ 自带转写', off: '关闭' };
+const SPEAK_PROVIDER_NAMES = { cosyvoice: '百炼 CosyVoice 3.5', mimo: '小米 MiMo', doubao: '火山豆包', openai: 'OpenAI 兼容', gptsovits: 'GPT-SoVITS' };
 function vioDur(ms) { return ms >= 60000 ? `${round1(ms / 60000)} 分钟` : `${Math.round(ms / 1000)} 秒`; }
 
 async function refreshVoiceIoStatus() {
@@ -4034,6 +3975,26 @@ async function refreshVoiceIoStatus() {
   sp.push(`今日已合成 ${s.todayChars || 0} 字${s.dailyCharBudget ? ` / 上限 ${s.dailyCharBudget} 字` : '（不限）'}；累计成功 ${s.synthesized || 0} 条，失败 ${s.failed || 0} 条${s.lastMs ? `，最近一次耗时 ${s.lastMs}ms` : ''}`);
   if (s.lastError) sp.push(`最近错误：${s.lastError}`);
   vioEl('ttsStatus').innerHTML = sp.map(esc).join('<br>');
+}
+
+async function refreshSingingStatus() {
+  try {
+    const r = await api('/api/singing/status');
+    if (!r || r.ok !== true) { vioEl('v2SingStatus').textContent = '读取失败：' + (r?.error || '未知错误'); return; }
+    const es = r.engineStatus || {};
+    const bits = [];
+    bits.push(r.enabled ? '✅ 已启用' : '未启用（保存并重启 DSH 后注册 qq_sing）');
+    bits.push(es.ok ? `引擎就绪，曲库 ${es.songs || 0} 首` : `引擎未就绪：${(es.missing || []).join('；')}`);
+    bits.push(`当前${r.running ? '正在唱' : '空闲'}，队列 ${r.queue || 0}；可用内存约 ${r.availableMemoryMb || 0}MB`);
+    if (r.last) {
+      if (r.last.error) bits.push(`上次失败：${r.last.error}`);
+      else bits.push(`上次：${r.last.song} / ${r.last.seconds}s / 峰值 ${r.last.peakRssMb || 0}MB / 耗时 ${r.last.elapsedMs || 0}ms`);
+    }
+    if (r.lastError) bits.push(`最近错误：${r.lastError}`);
+    vioEl('v2SingStatus').innerHTML = bits.map(esc).join('<br>');
+  } catch (e) {
+    vioEl('v2SingStatus').textContent = '读取失败：' + e.message;
+  }
 }
 
 async function asrControl(action) {
@@ -4114,7 +4075,8 @@ vioEl('asrUnloadBtn').addEventListener('click', () => asrControl('unload'));
 vioEl('ttsPreviewBtn').addEventListener('click', previewTts);
 vioEl('ttsSendBtn').addEventListener('click', sendTtsFromConsole);
 vioEl('ttsStatusBtn').addEventListener('click', () => refreshVoiceIoStatus());
-vioEl('v2VoiceIoGroup').addEventListener('toggle', (e) => { if (e.currentTarget.open) refreshVoiceIoStatus(); });
+vioEl('v2SingRefresh').addEventListener('click', () => refreshSingingStatus());
+vioEl('v2VoiceIoGroup').addEventListener('toggle', (e) => { if (e.currentTarget.open) { refreshVoiceIoStatus(); refreshSingingStatus(); } });
 
 // ── 大功能开关（运行总览） ───────────────────────────────────────────────────
 // 总览页只写布尔值；每一项都回落到它原本的配置段，不是第二份状态。

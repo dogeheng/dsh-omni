@@ -67,23 +67,29 @@ Details and a per-feature mapping are in `docs/VOICE_IO.md`.
 - **maibot-sensevoice-stt** — Copyright (c) 2026 StarfallHoshi. MIT.
   https://github.com/DMJXMJ/maibot-sensevoice-stt : local SenseVoice ASR approach.
 
-### FeiyuVoice (optional, external service — not vendored)
+### Seed-VC (optional singing engine — not vendored)
 
-[FeiyuVoice](https://github.com/Esmerubphire/astrbot_plugin_feiyu_voice)
-(CosyVoice3 `cute` / `gentle` TTS + RVC, optional SoulX-Singer SVS) is a
-separate Python/GPU service. `packages/bridge/src/voice-tts.js` only implements
-an independent HTTP client for it; **no upstream source, model weights or
-reference audio are copied into this repository**. `npm run setup:feiyu` may
-clone the upstream checkout into the git-ignored `packages/feiyu-voice/` for
-local deployment.
+[Seed-VC](https://github.com/Plachtaa/seed-vc) is a GPL-3.0 zero-shot voice /
+singing conversion project. `packages/bridge/src/singing.js` only launches the
+upstream `inference.py` as a separate process; **no Seed-VC source code, model
+weights or checkpoints are copied into this repository or its git history**.
+`npm run setup:seedvc` may clone the upstream checkout into the git-ignored
+`packages/seed-vc/` for local use. Model weights downloaded by the upstream code
+are subject to their own HuggingFace terms.
 
-Upstream's `NOTICE.md` states that no blanket license is assigned to its
-locally authored source; its code, models and runtime dependencies remain under
-their own terms. The Feiyu voice material originates from Bilibili creator
-**星落落_oi** (https://space.bilibili.com/30584746/); the training authorization
-and attribution are recorded in the upstream `COPYRIGHT.md` and are not
-relicensed here. Do not redistribute the upstream checkout, model package or
-reference audio without checking those terms.
+Seed-VC is used here as an optional 15–20 second singing feature. Keep it as a
+separate program when redistributing this repository; do not copy GPL code into
+the MIT-licensed bridge.
+
+### Short-cover design references (no code copied)
+
+The short-cover workflow was designed after reading
+[matsuko_cover](https://github.com/sdfsfsk/matsuko_cover) and
+[astrbot_plugin_rvc_svc](https://github.com/CCYellowStar2/astrbot_plugin_rvc_svc)
+(both AGPL-3.0). Their code is **not** copied, linked, or redistributed here; the
+implementation is independent JavaScript/Python. SoulX-Singer (Apache-2.0) is
+mentioned as a possible future SVC backend but is not bundled. Demucs is an
+independent MIT Python package invoked as a command-line program.
 
 Referenced for design only (no code copied): AstrBot (AGPL-3.0,
 https://github.com/AstrBotDevs/AstrBot), MaiBot (GPL-3.0,

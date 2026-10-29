@@ -20,8 +20,10 @@
 - **reserved2 仿真**：分条发送、引用、唤醒/潜水、拍一拍、主动机会、回复检查、长期记忆。
 - **表情包**：同步 QQ 收藏表情、AI 看图标注、按情绪搜索、按语义自检、可配置发送概率与“发完文字后提醒补一张”。
 - **B 站卡片**：解析 QQ 小程序卡（`b23.tv` → `BV...`），把标题/BV 注入消息；AI 可按需调用 `bili_video_info` / `bili_subtitle`，再决定回复还是安静。
-- **听懂语音 / 开口说话**：群友的 QQ 语音用本地 SenseVoice-Small 转写成「[语音 6秒·语气开心] 原话」（免费、单条约 1 秒）；可选让 AI 用自己的声音说话（`qq_speak` 主动说 + 短句随机转语音，默认百炼 CosyVoice 3.5，也支持小米 MiMo / 豆包 / OpenAI 兼容 / GPT-SoVITS，以及可选的 [FeiyuVoice](https://github.com/Esmerubphire/astrbot_plugin_feiyu_voice) `cute` / `gentle` 声线，需单独部署）。策略借鉴 MaiBot 生态语音插件，见 [docs/VOICE_IO.md](docs/VOICE_IO.md)。
+- **听懂语音 / 开口说话**：群友的 QQ 语音用本地 SenseVoice-Small 转写成「[语音 6秒·语气开心] 原话」（免费、单条约 1 秒）；可选让 AI 用自己的声音说话（`qq_speak` 主动说 + 短句随机转语音，默认百炼 CosyVoice 3.5，也支持小米 MiMo / 豆包 / OpenAI 兼容 / GPT-SoVITS）。想唱 15–20 秒短歌时，可以用曲库干声 + [Seed-VC](https://github.com/Plachtaa/seed-vc) 按需换嗓，不常驻、不跑整首。见 [docs/VOICE_IO.md](docs/VOICE_IO.md) 与 [docs/SINGING.md](docs/SINGING.md)。
 - **Web 控制台**：白名单、唤醒参数、人格卡、表情参数、令牌与花费看板。
+- **群内短翻唱**：群友说「唱15秒雨爱」时，`sing_short_cover` 自动搜索本地授权曲库、QQ 音乐/网易云（可选，付费门禁）或 CC 音源，找副歌、Demucs 分离、Seed-VC 换成 yuki 音色、混音并回发 10–20 秒 QQ 语音；异步队列、缓存、语音失败文件兜底和自动回收。见 [docs/SHORT_COVER.md](docs/SHORT_COVER.md)。
+
 - **DSH 集成**：两个 agent preset（`qq-chat` / `qq-chat-v2`）、模式控制台 bundle、可选的设置页入口 launcher。
 - **可迁移**：从 qq-bridge 的 `state/` + `config.json` 一键复制到本项目的 `data/`。
 
@@ -173,7 +175,7 @@ node packages/bridge/scripts/install-watchdog.mjs
 
 preset / MCP / bundle 安装后需要重启 DSH 才生效。之后在允许的群或私聊里 @ 机器人即可。
 
-## 可选：launcher、B 站 MCP 与 FeiyuVoice
+## 可选：launcher、B 站 MCP 与 Seed-VC
 
 `packages/launcher` 和 `packages/bili-mcp` 是标准 DSH bundle，但不是桥接运行的必需项：
 
@@ -189,11 +191,9 @@ preset / MCP / bundle 安装后需要重启 DSH 才生效。之后在允许的�
   - 先安装 dsh-bili-scroll；
   - 默认路径是 `~/.dsh/bili-duty`；可用 `DSH_BILI_HOME`、`DSH_BILI_PYTHON`、`DSH_BILI_MCP_SERVER` 覆盖；
   - 通过 DSH 的插件管理安装这个本地 bundle，或在 profile 的 `cordis.patch.yml` 中插入 `packages/bili-mcp/cordis.patch.yml`。
-- **[FeiyuVoice](https://github.com/Esmerubphire/astrbot_plugin_feiyu_voice)**（可选）：另一套「小肥鱼」声线（CosyVoice3 `cute` / `gentle` + RVC/SVS）。dsh-omni 只带 HTTP 客户端，不复制它的源码/模型：
-  ```bash
-  npm --prefix packages/bridge run setup:feiyu   # clone 到被 gitignore 的 packages/feiyu-voice/
-  ```
-  按上游 `server/INSTALL_AGENT.md` 在 WSL/Linux GPU 机器上部署，启动 `http://127.0.0.1:9880` 后，在控制台「二代仿真 → 开口说话」把服务商切到 **FeiyuVoice**，填 `baseUrl`、API Key（`server/.runtime/voice-service/api_key.txt`）和 `cute`/`gentle`。上游目前没有 macOS 运行时，Apple Silicon 需要把服务放到 GPU 机器/局域网。FeiyuVoice 的 `NOTICE.md` 没有给其本地源码统一许可证，因此本仓库**不 vendor 它的代码**；引用与素材署名见 [NOTICE.md](NOTICE.md)。
+
+- **[Seed-VC](https://github.com/Plachtaa/seed-vc)**（可选，唱歌）：15–20 秒零样本换嗓，只从曲库取已分离干声，不跑整首、不在 Mac 上做人声分离。按需启动独立 Python 进程，用完退出；峰值 RSS/超时/可用内存都有硬性守卫。安装、曲库格式和内存策略见 [docs/SINGING.md](docs/SINGING.md)。Seed-VC 是 GPL-3.0，本仓库不 vendor 其代码/权重。
+- **短翻唱**（可选）：`sing_short_cover` 自然语言点歌，本地授权曲库/QQ 音乐/网易云/CC → 自动选段 → Demucs → Seed-VC → 混音 → QQ 语音（付费候选默认拒绝）。检查环境：`npm --prefix packages/bridge run setup:cover`；详见 [docs/SHORT_COVER.md](docs/SHORT_COVER.md)。
 
 ## 从 qq-bridge 迁移
 
@@ -263,7 +263,7 @@ MCP 没读到控制台令牌。确认 `packages/bridge/data/console-token` 存�
 - **qq-bridge** — Derpyu520 与 qq-bridge / QSH contributors，MIT：<https://github.com/Derpyu520/qq-bridge>
 - **dsh-bili-scroll** — c1overzz，MIT：<https://github.com/c1overzz/dsh-bili-scroll>
 - **bilibili-mcp** — AGI_Ananas，MIT（由 dsh-bili-scroll 内置）
-- **FeiyuVoice** — Esmerubphire，独立声音服务（本项目只做 HTTP 客户端，未 vendor 其源码/模型）；声库素材来自 B 站 [星落落_oi](https://space.bilibili.com/30584746/)，训练授权与署名见上游 `COPYRIGHT.md`。
+- **Seed-VC** — Plachtaa，GPL-3.0，零样本歌声转换引擎（本项目只通过独立进程调用，未 vendor 其代码/权重）：<https://github.com/Plachtaa/seed-vc>
 
 本仓库的整合、改动与文档由 dogeheng 及 dsh-omni contributors 维护。
 

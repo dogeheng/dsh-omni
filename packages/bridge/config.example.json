@@ -250,12 +250,7 @@
       "maxConcurrent": 2,
       "qqFallback": true,
       "showEmotion": true,
-      "showEvent": true,
-      "openai": {
-        "baseUrl": "https://api.siliconflow.cn/v1",
-        "model": "FunAudioLLM/SenseVoiceSmall",
-        "apiKeyEnv": "SILICONFLOW_API_KEY"
-      }
+      "showEvent": true
     },
     "speak": {
       "enabled": false,
@@ -307,15 +302,6 @@
         "textLang": "zh",
         "refs": {}
       },
-      "feiyu": {
-        "baseUrl": "http://127.0.0.1:9880",
-        "apiKey": "",
-        "apiKeyEnv": "FEIYU_VOICE_API_KEY",
-        "voice": "feiyu",
-        "style": "cute",
-        "timeoutMs": 120000,
-        "pollMs": 800
-      },
       "cosyvoice": {
         "baseUrl": "",
         "workspaceId": "",
@@ -328,6 +314,74 @@
         "sampleRate": 24000,
         "instruction": "",
         "timeoutMs": 30000
+      }
+    },
+    "singing": {
+      "enabled": false,
+      "engine": "seed-vc",
+      "pythonPath": "",
+      "seedVcDir": "",
+      "inferenceScript": "",
+      "refAudio": "",
+      "songsDir": "",
+      "tmpDir": "",
+      "maxSeconds": 20,
+      "maxRssMb": 6500,
+      "minFreeMb": 3000,
+      "diffusionSteps": 30,
+      "semiToneShift": 0,
+      "fp16": false,
+      "timeoutMs": 180000,
+      "maxQueue": 1,
+      "cooldownMs": 180000,
+      "ffmpegPath": "ffmpeg",
+      "cover": {
+        "enabled": true,
+        "defaultDuration": 15,
+        "minDuration": 10,
+        "maxDuration": 20,
+        "libraryDir": "data/singing/library",
+        "cacheDir": "data/singing/cache",
+        "tempDir": "data/singing/tmp",
+        "refAudio": "assets/voices/dsh_reference.wav",
+        "demucsPython": "",
+        "demucsModel": "htdemucs",
+        "demucsDevice": "",
+        "demucsTimeoutMs": 120000,
+        "seedvcSteps": 30,
+        "seedvcFp16": false,
+        "seedvcTimeoutMs": 180000,
+        "maxConcurrent": 1,
+        "maxQueue": 2,
+        "maxRssMb": 6500,
+        "minFreeMb": 3000,
+        "cooldownMs": 60000,
+        "jamendoClientId": "",
+        "contextSeconds": 0.75,
+        "maxCacheFiles": 120,
+        "cacheVersion": "1",
+        "cacheTtlMs": 86400000,
+        "sourceCacheTtlMs": 86400000,
+        "tmpTtlMs": 3600000,
+        "previewTtlMs": 600000,
+        "ttsPreviewTtlMs": 600000,
+        "ttsDesignTtlMs": 2592000000,
+        "online": {
+          "enabled": true,
+          "qqmusic": true,
+          "qqmusicPython": "",
+          "qqmusicFileType": "M500",
+          "neteaseBaseUrl": "",
+          "neteaseCookie": "",
+          "neteaseLevel": "standard",
+          "thirdPartyResolverUrl": "",
+          "allowPaidMedia": false,
+          "previewFallback": false,
+          "timeoutMs": 20000,
+          "retries": 1,
+          "searchCacheTtlMs": 21600000,
+          "maxBytes": 62914560
+        }
       }
     },
     "proactive": {

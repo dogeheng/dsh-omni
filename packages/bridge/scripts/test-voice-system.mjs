@@ -44,7 +44,7 @@ for (const [rel, toolRel] of [['..\\voice-tool\\voice-gui.mjs', 'voice-gui.mjs']
   else skipVoiceTool(`入口 ${rel}`);
 }
 for (const rel of ['src/voice-core.js', 'src/send-voice-lib.js',
-  'scripts/send-voice.mjs', 'scripts/test-voice.mjs', 'scripts/test-voice-gui.mjs',
+  'scripts/send-voice.mjs', 'scripts/test-voice.mjs',
   'scripts/test-encoding.mjs', 'scripts/test-console-static.mjs']) {
   ok(exists(rel), rel);
 }
