@@ -14,17 +14,17 @@ This is less a “QQ bot framework” than a long-running experiment: QQ as the 
 
 - QQ ↔ DSH session bridge (private chats and groups).
 - Four modes: `chat`, `reserved`, `reserved2` (simulation), `closed-agent`.
-- Big-feature switches on the console overview: V1/V2 simulation, Bilibili cards, web search, voice, stickers, slang learning, proactive chances, image understanding and long-term memory; per-tool switches live on the V2 page.
+- Capability switches in Run & Safety, visual/web switches in Senses & Expression, and grouped tool permissions with their own page.
 - reserved2: multi-bubble sends, quoting, wake/sleep, pokes, proactive opportunities, reply checks, long-term memory.
 - Stickers: sync QQ favourites, AI annotation, emotion search, semantic self-check, configurable send probability and a post-reply nudge.
 - Bilibili cards: parse QQ mini-app cards (`b23.tv` → `BV...`), inject title/BV, then let the agent call `bili_video_info` / `bili_subtitle` and decide whether to reply or stay silent.
-- Web console: allowlists, wake settings, personas, sticker settings, token/cost dashboard.
+- Web console: five main categories, contextual parameter help, searchable settings and preserved drafts. The layered companion supports nine gestures and idle blinking; all allowlist, wake, persona, sticker and token/cost controls remain available. See [console documentation](docs/CONSOLE_UI.md).
 - DSH integration: `qq-chat` / `qq-chat-v2` presets, mode console bundle, optional settings-page launcher.
 - Migration helper from qq-bridge (`state/` + `config.json` → `data/`).
 
 ### Feature switches
 
-The console overview has a cross-mode “big features” panel: V1/V2 simulation, Bilibili cards, web search, voice, stickers, slang learning, proactive chances, image understanding and long-term memory. Each switch writes the original `config.json` section, not a second state store. Items marked ⚠ need a DSH restart to refresh the tool list or reload MCP code; per-tool switches stay on the V2 page.
+Run & Safety → Connection & Mode contains the capability switches. Image understanding, Bilibili cards and web search live in Senses & Expression → Vision & Video. Each switch writes the original `config.json` section. Items marked ⚠ need a DSH restart to refresh the tool list or reload MCP code; per-tool switches are grouped under Senses & Expression → Tool Permissions.
 
 ## Architecture
 

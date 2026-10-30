@@ -8,13 +8,14 @@ import { dirname, resolve, join } from 'node:path';
 import { homedir } from 'node:os';
 import { fileURLToPath } from 'node:url';
 import { startConsoleFixture } from './console-ui-fixture.mjs';
+import { manualDirCommand } from '../src/state-acl.mjs';
 
 const here = dirname(fileURLToPath(import.meta.url));
 const args = process.argv.slice(2);
 const original = args.includes('--original');
 const record = args.includes('--record-baseline');
 const artifacts = args.find(x => x.startsWith('--artifacts='))?.slice('--artifacts='.length);
-const views = ['overview', 'sessions', 'persona', 'social-v2', 'social-v1', 'slang', 'usage', 'access', 'operations', 'reference'];
+const views = ['overview', 'sessions', 'persona', 'social-v2', 'social-v1', 'vision', 'hearing', 'voice', 'expression', 'memory', 'slang', 'runtime', 'usage', 'access', 'power', 'operations', 'reference'];
 const legacyIds = JSON.parse((await readFile(join(here, 'console-ui-legacy-ids.json'), 'utf8')).replace(/^\uFEFF/, ''));
 const baselinePath = join(here, 'console-ui-contracts.json');
 if (record && !original) throw new Error('--record-baseline requires --original; only the pre-redesign console can define the baseline.');
@@ -64,10 +65,10 @@ try {
   async function navigate(view) {
     if (original) return;
     if (await page.locator(`[data-page="${view}"]:visible`).count()) return;
-    const nav = page.locator(`[data-view="${view}"]`).first();
+    const nav = page.locator(`#pageNav [data-view="${view}"]`).first();
     if (!await nav.isVisible()) {
-      const toggle = page.locator('#navToggle, [data-nav-toggle], [aria-controls="sidebar"], button[aria-label*="导航"]').first();
-      if (await toggle.count()) await toggle.click();
+      const category = await nav.evaluate(el => el.closest('[data-nav-group]')?.dataset.navGroup);
+      if (category) await page.locator(`[data-category="${category}"]`).click();
     }
     await nav.click();
   }
@@ -75,6 +76,8 @@ try {
     const target = page.locator(selector).first();
     const view = await target.evaluate(el => el.closest('[data-page]')?.dataset.page);
     if (view) await navigate(view);
+    const pane = await target.evaluate(el => el.closest('[data-setting-pane]')?.dataset.settingPane);
+    if (pane) await page.locator(`[data-pane="${pane}"]`).click();
     for (const details of await target.locator('xpath=ancestor::details').all()) {
       if (await details.getAttribute('open') === null) await details.locator(':scope > summary').click();
     }
@@ -97,10 +100,15 @@ try {
     const ids = await page.locator('[id]').evaluateAll(nodes => nodes.map(x => x.id));
     assert.equal(legacyIds.length, 225);
     assert.deepEqual(legacyIds.filter(x => !ids.includes(x)), []);
+    const sourceIds = await page.evaluate(async () => {
+      const html = await (await fetch(location.pathname)).text();
+      return [...new DOMParser().parseFromString(html, 'text/html').querySelectorAll('[id]')].map(node => node.id);
+    });
+    assert.deepEqual(sourceIds.filter(id => !ids.includes(id)), [], 'Every current source control must remain mounted, including newer voice and memory fields');
     assert.equal(new Set(ids).size, ids.length, 'Duplicate DOM IDs detected');
   });
 
-  if (!original) await test('All ten navigation destinations work and preserve unsaved form values across polling', async () => {
+  if (!original) await test('All navigation destinations work and preserve unsaved form values across polling', async () => {
     for (const view of views) {
       await navigate(view);
       const visiblePages = await page.locator('[data-page]').evaluateAll(nodes => nodes.filter(x => x.getClientRects().length && getComputedStyle(x).visibility !== 'hidden').map(x => x.dataset.page));
@@ -154,8 +162,8 @@ try {
       path: document.getElementById('stateDirPath').textContent,
       cmd: document.getElementById('stateDirCmd').textContent,
     }));
-    assert.match(shown.path, /data/, '应当显示 state 目录路径');
-    assert.match(shown.cmd, /icacls/, '应当给出可复制的提权命令');
+    assert.match(shown.path, /state|data/, '应当显示 state 目录路径');
+    assert.equal(shown.cmd, manualDirCommand(shown.path), '命令应来自当前平台的权限修复实现');
     // 只验证按钮确实发起「重新检测」请求，**不**写进/触发 baseline 的写载荷契约
     // （baseline 记录的是改版前控制台的表单写载荷，这条不算表单写）。
     await page.waitForFunction(() => document.getElementById('stateDirReharden') !== null);
@@ -178,8 +186,8 @@ try {
     await fill('v2WaitDefaultQuietMs', 0);
     await fill('v2MaxSendMin', 0);
     await check('v2ProvideRecommendations', false);
-    const firstTool = page.locator('[data-v2-tool]').first();
-    await reveal('[data-v2-tool]');
+    const firstTool = page.locator('#v2Tools [data-v2-tool]').first();
+    await reveal('#v2Tools [data-v2-tool]');
     await firstTool.setChecked(false);
     const body = await clickWrite('#v2ConfigSaveTop', '/api/socialV2/config');
     assert.equal(body.wake.recommendedSleepMinMs, 420000);
@@ -248,9 +256,22 @@ try {
     assert(results.every(x => x.ok), 'Cannot record a baseline from a failed suite');
     await writeFile(baselinePath, JSON.stringify(fixture.requests, null, 2) + '\n');
     console.log(`Recorded original API contracts: ${baselinePath}`);
-  } else await test('All submitted payloads exactly match the pre-redesign console baseline', async () => {
+  } else await test('All historical fields exactly match the original contracts; newer fields are checked separately', async () => {
     const expected = JSON.parse(await readFile(baselinePath, 'utf8'));
-    assert.deepEqual(fixture.requests, expected);
+    // This immutable snapshot predates voice IO, singing, sticker probability and the
+    // enabled flag. Compare its entire contract, with only those explicit additions
+    // projected out. Their modern payloads are exercised by the voice/feature tests.
+    const actual = structuredClone(fixture.requests).filter(request => !request.body?.rehardenStateDir);
+    for (const request of actual) {
+      if (request.path === '/api/social') delete request.body.enabled;
+      if (request.path === '/api/socialV2/config') {
+        for (const key of ['voice', 'asr', 'speak', 'singing']) delete request.body[key];
+        for (const key of ['sendProbability', 'nudgeAfterSend', 'nudgeMinChars']) delete request.body.sticker[key];
+        for (const key of ['sendVoice', 'sendImage', 'addSticker', 'speak', 'sing']) delete request.body.tools[key];
+      }
+    }
+    assert.equal(actual.length, expected.length, 'Contract request count changed');
+    actual.forEach((request, i) => assert.deepEqual(request, expected[i], `${request.method} ${request.path}, request ${i + 1}`));
   });
 
   // 放在基线比对之后：这里产生的写请求不影响「改版前载荷基线」那条检查。
@@ -273,6 +294,7 @@ try {
     assert.equal(await page.getAttribute('#v2MimoApiKey', 'placeholder'), '已保存（留空 = 不修改）');
     assert.equal(await page.getAttribute('#v2DoubaoApiKey', 'placeholder'), '未设置');
     // 服务商 / 引擎切换只显示对应参数区
+    await reveal('#v2SpeakProvider');
     assert(await page.isVisible('#v2SpeakMimoBox') && !await page.isVisible('#v2SpeakDoubaoBox'));
     await page.selectOption('#v2SpeakProvider', 'gptsovits');
     assert(await page.isVisible('#v2SpeakGsvBox') && !await page.isVisible('#v2SpeakMimoBox'));
@@ -391,13 +413,13 @@ try {
     // 切范围：重新请求并按生产同一套桶宽阶梯换粒度
     // （24h→30min / 3d→2h / 7d→6h / 30d→24h，桶数始终 ≤ 48）
     await page.click('#usageChartControls [data-usage-hours="168"]');
-    await page.waitForFunction(() => /每格 \d+ 分钟/.test(document.getElementById('usageChartHint')?.textContent || '')
+    await page.waitForFunction(() => /每格 360 分钟/.test(document.getElementById('usageChartHint')?.textContent || '')
       && document.querySelector('#usageChartControls [data-usage-hours="168"]')?.classList.contains('active'));
     assert.match(await page.textContent('#usageChartHint'), /每格 360 分钟/, '切到 7 天后桶宽变成 6 小时');
 
     // 粗桶会把高峰窗口整个包在中间 → 必须标『跨时段』（细桶边界对齐则不会，这也是真账本的行为）
     await page.click('#usageChartControls [data-usage-hours="720"]');
-    await page.waitForFunction(() => /每格 \d+ 分钟/.test(document.getElementById('usageChartHint')?.textContent || '')
+    await page.waitForFunction(() => /每格 1440 分钟/.test(document.getElementById('usageChartHint')?.textContent || '')
       && document.querySelector('#usageChartControls [data-usage-hours="720"]')?.classList.contains('active'));
     assert.match(await page.textContent('#usageChartHint'), /每格 1440 分钟/, '切到 30 天后桶宽变成 24 小时');
     const coarse = await page.evaluate(() => ({
@@ -602,7 +624,7 @@ try {
   });
 
   if (!original) await test('思考强度：档位来自 DSH、默认 max、可切换并明示全局副作用', async () => {
-    await navigate('overview');
+    await navigate('runtime');
     await page.waitForFunction(() => document.getElementById('dshEffortSelect').options.length > 0);
     const options = await page.locator('#dshEffortSelect option').evaluateAll((nodes) => nodes.map((n) => n.value));
     assert.deepEqual(options, ['low', 'high', 'max'], `档位应来自 DSH 公布的能力，实际 ${options.join(',')}`);
@@ -642,6 +664,90 @@ try {
       await page.locator('#themeToggle').click();
     }
   }
+  if (!original) await test('Character hotspots explain on hover and navigate on click or keyboard without writes', async () => {
+    const before = fixture.requests.length;
+    const destinations = { eyes: 'vision', ears: 'hearing', mouth: 'voice', heart: 'persona', memory: 'memory' };
+    for (const [key, destination] of Object.entries(destinations)) {
+      await navigate('overview');
+      const hotspot = page.locator(`[data-hotspot="${key}"]`);
+      await hotspot.hover();
+      assert.equal(await page.evaluate(() => document.body.dataset.consolePage), 'overview', 'Hover must not unexpectedly switch pages');
+      assert.match(await page.textContent('#hotspotCaption'), /点击前往/);
+      if (key === 'ears') { await hotspot.focus(); await hotspot.press('Enter'); }
+      else await hotspot.click();
+      assert.equal(await page.evaluate(() => document.body.dataset.consolePage), destination);
+    }
+    assert.equal(fixture.requests.length, before, 'Hotspots must never change settings');
+    await navigate('overview');
+    await page.locator('.mascot-motion-toggle').click();
+    assert.equal(await page.locator('.mascot-motion-toggle').getAttribute('aria-pressed'), 'true');
+    await page.reload();
+    await page.waitForSelector('#companionStage.motion-paused');
+    await page.locator('.mascot-motion-toggle').click();
+  });
+
+  if (!original) await test('Parameter help supports focus, Escape, search aliases and hidden setting sections', async () => {
+    await fill('v2ProactiveProbability', '0.65');
+    await page.locator('#v2ProactiveProbability + .help-trigger').focus();
+    assert(await page.locator('#parameterTooltip').isVisible());
+    assert.match(await page.textContent('#parameterTooltip'), /冷场.*基础概率/);
+    assert.match(await page.locator('#v2ProactiveProbability').getAttribute('aria-describedby'), /setting-help-/);
+    assert.match(await page.textContent('#proactiveImpact'), /65%/);
+    await page.keyboard.press('Escape');
+    assert(!await page.locator('#parameterTooltip').isVisible());
+    await page.locator('#consoleSearch').fill('v2WaitDefaultQuietMs');
+    await page.locator('#searchResults button').first().click();
+    assert(await page.locator('#v2WaitDefaultQuietMs').isVisible(), 'Search opens the rhythm section and its disclosure');
+    assert.equal(await page.locator('[data-pane="rhythm"]').getAttribute('aria-selected'), 'true');
+    await page.locator('#consoleSearch').fill('冒泡');
+    assert.match(await page.textContent('#searchResults'), /触发概率|主动冒泡/);
+    await page.keyboard.press('Escape');
+  });
+
+  if (!original) await test('Cross-page drafts use one complete save and preserve voice credentials', async () => {
+    await page.reload();
+    await page.waitForFunction(() => document.getElementById('v2AgentPreset')?.value === 'contract-v2');
+    await fill('v2ProactiveProbability', '0.45');
+    await fill('v2AsrIdleUnloadMin', '3');
+    await navigate('persona');
+    assert(await page.locator('#sharedSettingsSave').isVisible(), 'Pending edits remain visible outside their source category');
+    assert.match(await page.textContent('.save-draft-label'), /2 项未保存/);
+    const body = await clickWrite('#v2ConfigSave', '/api/socialV2/config');
+    assert.equal(body.proactive.probability, 0.45);
+    assert.equal(body.asr.idleUnloadMs, 180000);
+    assert.equal(body.speak.mimo.apiKey, '********');
+    await page.waitForFunction(() => document.querySelector('.save-draft-label')?.textContent === '设置已同步');
+    await navigate('hearing');
+    assert.equal(await page.inputValue('#v2AsrIdleUnloadMin'), '3');
+  });
+
+  if (!original) await test('Visual ability save retains all global feature flags', async () => {
+    await navigate('vision');
+    const before = await page.locator('[data-feature]').evaluateAll(inputs => Object.fromEntries(inputs.map(input => [input.dataset.feature, input.checked])));
+    await page.locator('[data-feature="images"]').setChecked(!before.images);
+    const response = page.waitForResponse(r => new URL(r.url()).pathname === '/api/features' && r.request().method() === 'POST');
+    await page.locator('#section-vision .primary').click();
+    assert.equal((await response).status(), 200);
+    assert.deepEqual(fixture.requests.at(-1).body, { ...before, images: !before.images });
+  });
+
+  if (!original) await test('An older running bridge without the new assets retains a usable legacy console', async () => {
+    const legacy = await browser.newContext({ viewport: { width: 1440, height: 1000 }, serviceWorkers: 'block' });
+    const legacyErrors = [];
+    await legacy.route('**/*', route => {
+      const url = new URL(route.request().url());
+      return url.origin === fixture.url && !url.pathname.startsWith('/console-assets/') ? route.continue() : route.abort('blockedbyclient');
+    });
+    const legacyPage = await legacy.newPage(); legacyPage.on('pageerror', error => legacyErrors.push(error.message));
+    await legacyPage.goto(fixture.url);
+    await legacyPage.waitForFunction(() => document.getElementById('v2AgentPreset')?.value === 'contract-v2');
+    await legacyPage.locator('#mainNav [data-view="social-v2"]').click();
+    assert(await legacyPage.locator('#v2ConfigSaveTop').isVisible());
+    assert.equal(await legacyPage.locator('#mainNav [data-view]').count(), 11);
+    assert.deepEqual(legacyErrors, []);
+    await legacy.close();
+  });
+
   await test('No JavaScript errors, unknown API routes or external requests', async () => {
     assert.deepEqual(errors, []);
     assert.deepEqual(fixture.unknownRequests, []);

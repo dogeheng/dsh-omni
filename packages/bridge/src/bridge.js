@@ -10,6 +10,7 @@ import os from 'node:os';
 import http from 'node:http';
 import path from 'node:path';
 import crypto from 'node:crypto';
+import { serveConsoleAsset } from './console-assets.js';
 import { execFileSync } from 'node:child_process';
 import yaml from 'js-yaml';
 import { extractPresetPrefix, presetPromptBlockers, presetPromptWarnings, renderPresetPromptYaml } from './preset-prompt.js';
@@ -3921,7 +3922,9 @@ async function main() {
         sendJson({ ok: false, error: `Host 头不被允许（${hostHeader || '缺失'}）：控制台只接受本机回环访问` }, 403);
         return;
       }
-      // 控制台鉴权：所有请求需带 x-console-token 或 ?token=
+      // Public UI artwork/code contains no configuration. Keep API/page authentication intact.
+      if (serveConsoleAsset(req, res, url.pathname, path.join(ROOT, 'public'), SECURITY_HEADERS)) return;
+      // 控制台鉴权：所有管理请求需带 x-console-token 或 ?token=
       // 定长比较：`!==` 会在第一个不同的字符处短路，理论上可被本机进程用响应时延逐字节试探。
       // 令牌是 192 bit 随机值且只监听回环，所以这是纵深防御而非在野漏洞。
       const suppliedToken = String(url.searchParams.get('token') ?? req.headers['x-console-token'] ?? '');

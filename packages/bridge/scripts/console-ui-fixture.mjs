@@ -7,6 +7,7 @@ import { fileURLToPath } from 'node:url';
 import { roleCharStats, roleSectionReport } from '../src/role-card.js';
 import { pickBucketMs } from '../src/token-ledger.js';
 import { manualDirCommand } from '../src/state-acl.mjs';
+import { serveConsoleAsset } from '../src/console-assets.js';
 
 export const projectRoot = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const timestamp = '2026-09-20T08:30:00.000Z';
@@ -404,6 +405,7 @@ export async function startConsoleFixture({ port = 0, original = false, htmlPath
       res.end(JSON.stringify(value));
     };
     try {
+      if (serveConsoleAsset(req, res, path, resolve(projectRoot, 'public'))) return;
       if (method === 'GET' && ['/', '/console', '/console.html'].includes(path)) {
         res.writeHead(200, { 'content-type': 'text/html; charset=utf-8', 'cache-control': 'no-store',
           'content-security-policy': "connect-src 'self'; img-src 'self' data:; font-src 'self'; object-src 'none'" });
@@ -424,6 +426,8 @@ export async function startConsoleFixture({ port = 0, original = false, htmlPath
         if (logWrites) console.log(`[mock write] ${method} ${path} ${JSON.stringify(body)}`);
       }
       if (method === 'GET') {
+        if (path === '/api/memory/status') return json({ ok: true, mode: 'reserved2', config: state.memoryConfig || { enabled: true, retrieval: { mode: 'off' }, capture: { autoExtractionEnabled: false, maxExtraCallsPerDay: 6, extractionConversations: [] } }, status: { db: { memories: 0, candidates: 0 }, budget: { used: 0, max: 6 } } });
+        if (path === '/api/memory/list') return json({ ok: true, memories: [], total: 0, candidates: [], candidatesTotal: 0 });
         switch (path) {
           case '/api/status': return json({ ok: true, dshReady: true, mode: state.mode, role: state.role, roleMode: state.roleMode, closedAgentPreset: state.closedAgentPreset, ownerQQ: state.whitelist.ownerQQ, allowGroups: state.whitelist.allow.groups, allowPrivate: state.whitelist.allow.private, activity: '[08:30:00] 演示桥接已连接\n[08:30:12] group:123456789 · 已处理一条消息\n[08:30:20] 二代社交助手正在运行\n以上均为离线模拟数据。' });
           case '/api/presets': return json({ presets: [{ id: 'qq-chat-v2', trust: 'user' }, { id: 'qq-chat', trust: 'user' }] });
@@ -586,6 +590,10 @@ export async function startConsoleFixture({ port = 0, original = false, htmlPath
         }
       }
       if (method === 'POST') {
+        if (path === '/api/memory/config') {
+          state.memoryConfig = { enabled: body.enabled, retrieval: { mode: body.mode }, capture: { autoExtractionEnabled: body.autoExtractionEnabled, maxExtraCallsPerDay: body.maxExtraCallsPerDay, extractionConversations: body.extractionConversations } };
+          return json({ ok: true });
+        }
         switch (path) {
           case '/api/mode': state.mode = body.mode; state.closedAgentPreset = body.closedAgentPreset; return json({ ok: true, dshSynced: true });
           case '/api/role': state.role = body.role; return json({ ok: true });

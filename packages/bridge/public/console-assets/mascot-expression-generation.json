@@ -1,0 +1,7 @@
+{
+  "tool": "built-in image_gen",
+  "reference": "mascot-body.png",
+  "asset": "mascot-expression.png",
+  "transparent_background": true,
+  "prompt": "Edit target: this exact 1024x1536 transparent character rig body. Make one facial-expression variant for an animation texture. Change ONLY both eyes and the small mouth. Both eyes should be gently CLOSED in happy relaxed crescent shapes (dark upper lashes), with soft pale eyelid skin filling their previous open-eye area. Mouth: tiny open smiling mouth, centered in exactly the same position as the previous tiny pout, around x=503,y=638. Keep face anatomy, eye spacing, face skin color, bangs, hair strands, blush, outlines, all costume, feet, silhouette and EVERY OTHER pixel/position/composition as close to the source as possible. No arms or fin ears: this is intentionally an armless earless rig layer. Maintain full image size, same pose, same scale, same transparent background. Do not add objects, text, symbols or effects. The closed-eye region will be crossfaded over the original eyes to blink; the mouth region will be animated separately."
+}

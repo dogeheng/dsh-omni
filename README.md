@@ -16,14 +16,14 @@
 
 - **QQ ↔ DSH 会话桥接**：群聊/私聊消息进入独立 DSH 会话，agent 的回复通过工具发回 QQ。
 - **四种模式**：`chat`、`reserved`、`reserved2`（仿真）、`closed-agent`，可在控制台切换。
-- **大功能开关**：控制台「运行总览」一页开关一代/二代仿真、B 站卡片、联网搜索、语音、表情包、黑话学习、主动机会、看图与长期记忆；细粒度工具开关在「二代仿真」页。
+- **能力开关**：在「运行与安全 → 连接与模式」管理能力总开关；图片、B 站卡片和联网开关位于「感知与表达 → 视觉与视频」，细粒度权限位于「感知与表达 → 工具权限」。
 - **离电省电**：检测 macOS 电源，离电时只放行你勾选的能力（默认只留表情与长期记忆），其余工具调用直接拒答；插电自动解除限制并恢复原思考档位，可顺带暂停主动冒泡。核心聊天永远可用，检测失败一律放行。见 [docs/POWER.md](docs/POWER.md)。
 - **reserved2 仿真**：分条发送、引用、唤醒/潜水、拍一拍、主动机会、回复检查。
 - **长期记忆（SQLite）**：本地 `node:sqlite` + FTS5（中文双字索引），按群/私聊/主人私聊隔离；显式记忆 + 规则候选 + 可选低频提炼（当前灰度 2 次/天）。普通聊天不查就不注入，单轮硬上限 350 tokens。控制台新增「长期记忆」页：查看/搜索/删除、shadow/live 热切换、提炼与迁移/校验/回滚。旧 `social-v2.json` 可无损迁移。见 [docs/MEMORY.md](docs/MEMORY.md)。
 - **表情包**：同步 QQ 收藏表情、AI 看图标注、按情绪搜索、按语义自检、可配置发送概率与“发完文字后提醒补一张”。
 - **B 站卡片**：解析 QQ 小程序卡（`b23.tv` → `BV...`），把标题/BV 注入消息；AI 可按需调用 `bili_video_info` / `bili_subtitle`，再决定回复还是安静。
 - **听懂语音 / 开口说话**：群友的 QQ 语音用本地 SenseVoice-Small 转写成「[语音 6秒·语气开心] 原话」（免费、单条约 1 秒）；可选让 AI 用自己的声音说话（`qq_speak` 主动说 + 短句随机转语音，默认百炼 CosyVoice 3.5，也支持小米 MiMo / 豆包 / OpenAI 兼容 / GPT-SoVITS）。想唱 15–20 秒短歌时，可以用曲库干声 + [Seed-VC](https://github.com/Plachtaa/seed-vc) 按需换嗓，不常驻、不跑整首。见 [docs/VOICE_IO.md](docs/VOICE_IO.md) 与 [docs/SINGING.md](docs/SINGING.md)。
-- **Web 控制台**：白名单、唤醒参数、人格卡、表情参数、令牌与花费看板。
+- **Web 控制台**：五个主分类、参数影响说明、搜索定位、跨页草稿，以及分层互动大肥鱼；支持挥手、捂眼、动耳朵、摸头、开口、害羞、思考、开心举手、哈欠和待机眨眼。保留白名单、唤醒、人格、表情、花费等完整设置。见 [界面与交互说明](docs/CONSOLE_UI.md)。
 - **受限文件工作区**：`sandbox_*` 工具把 agent 的文件读写限制在 `~/dsh-sandbox/workspace`，拒绝绝对路径、`..`、symlink 和目录删除；不提供 shell/网络，完整命令执行需另接 VM/容器。见 [docs/SANDBOX.md](docs/SANDBOX.md)。
 - **群内短翻唱**：群友说「唱15秒雨爱」时，`sing_short_cover` 自动搜索本地授权曲库、QQ 音乐/网易云（可选，付费门禁）或 CC 音源，找副歌、Demucs 分离、Seed-VC 换成 yuki 音色、混音并回发 10–20 秒 QQ 语音；异步队列、缓存、语音失败文件兜底和自动回收。见 [docs/SHORT_COVER.md](docs/SHORT_COVER.md)。
 
@@ -32,7 +32,7 @@
 
 ### 功能开关
 
-控制台「运行总览 → 大功能开关」是跨模式总闸：一代/二代仿真、B 站卡片、联网搜索、语音、表情包、黑话学习、主动机会、看图与长期记忆。每个开关都写回 `config.json` 原本的配置段（不是第二份状态）；标 ⚠ 的项要重启 DSH 才会刷新工具清单或重载 MCP 代码，细粒度工具开关在「二代仿真 → 工具开关」。
+控制台「运行与安全 → 连接与模式 → 能力总开关」管理跨模式能力；视觉与联网的总开关位于「感知与表达 → 视觉与视频」。每个开关都写回 `config.json` 原本的配置段；标 ⚠ 的项要重启 DSH 才会刷新工具清单或重载 MCP 代码，细粒度开关在「感知与表达 → 工具权限」。
 
 ## 架构
 
@@ -276,7 +276,7 @@ MCP 没读到控制台令牌。确认 `packages/bridge/data/console-token` 存�
 - **bilibili-mcp** — AGI_Ananas，MIT（由 dsh-bili-scroll 内置）
 - **Seed-VC** — Plachtaa，GPL-3.0，零样本歌声转换引擎（本项目只通过独立进程调用，未 vendor 其代码/权重）：<https://github.com/Plachtaa/seed-vc>
 
-本仓库的整合、改动与文档由 dogeheng 及 dsh-omni contributors 维护。
+本仓库的整合、改动与文档由 dogeheng 维护。
 
 ## License
 

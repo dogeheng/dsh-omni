@@ -44,6 +44,7 @@
     "send-voice": "node scripts/send-voice.mjs",
     "test-console": "node scripts/test-console.mjs",
     "test:console-ui": "node scripts/test-console-ui.mjs",
+    "test:console-character": "node scripts/test-console-character.mjs",
     "test:power": "node scripts/test-power.mjs",
     "test:preset-prompt": "node scripts/test-preset-prompt.mjs",
     "test:role-card": "node scripts/test-role-card.mjs",

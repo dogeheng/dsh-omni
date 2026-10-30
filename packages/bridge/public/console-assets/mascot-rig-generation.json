@@ -1,0 +1,15 @@
+{
+  "tool": "built-in image_gen",
+  "reference": "mascot.png",
+  "assets": [
+    {
+      "file": "mascot-body.png",
+      "prompt": "Edit target: attached mascot image. Create the base body layer for a 2D animated character rig. Keep EXACTLY the same character identity, face, open eyes, headband, hair, bow, dress, apron, legs, feet, tail, front view, colors, drawing style, scale and framing (1024 x 1536 portrait). Remove ONLY both arms including all shoulder puff sleeves, cuffs and hands, and remove ONLY both fin-shaped ears and their small blue ear bows at the sides of the head. Reconstruct the long dark blue hair and the dress/body behind the removed arms so the silhouette is complete and natural with no stumps or holes. Keep the red hair ribbons and large chest bow. The detached arm and ear parts will be animated separately later. Do not change pose or redraw the face. Single armless earl ess base character. Genuine transparent background, no shadows, no labels, no other objects, no border."
+    },
+    {
+      "file": "mascot-parts.png",
+      "prompt": "Use case: stylized-concept. Asset: transparent 2D puppet texture atlas, SIX isolated rig parts, arranged EXACTLY as a 3-column by 2-row grid on a 1536x1024 canvas (each cell 512x512). Reference image is the character whose costume, colors, crisp anime linework and pale skin these parts MUST match. No full character, no head, no torso, no text, no labels, no grid lines, no shadows. Generous transparent gaps between all parts.\nTOP LEFT cell: character's viewer-left upper arm, from round shoulder to elbow, hanging straight DOWN. Navy maid puff sleeve with white frilled shoulder trim matching the reference, softly shaded. Shoulder pivot at top center and elbow at bottom center. Long enough to have a straight navy section below puff.\nTOP MIDDLE: matching viewer-right upper arm, mirrored design, same size and DOWN orientation.\nTOP RIGHT: detached viewer-left whale-fin-shaped ear with small blue bow at the inner root; navy upper fin, white scalloped underside. Root to RIGHT, fan-like fin extending LEFT. Match the reference ear exactly.\nBOTTOM LEFT: viewer-left forearm, from elbow at top center downward through navy sleeve with gold detailing and white frilled cuff to a cute open hand at bottom. Palm faces viewer, five short gently spread fingers, suitable both for waving and covering an eye when this forearm is rotated upward. The hand should be large enough to cover one chibi eye, about same width as the sleeve. Entire part straight DOWN.\nBOTTOM MIDDLE: matching viewer-right forearm and open hand, mirrored with thumb on opposite side. Same scale and DOWN orientation.\nBOTTOM RIGHT: matching viewer-right whale-fin ear, blue bow at LEFT root, fin extending RIGHT.\nKeep each piece entirely inside its own cell with at least 40px padding on all edges. Alpha-transparent everywhere outside each cutout."
+    }
+  ],
+  "rendering": "Canvas 2D cutout rig, two-bone inverse kinematics, spring-retargeted gestures"
+}

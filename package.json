@@ -3,6 +3,7 @@
   "version": "0.1.0",
   "private": true,
   "license": "MIT",
+  "author": "Yuki Li (dogeheng)",
   "description": "我想给大肥鱼完整的一生：把 QQ、DSH、表情、语音、B 站、联网搜索与长期记忆拼成一个尽量像人的 QQ agent。",
   "scripts": {
     "start": "npm --prefix packages/bridge start",

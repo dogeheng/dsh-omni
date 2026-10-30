@@ -44,6 +44,7 @@ const tests = [
   // 语音图形界面（参数解析/鉴权/路径穿越/文件名净化；live 段需普通终端）
   // 控制台静态契约（跑不了 Playwright 的环境下的替代回归）
   'test-console-static.mjs',
+  'test-console-assets.mjs',
   // 离电省电：pmset 解析、配置归一化、策略判定、fail-open、状态文件与去抖状态机
   'test-power.mjs',
   // 长期记忆：SQLite/FTS5 检索、作用域隔离、Token 预算、事实更新、删除、迁移回滚、

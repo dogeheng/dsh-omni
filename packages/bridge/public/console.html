@@ -1756,6 +1756,7 @@ button:active:not(:disabled) {
 #section-usage .usage-legend i.mixed { background:var(--accent-hover) }
 
 </style>
+<link rel="stylesheet" href="/console-assets/experience.css">
 </head>
 <body>
   <div class="bg-decor" aria-hidden="true"></div>
@@ -1846,7 +1847,7 @@ button:active:not(:disabled) {
     </section>
 <section id="section-features" data-page="overview" class="card span-all">
       <h2>大功能开关</h2>
-      <div class="meta">跨模式的“总闸”，写入 <code>config.json</code>；关掉后对应能力整体停用。细粒度工具开关仍在「二代仿真 → 工具开关」。标 <b>⚠</b> 的项要重启 DSH 才完全生效（刷新工具清单 / 重载 MCP 代码）。</div>
+      <div class="meta">跨模式的“总闸”，写入 <code>config.json</code>；关掉后对应能力整体停用。细粒度开关可搜索「工具权限」。标 <b>⚠</b> 的项要重启 DSH 才完全生效（刷新工具清单 / 重载 MCP 代码）。</div>
       <div class="v2-tool-list" id="featureGrid" style="margin-top:8px">
         <label class="v2-tool-item"><input type="checkbox" data-feature="social"> <span><strong>一代仿真</strong><span class="meta">reserved：按策略参与群聊</span></span></label>
         <label class="v2-tool-item"><input type="checkbox" data-feature="socialV2"> <span><strong>二代仿真</strong><span class="meta">reserved2：自主阅读、发言、潜水</span></span></label>
@@ -2124,7 +2125,7 @@ button:active:not(:disabled) {
         <label style="flex:1">允许 AI 发送语音（总开关）</label><input type="checkbox" id="v2VoiceEnabled" style="width:auto">
         <label style="flex:1">发完语音自动读回</label><input type="checkbox" id="v2VoiceAutoReadback" style="width:auto">
       </div>
-      <div class="meta" style="margin-bottom:8px">还需在「工具开关」里启用 <code>qq_send_voice</code>；「运行总览 → 大功能开关」的语音开关会把两者一起打开。</div>
+      <div class="meta" style="margin-bottom:8px">还需在工具权限中启用 <code>qq_send_voice</code>；能力总开关中的「语音发送」会把两者一起打开。</div>
       <div class="row" style="flex-wrap:wrap;gap:8px;align-items:center">
         <button id="voiceRefreshBtn" type="button" class="btn-secondary">刷新语音库</button>
         <label style="flex:0 0 auto">发送目标</label>
@@ -3049,6 +3050,8 @@ button:active:not(:disabled) {
   <div class="toast" id="consoleToast" role="status" hidden></div>
   <noscript><div class="connection-alert">控制台需要启用 JavaScript 才能加载状态及保存设置。</div></noscript>
 
+<script src="/console-assets/companion-rig.js"></script>
+<script src="/console-assets/experience.js"></script>
 <script>
 (function () {
   // 如果通过 ?token= 进入（控制台启用鉴权时根路径会重定向带 token），存到 localStorage
@@ -3761,6 +3764,7 @@ async function loadV2Config() {
     const fb = c.feedback || {};
     document.getElementById('v2FeedbackMaxLength').value = fb.maxLength ?? 500;
     document.getElementById('v2FeedbackNotifyOwner').checked = fb.notifyOwnerOnError === true;
+    experience.configLoaded?.();
   } catch {}
 }
 
@@ -4034,6 +4038,52 @@ function collectVoiceIoForm() {
     modelDir: vioStr('v2AsrModelDir'),
     maxBytes: ms('v2AsrMaxBytesMb', 1048576, 4),
     cacheSize: Math.round(vioNum('v2AsrCacheSize', 500)),
+  };
+  const speak = {
+    enabled: vioEl('v2SpeakEnabled').checked,
+    provider: vioEl('v2SpeakProvider').value,
+    maxChars: vioNum('v2SpeakMaxChars', 80),
+    maxSeconds: vioNum('v2SpeakMaxSeconds', 30),
+    timeoutMs: ms('v2SpeakTimeoutSec', 1000, 30),
+    maxPerMinute: vioNum('v2SpeakPerMin', 2),
+    maxPerHour: vioNum('v2SpeakPerHour', 20),
+    dailyCharBudget: vioNum('v2SpeakDailyBudget', 0),
+    trimSilence: vioEl('v2SpeakTrim').checked,
+    allowEmotion: vioEl('v2SpeakAllowEmotion').checked,
+    autoConvert: {
+      enabled: vioEl('v2SpeakAutoEnabled').checked,
+      probability: pct('v2SpeakAutoProb', 5),
+      mirrorProbability: pct('v2SpeakAutoMirrorProb', 35),
+      mirrorWindowMs: ms('v2SpeakAutoMirrorMin', 60000, 10),
+      minChars: vioNum('v2SpeakAutoMinChars', 2),
+      maxChars: vioNum('v2SpeakAutoMaxChars', 40),
+      cooldownMs: ms('v2SpeakAutoCooldownMin', 60000, 3),
+      privateOnly: vioEl('v2SpeakAutoPrivateOnly').checked,
+      timeoutMs: ms('v2SpeakAutoTimeoutSec', 1000, 15),
+    },
+    mimo: {
+      baseUrl: vioStr('v2MimoBaseUrl'), model: vioStr('v2MimoModel'), voice: vioStr('v2MimoVoice'),
+      format: vioEl('v2MimoFormat').value, apiKey: vioGetKey('v2MimoApiKey'), apiKeyEnv: vioStr('v2MimoApiKeyEnv'),
+      styleInstruction: vioStr('v2MimoStyle'), cloneAudio: vioStr('v2MimoCloneAudio'),
+      voiceDesign: vioStr('v2MimoVoiceDesign'), designSampleText: vioStr('v2MimoDesignSample'),
+    },
+    doubao: {
+      url: vioStr('v2DoubaoUrl'), resourceId: vioStr('v2DoubaoResourceId'), speaker: vioStr('v2DoubaoSpeaker'),
+      format: vioEl('v2DoubaoFormat').value, sampleRate: vioNum('v2DoubaoSampleRate', 24000),
+      speechRate: vioNum('v2DoubaoSpeechRate', 0), emotionScale: vioNum('v2DoubaoEmotionScale', 3),
+      apiKey: vioGetKey('v2DoubaoApiKey'), apiKeyEnv: vioStr('v2DoubaoApiKeyEnv'),
+    },
+    openai: {
+      baseUrl: vioStr('v2OaiTtsBaseUrl'), model: vioStr('v2OaiTtsModel'), voice: vioStr('v2OaiTtsVoice'),
+      format: vioEl('v2OaiTtsFormat').value, speed: vioNum('v2OaiTtsSpeed', 1),
+      apiKey: vioGetKey('v2OaiTtsApiKey'), apiKeyEnv: vioStr('v2OaiTtsApiKeyEnv'), instructTemplate: vioStr('v2OaiTtsInstruct'),
+    },
+    cosyvoice: {
+      baseUrl: vioStr('v2CosyBaseUrl'), workspaceId: vioStr('v2CosyWorkspaceId'), region: vioStr('v2CosyRegion'),
+      apiKey: vioGetKey('v2CosyApiKey'), apiKeyEnv: vioStr('v2CosyApiKeyEnv'),
+      model: vioEl('v2CosyModel').value, voiceId: vioStr('v2CosyVoiceId'), instruction: vioStr('v2CosyInstruction'),
+    },
+    gptsovits: { baseUrl: vioStr('v2GsvBaseUrl'), textLang: vioStr('v2GsvTextLang'), format: vioEl('v2GsvFormat').value, refs },
   };
   const singing = {
     enabled: vioEl('v2SingEnabled').checked,
@@ -5349,19 +5399,18 @@ document.getElementById('consoleTokenSave').addEventListener('click', () => chan
 document.getElementById('consoleTokenRandom').addEventListener('click', () => changeConsoleToken(true));
 
 // Presentation layer: keep every existing control mounted so drafts and API contracts survive navigation.
-const consolePages = {
-  overview: ['运行总览', '让每一次连接，都自然发生。', '掌握桥接状态，轻松管理你的 QQ 智能伙伴。'],
-  sessions: ['会话与审批', '让每一段对话，都有迹可循。', '查看 QQ 与 DSH 的会话映射，以及等待你回复的审批和提问。'],
-  persona: ['人格与角色', '给你的伙伴，一点独特个性。', '选择已有角色，或用自己的语言写下新的性格与表达方式。'],
-  'social-v2': ['二代仿真', '自主参与，恰到好处。', '管理 AI 的工具、唤醒与发言节奏。展开需要调整的分组，修改后保存参数。'],
-  'social-v1': ['一代仿真', '为自然对话，设定合适的节奏。', '调整参与概率、活跃周期和分条发送；所有配置项完整保留。'],
-  memory: ['长期记忆', '让记得的事，跨会话留下来。', '查看 AI 的事实、偏好、经历与承诺；按作用域隔离，只有相关时才会少量注入。'],
-  slang: ['黑话词库', '读懂群聊里的，言外之意。', '从候选到确认，让 AI 逐渐熟悉大家的表达习惯。'],
-  usage: ['令牌与花费', '每一次思考，都算得清楚。', '实时查看 AI 的 token 消耗与花费，可下钻到每个群、每个好友、每一轮对话。'],
-  access: ['访问与安全', '明确边界，安心连接。', '管理允许对话的对象、管理员权限与控制台访问凭证。'],
-  operations: ['调试与运维', '让桥接，始终井然有序。', '测试消息、引导 AI，或维护桥接进程与会话工作区。'],
-  reference: ['工具参考', '每一种能力，都清晰可见。', '查看桥接提供给 DSH 的 MCP 工具与用途。']
-};
+// A bridge already running an older server may serve this HTML before it knows
+// the new asset routes. Keep the original controls usable until its next restart.
+const legacyConsolePages = Object.fromEntries([
+  ['overview', '运行总览'], ['sessions', '会话与审批'], ['persona', '人格与角色'],
+  ['social-v2', '二代仿真'], ['social-v1', '一代仿真'], ['memory', '长期记忆'],
+  ['slang', '黑话词库'], ['usage', '令牌与花费'], ['access', '访问与安全'],
+  ['operations', '调试与运维'], ['reference', '工具参考']
+].map(([key, label]) => [key, [label, label, '控制台设置与运行状态']]));
+const experience = typeof createConsoleExperience === 'function'
+  ? createConsoleExperience({ navigate: setConsolePage, refreshVoice: refreshVoiceIoStatus })
+  : { pages: legacyConsolePages, show() {}, enhanceHelp() {}, reveal() {}, searchText() { return ''; } };
+const consolePages = experience.pages;
 let currentConsolePage = 'overview';
 let toastTimer;
 function showConsoleToast(message) {
@@ -5374,6 +5423,7 @@ function showConsoleToast(message) {
 function setConsolePage(page, { updateHash = true, focus = false, target = '' } = {}) {
   if (!Object.hasOwn(consolePages, page)) page = 'overview';
   currentConsolePage = page;
+  experience.show(page, target);
   document.querySelectorAll('[data-page]').forEach(el => { el.hidden = el.dataset.page !== page; });
   document.querySelectorAll('#mainNav [data-view]').forEach(button => {
     const selected = button.dataset.view === page;
@@ -5387,8 +5437,8 @@ function setConsolePage(page, { updateHash = true, focus = false, target = '' } 
   document.title = consolePages[page][0] + ' · dsh-omni 控制台';
   if (updateHash && location.hash !== '#' + page) history.pushState({}, '', '#' + page);
   closeConsoleSearch();
-  // 语音库按需加载：进入二代仿真页时才探测（避免每次开控制台都压网关）。
-  if (page === 'social-v2' && typeof loadVoiceLibrary === 'function') loadVoiceLibrary();
+  // 语音库按需加载；旧服务缺新素材时，仍支持原版二代页面。
+  if ((page === 'voice' || (page === 'social-v2' && consolePages === legacyConsolePages)) && typeof loadVoiceLibrary === 'function') loadVoiceLibrary();
   if (page === 'memory' && typeof loadMemoryPanel === 'function') loadMemoryPanel();
   if (focus) {
     document.getElementById('mainContent').focus({ preventScroll: true });
@@ -5468,6 +5518,7 @@ document.querySelectorAll('input,select,textarea').forEach(input => {
 });
 const primaryActions = ['roleSet','roleCreate','socialSave','v2ConfigSave','v2ConfigSaveTop','featureSave','powerSave','wlSave','secSave','consoleTokenSave','tsSend','aiNotifySend','slangAdd','slangConfigSave','slangModalDirectConfirm'];
 primaryActions.forEach(id => document.getElementById(id)?.classList.add('primary'));
+experience.enhanceHelp();
 document.querySelectorAll('.meta[id$="Msg"], .meta[id$="Msg2"]').forEach(el => el.setAttribute('role','status'));
 document.getElementById('section-mode').querySelector('h2').dataset.note = '选择后即时生效';
 document.getElementById('section-activity').querySelector('h2').dataset.note = '每 3 秒自动同步';
@@ -5488,7 +5539,7 @@ searchInput.addEventListener('input', () => {
   const query = searchInput.value.trim().toLowerCase();
   searchResults.replaceChildren();
   if (!query) return closeConsoleSearch();
-  const matches = featureIndex.filter(entry => (consolePages[entry.page][0] + entry.label + entry.target.id).toLowerCase().includes(query)).slice(0,12);
+  const matches = featureIndex.filter(entry => (consolePages[entry.page][0] + entry.label + entry.target.id + experience.searchText(entry.target)).toLowerCase().includes(query)).slice(0,12);
   if (!matches.length) { const empty = document.createElement('p'); empty.textContent = '未找到匹配功能，试试「唤醒」「白名单」或「表情」。'; searchResults.append(empty); }
   matches.forEach(entry => {
     const button = document.createElement('button');
@@ -5497,6 +5548,7 @@ searchInput.addEventListener('input', () => {
     button.append(title,caption);
     button.addEventListener('click', () => {
       setConsolePage(entry.page);
+      experience.reveal(entry.target);
       let ancestor = entry.target.closest('details');
       while (ancestor) { ancestor.open = true; ancestor = ancestor.parentElement.closest('details'); }
       if (entry.target.closest('.slang-panel')) {

@@ -1,0 +1,11 @@
+{
+  "tool": "built-in image_gen",
+  "asset": "mascot.png",
+  "transparent_background": true,
+  "references": [
+    "User attachment 1: primary combined mascot identity",
+    "User attachment 2: whale maid costume and proportions",
+    "User attachment 3: reserved Yukino-like expression"
+  ],
+  "prompt": "Use case: stylized-concept\nAsset type: transparent homepage character for a Chinese desktop AI companion settings console.\nPrimary request: Create one full-body front-facing chibi girl mascot combining the three reference images. Reference 1 is the main identity: dark charcoal-indigo very long hair, slightly aloof sleepy blue-gray eyes, tiny pout, white frilled maid headband with blue side ribbons, small burgundy ribbon accents. Reference 2 supplies whale maid costume, fin-like ears and a small whale tail, navy white lace maid dress with a tiny blue whale on apron. Reference 3 supplies Yukino-like composed reserved expression and straight dark hair. Keep cute balanced proportions, large head and small body. Gentle neutral expression, eyes open, no tears or angry symbols. Arms relaxed slightly away from torso, fin-like ears clearly visible, full shoes and hair visible, centered with a small transparent margin. Crisp hand-drawn anime lineart, softly shaded muted slate blue, cream white, dark navy, subtle burgundy. Straight-on camera, eye positions around x=42% and 58%, y=33% of canvas; ears around x=24%,76%,y=34%; mouth around x=50%, y=40%; chest around x=50%,y=52%. Single character only, NO text, NO background, NO circle, NO cast shadow, no UI elements. Genuine transparent background. This is an original combined mascot based on user-supplied references for use as a lightweight interactive puppet."
+}
