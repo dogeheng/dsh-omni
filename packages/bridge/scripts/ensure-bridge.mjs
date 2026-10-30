@@ -63,6 +63,35 @@ function alive(pid) {
   try { process.kill(pid, 0); return true; } catch { return false; }
 }
 
+/** 监听控制台端口的进程（pid 文件过期时用它认领真正活着的桥接）。 */
+function portOwner(port) {
+  try {
+    const out = execFileSync('lsof', ['-nP', '-t', `-iTCP:${port}`, '-sTCP:LISTEN'], {
+      timeout: 5000,
+      encoding: 'utf8',
+      stdio: ['ignore', 'pipe', 'ignore'],
+    }).trim();
+    const pid = Number(out.split(/\s+/)[0]);
+    return Number.isFinite(pid) && pid > 0 ? pid : 0;
+  } catch {
+    return 0;
+  }
+}
+
+function isBridgeProcess(pid) {
+  if (!pid) return false;
+  try {
+    const command = execFileSync('ps', ['-p', String(pid), '-o', 'command='], {
+      timeout: 5000,
+      encoding: 'utf8',
+      stdio: ['ignore', 'pipe', 'ignore'],
+    });
+    return /src\/bridge\.js/.test(command);
+  } catch {
+    return false;
+  }
+}
+
 function readBaseUrl() {
   try {
     return String(JSON.parse(fs.readFileSync(CONFIG_FILE, 'utf8')).dsh?.baseUrl ?? '');
@@ -224,8 +253,17 @@ function main() {
 
   const expected = `http://127.0.0.1:${port}`;
   const current = readBaseUrl();
-  const pid = readPid();
-  const running = alive(pid);
+  let pid = readPid();
+  // pid 文件可能被上一轮 start-mac 写成已退出的 pid，而 3100 仍由旧桥接占着。
+  // 先认领端口上的桥接，否则下一轮 start-mac 会再起一个，造成重复进程。
+  const consolePort = Math.max(1, Number(cfg.consolePort) || 3100);
+  const owner = portOwner(consolePort);
+  if (owner && isBridgeProcess(owner) && owner !== pid) {
+    try { fs.writeFileSync(PID_FILE, `${owner}\n`, { mode: 0o600 }); } catch {}
+    log(`[ensure-bridge] adopted live bridge pid=${owner}（pid 文件原为 ${pid || '空'}）`);
+    pid = owner;
+  }
+  const running = alive(pid) && isBridgeProcess(pid);
   const guard = readGuard();
   const now = Date.now();
   const bridgeHealthy = running && current === expected;
