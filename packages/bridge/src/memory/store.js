@@ -21,6 +21,7 @@ import {
   DEFAULT_CONFIDENCE,
   MEMORY_KINDS,
   MEMORY_SCOPES,
+  STYLE_SUBJECT_KEY,
   SUPERSEDING_KINDS,
   visibleScopeClause
 } from './scopes.js';
@@ -514,6 +515,36 @@ export class MemoryStore {
     const info = this._stmt(`UPDATE memories SET status = 'expired', updated_at = ?
                               WHERE status = 'active' AND expires_at IS NOT NULL AND expires_at <= ?`).run(now, now);
     return Number(info.changes ?? 0);
+  }
+
+  /** 当前会话的「群风」：一条 active preference，subject_key=群风。 */
+  queryStyleNote({ ctx, now = this.now() } = {}) {
+    if (!ctx) return null;
+    const vis = visibleScopeClause(ctx);
+    const row = this._stmt(`SELECT * FROM memories
+      WHERE persona_id = ? AND ${this._activeFilter()}
+        AND kind = 'preference' AND subject_key = ?
+        AND ${vis.sql}
+      ORDER BY updated_at DESC LIMIT 1`)
+      .get(ctx.personaId, now, STYLE_SUBJECT_KEY, ...vis.params);
+    return row ? rowToMemory(row) : null;
+  }
+
+  /**
+   * 群风历史压缩：同一作用域只留最近 keep 条 superseded 版本。
+   * 群风是小而稳定的规则，没必要像事实更新那样保留完整历史。
+   */
+  pruneStyleHistory({ personaId = 'default', scope, scopeKey = '', keep = 1 } = {}) {
+    if (!scope) return 0;
+    const rows = this._stmt(`SELECT id FROM memories
+      WHERE persona_id = ? AND scope = ? AND scope_key = ?
+        AND kind = 'preference' AND subject_key = ? AND status = 'superseded'
+      ORDER BY updated_at DESC`).all(personaId, scope, scopeKey || '', STYLE_SUBJECT_KEY);
+    let removed = 0;
+    for (const row of rows.slice(Math.max(0, keep))) {
+      if (this.deleteMemory(row.id, { reason: '群风历史压缩' })) removed += 1;
+    }
+    return removed;
   }
 
   /** 按作用域/人物做结构化检索（FTS 无命中或需要人物相关记忆时用）。 */

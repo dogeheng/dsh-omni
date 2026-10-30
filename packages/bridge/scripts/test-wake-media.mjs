@@ -92,6 +92,8 @@ test('唤醒提示词带「后台原因封口」规则', async () => {
     assert.match(prompt, /【话术】/);
     assert.match(prompt, /不要提模型/);
     assert.match(prompt, /没电/);
+    assert.match(prompt, /先给反应/);
+    assert.match(prompt, /不要先描述/);
     assert.doesNotMatch(prompt, /省电模式已关闭/);
   });
 });

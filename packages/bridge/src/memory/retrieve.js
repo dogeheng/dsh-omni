@@ -11,7 +11,7 @@
 
 import { estimateTokens, formatMemoryDate, normalizeForDedupe, overlapsText, sanitizePromptLine } from './text.js';
 import { MEMORY_PROMPT_TIERS } from './config.js';
-import { scopePromptTag } from './scopes.js';
+import { STYLE_SUBJECT_KEY, scopePromptTag } from './scopes.js';
 
 /** 明确在问历史的措辞：出现时给足预算（350）。 */
 const HISTORY_RE = /(记得|还记得|忘了吗|忘了没|上次|上回|之前|以前|你说过|我说过|跟我说过|提到过|聊过|后来(呢|怎么样)?|结果呢|怎么样了|约好|答应过|我们的约定|那个项目|那件事|那天)/;
@@ -126,6 +126,8 @@ export function rankMemoryRows({
   const scored = [];
   const subjectSet = new Set((subjectFilter ?? []).map(String));
   for (const row of byId.values()) {
+    // 群风走独立的常驻小块，不再混进普通记忆行，避免同一句出现两次。
+    if (row.subjectKey === STYLE_SUBJECT_KEY) continue;
     const grams = new Set(String(row.grams ?? '').split(' ').filter(Boolean));
     // 「只命中了人名」不算相关：问"叶子几点吃早饭"不能因为记录里提到叶子，
     // 就把叶子的追番进度翻出来。人名 token 单独扣掉后再算内容覆盖率。
@@ -288,6 +290,27 @@ export function renderMemoryBlock({
   if (!lines.length) return { text: '', tokens: 0, lines: [], dropped };
   text = `${header}\n${lines.join('\n')}`;
   return { text, tokens, lines, dropped };
+}
+
+/**
+ * 「群风」小块：只放一条，独立于普通记忆预算。
+ * 它管的是说话方式（先反应、别解释、被怼别复述），不是某条事实，所以不需要
+ * 相关度检索，也不进 FTS；每轮有就带上，最多 60 tokens。
+ */
+export function renderStyleBlock({ row = null, maxTokens = 60 } = {}) {
+  const cap = Math.min(80, Math.max(0, Number(maxTokens) || 0));
+  if (!row || !cap) return { text: '', tokens: 0, line: '' };
+  let body = sanitizePromptLine(
+    String(row.content ?? '').replace(/^群风\s*[:：]\s*/, ''),
+    { maxLineChars: 80 }
+  );
+  if (!body) return { text: '', tokens: 0, line: '' };
+  let text = `【群风】${body}`;
+  while (estimateTokens(text) > cap && body.length > 2) {
+    body = body.slice(0, -1);
+    text = `【群风】${body}`;
+  }
+  return { text, tokens: estimateTokens(text), line: text };
 }
 
 /** 人名/昵称切出的 token（用于把"只命中人名"的检索结果降级）。 */

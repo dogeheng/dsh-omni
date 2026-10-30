@@ -13,13 +13,14 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { MemoryStore } from './store.js';
 import {
-  authorizeForget, authorizeWrite, buildReadContext, defaultWriteScope, MEMORY_KINDS, parseConversationKey, SCOPE
+  authorizeForget, authorizeWrite, buildReadContext, defaultWriteScope, MEMORY_KINDS,
+  parseConversationKey, SCOPE, STYLE_SUBJECT_KEY
 } from './scopes.js';
 import { classifyCapture, guessExplicitKind } from './capture.js';
 import {
   buildFtsMatchQuery, localDayKey, normalizeForDedupe, sanitizeMemoryContent, tokenizeMemoryText
 } from './text.js';
-import { classifyMemoryNeed, rankMemoryRows, renderMemoryBlock } from './retrieve.js';
+import { classifyMemoryNeed, rankMemoryRows, renderMemoryBlock, renderStyleBlock } from './retrieve.js';
 import { MEMORY_RETRIEVAL_MODES, effectiveRetrievalMode, normalizeMemoryConfig, resolveMemoryDbPath } from './config.js';
 import { planExtraction, runConsolidation, runExtractionOnce } from './extract.js';
 import { rollbackLegacyMigration, runLegacyMigration, verifyLegacyMigration } from './legacy.js';
@@ -266,10 +267,25 @@ export function createMemoryManager({
     return safe(() => {
       const s = store();
       if (!s) return { ok: false, reason: `记忆库不可用${state.openError ? `：${state.openError}` : ''}` };
-      const text = sanitizeMemoryContent(content, { maxChars: 400 });
+      let text = sanitizeMemoryContent(content, { maxChars: 400 });
       if (!text) return { ok: false, reason: '记忆内容为空' };
-      const finalKind = MEMORY_KINDS.includes(kind) ? kind : guessExplicitKind(text);
-      const subject = subjectId != null && /^\d+$/.test(String(subjectId)) ? String(subjectId) : null;
+      let finalKind = MEMORY_KINDS.includes(kind) ? kind : guessExplicitKind(text);
+      let subject = subjectId != null && /^\d+$/.test(String(subjectId)) ? String(subjectId) : null;
+      let subjectLabelFinal = subjectLabel ? String(subjectLabel).slice(0, 64) : null;
+      let finalSubjectKey = subjectKey ? sanitizeMemoryContent(subjectKey, { maxChars: 60 }) : null;
+      // 「群风」是保留主题：复用 preference，而不是新增 kind。每个会话只保留
+      // 最新一条 active；内容压到 72 字（加前缀 <= 80），旧 superseded 只留 1 条。
+      const wantsStyle = String(subjectKey ?? '').trim() === STYLE_SUBJECT_KEY
+        || /^群风\s*[:：]/.test(text);
+      if (wantsStyle) {
+        const body = sanitizeMemoryContent(text.replace(/^群风\s*[:：]\s*/, ''), { maxChars: 72 });
+        if (!body) return { ok: false, reason: '群风内容为空' };
+        finalKind = 'preference';
+        text = `群风：${body}`;
+        subject = null;
+        subjectLabelFinal = null;
+        finalSubjectKey = STYLE_SUBJECT_KEY;
+      }
       const auth = authorizeWrite(ctx, { kind: finalKind, scope, subjectId: subject });
       if (!auth.ok) return { ok: false, reason: auth.reason };
       // 人物档案由 store.addMemory 统一建档（身份=QQ 号，昵称=别名）。
@@ -279,17 +295,22 @@ export function createMemoryManager({
         scopeKey: auth.scopeKey,
         kind: finalKind,
         subjectId: subject,
-        subjectLabel: subjectLabel ? String(subjectLabel).slice(0, 64) : null,
+        subjectLabel: subjectLabelFinal,
         content: text,
         sourceMessageId: sourceMessageId != null ? sourceMessageId : null,
         sourceConversation: ctx?.conversationKey ?? null,
         origin,
         confidence,
-        subjectKey: subjectKey ? sanitizeMemoryContent(subjectKey, { maxChars: 60 }) : null,
+        subjectKey: finalSubjectKey,
         expiresAt: expiresAt != null && Number.isFinite(Number(expiresAt)) ? Number(expiresAt) : null,
         now: now()
       });
       bumpGeneration();
+      if (wantsStyle && result.created) {
+        safe(() => s.pruneStyleHistory({
+          personaId, scope: auth.scope, scopeKey: auth.scopeKey, keep: 1
+        }), 0, '群风历史压缩');
+      }
       return { ok: true, id: result.id, created: result.created, duplicate: !!result.duplicate, scope: auth.scope, kind: finalKind, superseded: result.superseded ?? [] };
     }, { ok: false, reason: '记忆写入异常（已降级）' }, '显式记忆写入');
   }
@@ -362,14 +383,42 @@ export function createMemoryManager({
       return empty;
     }
     const need = classifyMemoryNeed({ text, reason, memberKnown: false });
-    if (!need.wantRetrieval || need.maxTokens <= 0) {
-      metrics.skipNoNeed += 1;
-      metrics.injections += 1;
-      metrics.lastInjection = { at: new Date(now()).toISOString(), key, tier: need.tier, hits: 0, tokens: 0, retrieved: false, mode };
-      recordMetrics({ t: now(), key, tier: need.tier, retrieved: false, hits: 0, tokens: 0, ms: 0, mode });
-      return { ...empty, tier: need.tier };
-    }
     const s = store();
+    // 群风是「说话方式」，不是某条事实：有就每轮带上（独立小块，最多 60 tokens），
+    // 不受“这条消息值不值得查记忆”的门槛影响。没有群风时仍然保持 0 注入。
+    const styleRow = s ? safe(() => s.queryStyleNote({ ctx, now: now() }), null, '群风读取') : null;
+    const styleBudget = Math.min(60, Math.max(0, cfg.prompt.maxTokens));
+    const styleBlock = styleRow ? renderStyleBlock({ row: styleRow, maxTokens: styleBudget }) : { text: '', tokens: 0, line: '' };
+    if (!need.wantRetrieval || need.maxTokens <= 0) {
+      if (!styleBlock.text) {
+        metrics.skipNoNeed += 1;
+        metrics.injections += 1;
+        metrics.lastInjection = { at: new Date(now()).toISOString(), key, tier: need.tier, hits: 0, tokens: 0, retrieved: false, mode };
+        recordMetrics({ t: now(), key, tier: need.tier, retrieved: false, hits: 0, tokens: 0, ms: 0, mode });
+        return { ...empty, tier: need.tier };
+      }
+      const styleTokens = styleBlock.tokens;
+      metrics.retrieved += 1;
+      metrics.injections += 1;
+      metrics.hits += 1;
+      metrics.injectedTokens += styleTokens;
+      metrics.maxTokens = Math.max(metrics.maxTokens, styleTokens);
+      metrics.lastInjection = {
+        at: new Date(now()).toISOString(), key, tier: need.tier, hits: 1,
+        tokens: styleTokens, retrieved: true, mode, ms: 0
+      };
+      recordMetrics({ t: now(), key, tier: need.tier, retrieved: true, hits: 1, tokens: styleTokens, ms: 0, mode });
+      return {
+        text: mode === 'live' ? styleBlock.text : '',
+        tokens: styleTokens,
+        hits: 1,
+        retrieved: true,
+        tier: need.tier,
+        mode,
+        ms: 0,
+        preview: mode === 'shadow' ? styleBlock.text : undefined
+      };
+    }
     if (!s) {
       metrics.injections += 1;
       recordMetrics({ t: now(), key, tier: need.tier, retrieved: false, hits: 0, tokens: 0, ms: 0, mode, degraded: true });
@@ -396,40 +445,53 @@ export function createMemoryManager({
       if (rows.length) cache.set(cacheKey, rows, now());
     }
     const budget = Math.min(need.maxTokens, cfg.prompt.maxTokens);
+    const styleTokens = styleBlock.text ? styleBlock.tokens : 0;
+    const regularBudget = Math.max(0, budget - styleTokens);
     let peopleByQq = null;
     try {
       peopleByQq = new Map(s.listPeople(personaId, { limit: 500 }).map((p) => [String(p.qqId), p]));
     } catch { peopleByQq = null; }
     const rendered = renderMemoryBlock({
-      rows, ctx, maxTokens: budget, avoidText: legacyText, now: now(), peopleByQq,
+      rows, ctx, maxTokens: regularBudget, avoidText: legacyText, now: now(), peopleByQq,
       compact: need.tier === 'casual', queryText: text
     });
+    const styleHits = styleBlock.text ? 1 : 0;
+    const hits = styleHits + rendered.lines.length;
+    const observedTokens = styleTokens + rendered.tokens;
+    if (!hits) {
+      metrics.skipNoNeed += 1;
+      metrics.injections += 1;
+      metrics.lastInjection = { at: new Date(now()).toISOString(), key, tier: need.tier, hits: 0, tokens: 0, retrieved: false, mode };
+      recordMetrics({ t: now(), key, tier: need.tier, retrieved: false, hits: 0, tokens: 0, ms: Math.round(ms * 100) / 100, cached, mode });
+      return { ...empty, tier: need.tier, ms: Math.round(ms * 100) / 100 };
+    }
     metrics.retrieved += 1;
     metrics.injections += 1;
-    metrics.hits += rendered.lines.length;
-    const observedTokens = mode === 'live' ? rendered.tokens : rendered.tokens;
+    metrics.hits += hits;
     metrics.injectedTokens += observedTokens;
     metrics.maxTokens = Math.max(metrics.maxTokens, observedTokens);
     metrics.lastInjection = {
-      at: new Date(now()).toISOString(), key, tier: need.tier, hits: rendered.lines.length,
+      at: new Date(now()).toISOString(), key, tier: need.tier, hits,
       tokens: observedTokens, retrieved: true, mode, ms: Math.round(ms * 100) / 100
     };
     recordMetrics({
-      t: now(), key, tier: need.tier, retrieved: true, hits: rendered.lines.length,
+      t: now(), key, tier: need.tier, retrieved: true, hits,
       tokens: observedTokens, ms: Math.round(ms * 100) / 100, cached, mode
     });
+    const textBlock = [styleBlock.text, rendered.text].filter(Boolean).join('\n');
     return {
       // shadow：只计算与记账，不改提示词 —— 用于上线前对照。
-      text: mode === 'live' ? rendered.text : '',
+      text: mode === 'live' ? textBlock : '',
       tokens: observedTokens,
-      hits: rendered.lines.length,
+      hits,
       retrieved: true,
       tier: need.tier,
       mode,
       ms: Math.round(ms * 100) / 100,
-      preview: mode === 'shadow' ? rendered.text : undefined
+      preview: mode === 'shadow' ? textBlock : undefined
     };
   }
+
 
   /**
    * 删除记忆（真删：DB + FTS）。可为 null 的 id / 内容匹配 / 人物。

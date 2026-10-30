@@ -122,7 +122,11 @@ test('桥接不注入：普通闲聊一字不加（与关闭记忆时一致）',
     sent.push(promptTextOf(h));
   }, { config: { memory: { enabled: false } } });
   assert.ok(!sent[0].includes('【长期记忆'), '不需要记忆时不能加块');
-  assert.equal(stripVolatile(sent[0]), stripVolatile(sent[1]), '开启记忆但不相关时，提示词应与关闭记忆完全相同');
+  assert.ok(!sent[0].includes('【群风】'), '没有群风时不能加群风块');
+  // 长期记忆开启时，唤醒提示词会多一行「学说话」的群风写入说明（即使本轮不检索）。
+  // 它属于行为提示，不是记忆内容；比较“记忆是否注入”时把这行抹掉。
+  const withoutStyleHint = (text) => stripVolatile(text).replace(/\n【学说话】[^\n]*\n\n?/g, '\n');
+  assert.equal(withoutStyleHint(sent[0]), withoutStyleHint(sent[1]), '开启记忆但不相关时，不应注入任何记忆内容');
 });
 
 test('桥接隔离：B 群提示词里没有 A 群的记忆（含诱导泄漏）', async () => {

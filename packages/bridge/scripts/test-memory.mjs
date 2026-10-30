@@ -792,3 +792,44 @@ test('抽取解析容错：只接受合法 kind，作用域永远来自候选', 
   });
   assert.equal(plan.run, false, '没有候选时不应运行');
 });
+
+test('24. 群风：preference+群风保留键，单条 active、旧历史压缩、短消息也常驻注入', () => {
+  const root = tempRoot();
+  const m = makeManager(root);
+  try {
+    const ctxA = groupCtx(m, A_GROUP, [[XIAOMING, '小明']]);
+    const first = remember(m, ctxA, {
+      kind: 'preference',
+      content: '群风：接梗直接短句，不要先解释梗',
+      subjectKey: '群风'
+    });
+    assert.equal(first.kind, 'preference');
+
+    const short = m.buildPromptBlock({ ctx: ctxA, text: '笑死', reason: 'wake', key: `group:${A_GROUP}` });
+    assert.match(short.text, /【群风】/);
+    assert.match(short.text, /接梗/);
+    assert.ok(short.tokens <= 60, `群风块不应超过 60 tokens，实际 ${short.tokens}`);
+
+    const long = m.buildPromptBlock({ ctx: ctxA, text: '你还记得小明面试怎么样了吗', reason: 'wake' });
+    assert.equal((long.text.match(/【群风】/g) || []).length, 1, '群风不应在普通记忆里重复出现');
+    const ctxB = groupCtx(m, B_GROUP, [[XIAOMING, '小明']]);
+    assert.doesNotMatch(m.buildPromptBlock({ ctx: ctxB, text: '笑死', reason: 'wake' }).text, /【群风】/);
+
+    remember(m, ctxA, {
+      kind: 'preference',
+      content: `群风：${'长'.repeat(100)}`,
+      subjectKey: '群风'
+    });
+    const rows = m.store().db.prepare("SELECT status, content FROM memories WHERE subject_key = '群风' ORDER BY id").all();
+    const active = rows.filter((row) => row.status === 'active');
+    assert.equal(active.length, 1, '同一会话只保留一条 active 群风');
+    assert.ok(active[0].content.length <= 80, `群风内容应压缩到 80 字内，实际 ${active[0].content.length}`);
+    assert.ok(rows.filter((row) => row.status === 'superseded').length <= 1, '旧群风历史只留 1 条');
+    const latest = m.buildPromptBlock({ ctx: ctxA, text: '6', reason: 'wake' });
+    assert.match(latest.text, /长/);
+    assert.ok(latest.tokens <= 60);
+  } finally {
+    m.close();
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});

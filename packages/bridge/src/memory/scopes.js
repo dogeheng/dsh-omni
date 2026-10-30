@@ -33,6 +33,15 @@ export const KIND = Object.freeze({
 
 export const MEMORY_KINDS = Object.freeze(Object.values(KIND));
 
+/**
+ * 「群风 / 说话方式」的保留主题键。
+ *
+ * 不新增 kind：它本质是当前会话的偏好，复用 preference + subject_key 即可，
+ * 这样数据库/索引/迁移/控制台都不用改。每个作用域只保留最新一条 active
+ * （同一 subject_key 会自然 supersede），旧的 superseded 历史再压到 1 条。
+ */
+export const STYLE_SUBJECT_KEY = '群风';
+
 /** 不同 kind 的默认置信度：印象/偏好天然比明确事实弱。 */
 export const DEFAULT_CONFIDENCE = Object.freeze({
   fact: 0.8,

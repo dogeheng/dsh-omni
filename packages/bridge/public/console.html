@@ -6091,7 +6091,7 @@ async function loadMemoryList() {
       return `<div style="padding:9px 11px;border-bottom:1px solid var(--card-border)">
         <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
           <b>#${row.id}</b>
-          <span class="meta">${esc(MEMORY_KIND_NAMES[row.kind] || row.kind)}</span>
+          <span class="meta">${esc(MEMORY_KIND_NAMES[row.kind] || row.kind)}</span>${row.subjectKey === '群风' ? ' <span class="meta">群风</span>' : ''}
           <span class="meta">${esc(memoryScopeText(row))}</span>
           <span class="meta">${esc(memorySubjectText(row))}</span>
           <span class="meta">${fmtMemoryTime(row.updatedAt)}</span>${statusTag}

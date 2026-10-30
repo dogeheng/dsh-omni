@@ -893,7 +893,7 @@ server.tool(
 
 server.tool(
   'qq_memory_append',
-  '记录一条记忆。轻量（会话内）：activeTopic=进行中的话题；pendingThought=你想说但还没说的话；memberImpression=对某位群友的印象。长期（跨会话、写入 SQLite，按群/私聊隔离）：fact=长期事实；preference=偏好习惯；episode=共同经历；promise=承诺/约定；state=当前状态。长期记忆只在自然相关时被少量注入，不会每轮全量出现。更新同一主题的旧事实时传 extra.subjectKey（同一主题用同一个值），旧记录会保留为历史但不再被当成现状。',
+  '记录一条记忆。轻量（会话内）：activeTopic=进行中的话题；pendingThought=你想说但还没说的话；memberImpression=对某位群友的印象。长期（跨会话、写入 SQLite，按群/私聊隔离）：fact=长期事实；preference=偏好习惯；episode=共同经历；promise=承诺/约定；state=当前状态。长期记忆只在自然相关时被少量注入，不会每轮全量出现。更新同一主题的旧事实时传 extra.subjectKey（同一主题用同一个值），旧记录会保留为历史但不再被当成现状。群风：当群友明确纠正你的说话方式（“别解释”“直接点”“太AI了”）时，用 category="preference"、extra.subjectKey="群风" 记一条≤72字的规则；同一会话只保留最新一条群风，不要记普通聊天。',
   {
     key: z.string().describe('会话 key，格式 group:群号 或 private:QQ号'),
     token: z.string().describe('会话令牌（见唤醒提示中的【会话令牌】）'),

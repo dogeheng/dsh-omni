@@ -164,6 +164,10 @@ CREATE VIRTUAL TABLE memory_fts USING fts5(grams, tokenize='unicode61');
 - `extra.target` 可以是昵称或 QQ 号：昵称只在**本会话 recentMessages 里唯一命中**时才解析成 QQ 号，
   否则 `subject_id` 留空（不猜身份、不跨群合并）；
 - `extra.subjectKey`（如「实习进展」）用于事实更新：同键新事实取代旧事实；
+- **群风 / 说话方式**：`category=preference` + `extra.subjectKey="群风"`。每个会话只保留最新
+  一条 active（内容压到 72 字 + 前缀），旧 superseded 只留 1 条；不新增 kind，避免迁移/索引/
+  控制台改动。它只在群友**明确纠正说话方式**时写（“别解释/直接点/太AI了”），不把普通聊天
+  都记进去；有群风时每轮以 `【群风】` 小块注入（≤60 tokens），没有则 0 注入；
 - 旧的三个类别（`activeTopic`/`pendingThought`/`memberImpression`）行为完全不变，继续写 `social-v2.json`。
 
 **本轮说话人是冻结的**：唤醒投递时把这一轮消息里的发送者 QQ 号与文本存成
@@ -251,6 +255,9 @@ CREATE VIRTUAL TABLE memory_fts USING fts5(grams, tokenize='unicode61');
 ```
 
 - 不需要记忆时返回 **空串**：提示词与关闭记忆时逐字节一致（桥接测试会对比两次完整 prompt）。
+- **群风**是例外：它管说话方式，不依赖本轮话题；有就每轮带上（独立 `【群风】` 小块，
+  最多 60 tokens，即使“笑死”这类短消息也会带），没有则仍然 0 注入。普通检索会排除
+  `subject_key=群风`，避免同一句出现两次。
 - 渲染上限 = `min(档位预算, memory.prompt.maxTokens)`，且代码硬钳制 350；
   逐行试算（保守估算：CJK 1 token/字、其它 3.2 字符/token），放不下就停。
 - 有 `dm/owner_private/person_shared` 内容时，标题会追加「私聊内容勿外传」。

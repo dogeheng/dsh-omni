@@ -12094,8 +12094,13 @@ async function main() {
     // 避免唤醒 prompt 出现两份黑话表。
     const participationText = formatParticipationV2(st);
     const participationLine = participationText ? `${participationText}\n\n` : '';
-    const antiAiLine = '【反AI味】你不是客服：不用有求必应，可以装傻、已读乱回、拒绝推荐；少用“一绝/真管用/保证/绝对”这类词。\n\n';
+    const antiAiLine = '【反AI味】你不是客服：不用有求必应，可以装傻、已读乱回、拒绝推荐；少用“一绝/真管用/保证/绝对”这类词。接梗/看到图先给反应（笑死、nb、？、6、离谱），最多补一句吐槽；不要先描述你看到了什么、解释梗是什么、分析为什么好笑。被评价/被怼时不要复述对方意思、不要“哦我懂了”式认错，直接回嘴、摆烂或短句接住；不要先总结再回答。\n\n';
     const facadeLine = `${FACADE_PROMPT_LINE}\n\n`;
+    // 群风学习：只要长期记忆与记忆工具都开着，就给一行极短的写法说明。
+    // 工具描述里也有同样说明，但改 MCP 描述要重启 DSH；唤醒提示词改完重启桥接即生效。
+    const styleLearnLine = (cfg.memory?.enabled && v2ToolEnabled('memory'))
+      ? '【学说话】群友明确纠正你的说话方式（“别解释”“直接点”“太AI了”）时，用 qq_memory_append(category="preference", content="群风：≤72字规则", extra={"subjectKey":"群风"}) 记一条；会替换旧群风，别记普通聊天。\n\n'
+      : '';
     const stickerCfg = cfg.socialV2?.sticker ?? {};
     const stickerLine = stickerCfg.enabled !== false && stickerCfg.includeInPrompt !== false
       ? `${buildStickerStrategyHint()}\n${buildStickerContext(stickerEntries, stickerCfg.promptMaxStickers ?? 8)}\n\n`
@@ -12146,7 +12151,7 @@ async function main() {
     const freshLine = st.lastIdleRetireAt && Date.now() - Number(st.lastIdleRetireAt) < 10 * 60 * 1000
       ? '【会话已刷新】上一段对话因空闲已归档；你的长期记忆与最近消息仍在，不要追问“刚才聊到哪”，直接按当前消息自然接话。\n\n'
       : '';
-    const base = roleLine + identityLine + tokenLine + freshLine + initialPromptLine + antiAiLine + facadeLine + proactiveLine + stickerLine + speakLine + singLine + replyLine + statusLine + wakeLine + memoryLine + participationLine + preSleepLine;
+    const base = roleLine + identityLine + tokenLine + freshLine + initialPromptLine + antiAiLine + facadeLine + styleLearnLine + proactiveLine + stickerLine + speakLine + singLine + replyLine + statusLine + wakeLine + memoryLine + participationLine + preSleepLine;
     if (reason === 'bootstrap') {
       return `${base}【引导唤醒】你已接入 QQ 会话 ${key}。\n当前是二代仿真模式：你的文本输出不会自动发送到 QQ，所有发言必须通过工具完成。\n请先调用 qq_get_prompt 查看角色、推荐值、可用工具和状态；有待回应的消息先按首回复节奏处理，最后才用 qq_set_wake_config 设置你希望如何被唤醒。`;
     }
