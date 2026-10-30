@@ -192,7 +192,8 @@
       "addSticker": true,
       "getSelfImage": true,
       "sendVoice": false,
-      "speak": true
+      "speak": true,
+      "getBalance": true
     },
     "sandbox": {
       "enabled": true,
@@ -476,6 +477,10 @@
       "maxBytes": 8388608,
       "maxPixels": 64000000,
       "maxCount": 5
+    },
+    "session": {
+      "freshEveryTurn": false,
+      "hotReloadPersona": true
     }
   },
   "features": {

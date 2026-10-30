@@ -40,7 +40,11 @@ export async function bridgeHarness({ config = {}, savedState, files = {}, globa
   fs.writeFileSync(path.join(temp, 'config.json'), JSON.stringify({
     dsh: { authToken: 'fixture-only' }, ownerQQ: 123,
     allow: { private: ['123'], groups: ['456'] }, consolePort: 0,
-    consoleToken: 'fixture-console-token', slang: { enabled: false }, ...config,
+    consoleToken: 'fixture-console-token', slang: { enabled: false },
+    // 测试默认关闭人格热注入：它会把整份仿真提示词塞进首个唤醒 prompt，
+    // 干扰“提示词字节级对比”和 token 预算断言；需要测它的用例显式打开。
+    socialV2: { session: { hotReloadPersona: false } },
+    ...config,
   }));
   if (savedState) fs.writeFileSync(path.join(temp, 'data/sessions.json'), JSON.stringify(savedState));
   // 额外状态文件（用于测试"启动时读到损坏/旧版文件"这类路径）。
@@ -76,6 +80,8 @@ export async function bridgeHarness({ config = {}, savedState, files = {}, globa
   const success = (value) => ({ result: { ok: true, value } });
   const api = {
     events: { follow: (id) => calls.follows.push(id) },
+    // 账户余额：桥接的 /api/account/balance 与主人私聊 prompt 会调用；固定夹具。
+    getAccountBalance: async () => ({ status: 'ready', value: [{ currency: 'CNY', balance: '12.34' }], bonusWallets: [] }),
     // settings.describe 的默认桩：没有 qq-mode 命名空间 ⇒ refreshMode() 回退到本地 mode.json。
     // 测试可覆盖它来验证「DSH 设置里的空 ownerQQ 不得覆盖 config.json」等契约。
     settings: {
@@ -131,6 +137,7 @@ export async function bridgeHarness({ config = {}, savedState, files = {}, globa
     sendToQQ, sendStickerV2, handleIncoming, startConsoleServer, cfg, state, api, promptQueues,
     getSocialV2State, appendSocialV2Message, recordSentMessagesV2,
     buildWakePromptV2, buildWakeSnapshotV2, sendWakePromptV2, socialV2,
+    roleHintForMode, readPresetPromptText,
     refreshMode, modeAllowed, trackTurnEvent, replayPendingWakeReasonsV2,
     collectors, setupSleepTimerV2,
     getInitialPrompt, setInitialPrompt, loadInitialPrompts, formatInitialPromptV2,

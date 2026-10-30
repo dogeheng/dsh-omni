@@ -2905,6 +2905,44 @@ async function main() {
   }
 
   // DSH 侧
+  // DSH 账户余额：走 DSH 自己的 account/getBalance（它用已登录的 Platform grant，
+  // 不需要也不应该读 API key）。60s 缓存，避免每次问都打一次 Platform。
+  let balanceCache = { at: 0, value: null };
+  async function getBalanceSnapshot() {
+    if (Date.now() - balanceCache.at < 60_000 && balanceCache.value) return balanceCache.value;
+    try {
+      const raw = await api.getAccountBalance({
+        version: 'bridge',
+        locale: 'zh-CN',
+        timezoneOffsetSeconds: -new Date().getTimezoneOffset() * 60
+      });
+      if (!raw || raw.status !== 'ready' || !Array.isArray(raw.value) || !raw.value.length) {
+        const failed = { ok: false, error: '余额暂不可用' };
+        balanceCache = { at: Date.now(), value: failed };
+        return failed;
+      }
+      const wallet = raw.value.find((w) => String(w.currency) === 'CNY') || raw.value[0];
+      const amount = Number(wallet.balance);
+      const result = {
+        ok: true,
+        currency: String(wallet.currency || 'CNY'),
+        amount: Number.isFinite(amount) ? Math.round(amount * 100) / 100 : null,
+        balance: String(wallet.balance),
+        bonusWallets: Array.isArray(raw.bonusWallets) ? raw.bonusWallets.map((w) => ({ currency: String(w.currency), balance: String(w.balance) })) : [],
+        fetchedAt: new Date().toISOString()
+      };
+      balanceCache = { at: Date.now(), value: result };
+      return result;
+    } catch (error) {
+      const failed = { ok: false, error: String(error?.message ?? error) };
+      balanceCache = { at: Date.now(), value: failed };
+      log(`[balance] 查询失败：${failed.error}`);
+      return failed;
+    }
+  }
+  // 人格/仿真提示词热注入：按 DSH 会话记录已经注入过的版本。会话是持久的时候，
+  // 只有变化或新会话才注入一次；旧会话已经不在时自然重新注入。
+  const personaInjectState = new Map();
   const api = new NodeApiClient(cfg.dsh.baseUrl, undefined, {
     token: cfg.dsh.authToken,
     // true=用户在 config.json 里显式填的；false=从日志猜的。猜来的不优先于离线铸造。
@@ -4061,6 +4099,7 @@ async function main() {
             || url.pathname.startsWith('/api/socialV2/')
             || url.pathname.startsWith('/api/send/')
             || url.pathname.startsWith('/api/images/')
+            || url.pathname === '/api/account/balance'
             || url.pathname === '/api/authorize/read';
           if (!agentAllowed) {
             sendJson({ ok: false, error: '该接口仅控制台可用' }, 403);
@@ -4248,6 +4287,18 @@ async function main() {
         if (req.method === 'GET' && url.pathname === '/api/memory/status') {
           if (!memory) { sendJson({ ok: false, error: '记忆模块未初始化' }, 503); return; }
           sendJson({ ok: true, status: memory.status(), config: memory.cfg, mode: memory.mode });
+          return;
+        }
+        // 账户余额：控制台可查；agent 只在主人私聊可查（群聊/别人私聊一律 403）。
+        if (req.method === 'GET' && url.pathname === '/api/account/balance') {
+          const key = String(url.searchParams.get('key') ?? '');
+          const ownerKey = `private:${cfg.ownerQQ}`;
+          if (req.headers['x-agent-call'] !== undefined && key !== ownerKey) {
+            sendJson({ ok: false, error: '余额只能在主人私聊里查' }, 403);
+            return;
+          }
+          const result = await getBalanceSnapshot();
+          sendJson(result, result.ok ? 200 : 503);
           return;
         }
         // 控制台「长期记忆」页：内容列表（管理端，不受会话 ACL 限制）。
@@ -5635,6 +5686,7 @@ async function main() {
             getUnread: 'qq_get_unread_messages',
             getRecent: 'qq_get_recent_messages',
             socialState: 'qq_social_state',
+            getBalance: 'qq_get_balance',
             sendGroup: 'qq_send_group_message',
             sendPrivate: 'qq_send_private_message',
             reply: 'qq_reply',
@@ -5710,6 +5762,8 @@ async function main() {
               disabled: powerPolicy.deny.map((id) => ({ id, label: powerCapabilityLabel(id) })),
               line: powerPromptLine(cfg.power, powerState) || null,
             },
+            // 只在主人私聊提供余额；其他会话 null，避免把账户信息带进群。
+            account: key === `private:${cfg.ownerQQ}` ? await getBalanceSnapshot() : null,
             replyTiming: replyTimingV2(st),
             unreadCount: st.unread.length,
             recentCount: st.recentMessages.length,
@@ -12088,6 +12142,29 @@ async function main() {
     const identityLine = selfIdentityTextV2();
     const st = getSocialV2State(key);
     const tokenLine = `【会话令牌】${st.agentToken}（调用二代状态工具时请在参数中带上此令牌）\n\n`;
+    // 动态人格：不要求用户清空上下文。每次唤醒比较当前角色卡/仿真提示词与
+    // 这个 DSH 会话上次注入的版本；变化（或新会话）时把最新版作为高优先级
+    // 更新块放进提示词。会话持久时只注入一次，不会每轮重复占 token。
+    const sessionId = state.sessions?.[key] || '';
+    let personaUpdateLine = '';
+    if (sessionId && cfg.socialV2?.session?.hotReloadPersona !== false) {
+      const roleText = roleHintForMode('v2');
+      let presetText = '';
+      try { presetText = readPresetPromptText(PRESET_NAMES.v2).prefix; } catch {}
+      const roleHash = crypto.createHash('sha1').update(roleText).digest('hex').slice(0, 16);
+      const presetHash = crypto.createHash('sha1').update(presetText).digest('hex').slice(0, 16);
+      const seen = personaInjectState.get(sessionId) || {};
+      const needRole = !!roleText && seen.role !== roleHash;
+      const needPreset = !!presetText && seen.preset !== presetHash;
+      if (needRole || needPreset) {
+        const parts = [];
+        if (needRole) parts.push(`【当前人格（最新，优先于此前版本）】\n${roleText}`);
+        if (needPreset) parts.push(`【仿真提示词（最新，优先于此前版本）】\n${presetText}`);
+        personaUpdateLine = `${parts.join('\n\n')}\n\n`;
+        personaInjectState.set(sessionId, { role: roleHash, preset: presetHash });
+        log(`[persona] 会话 ${key} 注入最新${needRole ? '人格' : ''}${needPreset ? '仿真提示词' : ''}（${personaUpdateLine.length} 字符）`);
+      }
+    }
     const memoryText = formatMemoryV2(st);
     const memoryLine = memoryText ? `${memoryText}\n\n` : '';
     // 注意：黑话表不在这里注入，deliverPromptNow 的 withSlangContext 会统一注入，
@@ -12126,6 +12203,10 @@ async function main() {
     if (lastMsg && looksLikeUnfinished(String(lastMsg.tail || lastMsg.plain || lastMsg.text || ''))) statusBits.push('对方可能没说完');
     if (lastAiMin != null) statusBits.push(`你上次发言 ${lastAiMin} 分钟前`);
     const statusLine = `【此刻状态】${statusBits.join('；')}\n\n`;
+    // 只给主人私聊：余额是账户信息，不给群聊/其他人。主人在群里问时先私聊或说“回头私聊”。
+    const accountLine = key === `private:${cfg.ownerQQ}`
+      ? '【账户】主人问“还有多少钱/余额”时，可以调用 qq_get_balance，或 qq_get_prompt 查看 account；不要把余额、账户或付费信息告诉其他人。\n\n'
+      : '';
     const wc = st.wakeConfig || {};
     const wcTr = wc.triggers || {};
     // forceAnyMessage 下实际行为就是「每条都醒」，提示词里也照实写成活跃，
@@ -12151,7 +12232,7 @@ async function main() {
     const freshLine = st.lastIdleRetireAt && Date.now() - Number(st.lastIdleRetireAt) < 10 * 60 * 1000
       ? '【会话已刷新】上一段对话因空闲已归档；你的长期记忆与最近消息仍在，不要追问“刚才聊到哪”，直接按当前消息自然接话。\n\n'
       : '';
-    const base = roleLine + identityLine + tokenLine + freshLine + initialPromptLine + antiAiLine + facadeLine + styleLearnLine + proactiveLine + stickerLine + speakLine + singLine + replyLine + statusLine + wakeLine + memoryLine + participationLine + preSleepLine;
+    const base = roleLine + identityLine + tokenLine + personaUpdateLine + freshLine + initialPromptLine + antiAiLine + facadeLine + styleLearnLine + proactiveLine + stickerLine + speakLine + singLine + replyLine + statusLine + accountLine + wakeLine + memoryLine + participationLine + preSleepLine;
     if (reason === 'bootstrap') {
       return `${base}【引导唤醒】你已接入 QQ 会话 ${key}。\n当前是二代仿真模式：你的文本输出不会自动发送到 QQ，所有发言必须通过工具完成。\n请先调用 qq_get_prompt 查看角色、推荐值、可用工具和状态；有待回应的消息先按首回复节奏处理，最后才用 qq_set_wake_config 设置你希望如何被唤醒。`;
     }

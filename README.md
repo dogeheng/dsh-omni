@@ -20,6 +20,8 @@
 - **离电省电**：检测 macOS 电源，离电时只放行你勾选的能力（默认只留表情与长期记忆），其余工具调用直接拒答；插电自动解除限制并恢复原思考档位，可顺带暂停主动冒泡。核心聊天永远可用，检测失败一律放行。见 [docs/POWER.md](docs/POWER.md)。
 - **reserved2 仿真**：分条发送、引用、唤醒/潜水、拍一拍、主动机会、回复检查。
 - **长期记忆（SQLite）**：本地 `node:sqlite` + FTS5（中文双字索引），按群/私聊/主人私聊隔离；显式记忆 + 规则候选 + 可选低频提炼（当前灰度 2 次/天）。普通聊天不查就不注入，单轮硬上限 350 tokens。控制台新增「长期记忆」页：查看/搜索/删除、shadow/live 热切换、提炼与迁移/校验/回滚。旧 `social-v2.json` 可无损迁移。见 [docs/MEMORY.md](docs/MEMORY.md)。
+- **人格 / 提示词热更新**：DSH 会话默认持久；角色卡或仿真提示词变化后，桥接在下一次唤醒把最新版作为高优先级更新注入，不用清空对话上下文。`freshEveryTurn` 仍可单独打开。
+- **账户余额**：`qq_get_balance`（仅主人私聊）和 `qq_get_prompt.account` 读取 DSH 已登录账户的余额；群聊/其他人私聊一律拒绝，余额不会进入群提示词。
 - **表情包**：同步 QQ 收藏表情、AI 看图标注、按情绪搜索、按语义自检、可配置发送概率与“发完文字后提醒补一张”。
 - **B 站卡片**：解析 QQ 小程序卡（`b23.tv` → `BV...`），把标题/BV 注入消息；AI 可按需调用 `bili_video_info` / `bili_subtitle`，再决定回复还是安静。
 - **听懂语音 / 开口说话**：群友的 QQ 语音用本地 SenseVoice-Small 转写成「[语音 6秒·语气开心] 原话」（免费、单条约 1 秒）；可选让 AI 用自己的声音说话（`qq_speak` 主动说 + 短句随机转语音，默认百炼 CosyVoice 3.5，也支持小米 MiMo / 豆包 / OpenAI 兼容 / GPT-SoVITS）。想唱 15–20 秒短歌时，可以用曲库干声 + [Seed-VC](https://github.com/Plachtaa/seed-vc) 按需换嗓，不常驻、不跑整首。见 [docs/VOICE_IO.md](docs/VOICE_IO.md) 与 [docs/SINGING.md](docs/SINGING.md)。
@@ -53,7 +55,7 @@ qq_send_message / qq_send_sticker / qq_reply / ...  →  QQ
 ```
 
 - 桥接进程只监听本机；SnowLuma 端口也绑定 `127.0.0.1`。
-- 每个 QQ 会话对应一个 DSH 会话；reserved2 默认每轮重建会话，长期记忆放在桥接的 `data/`（`data/memory/memory.sqlite`，WAL）。
+- 每个 QQ 会话对应一个 DSH 会话；reserved2 默认持久会话（`socialV2.session.freshEveryTurn=false`），人格/提示词变化时由桥接注入最新版本；长期记忆放在桥接的 `data/`（`data/memory/memory.sqlite`，WAL）。
 - B 站工具是**只读**的，且只允许看别人分享的卡片，不允许主动刷视频。
 
 ## 仓库结构

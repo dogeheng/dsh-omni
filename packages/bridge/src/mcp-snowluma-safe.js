@@ -617,6 +617,20 @@ server.tool(
 );
 
 server.tool(
+  'qq_get_balance',
+  '查询主人的 DeepSeek 账户余额（只读）。只在主人私聊里可用；群聊、别人私聊会被桥接拒绝。返回可用余额与赠送余额；不要向群友提余额、账户或付费信息，主人问起再用。',
+  { key: z.string().describe('会话 key，格式 group:群号 或 private:QQ号'), token: z.string().describe('会话令牌（见唤醒提示中的【会话令牌】）') },
+  async ({ key, token }) => {
+    try {
+      const data = await agentApi(`/api/account/balance?key=${encodeURIComponent(key)}`, { headers: { 'x-agent-token': token } });
+      return { content: [{ type: 'text', text: serializeModelData(data) }] };
+    } catch (error) {
+      return { content: [{ type: 'text', text: `查询余额失败：${error?.message ?? error}` }], isError: true };
+    }
+  }
+);
+
+server.tool(
   'qq_mark_read',
   '将指定会话已查看的未读消息标记为已读。throughSeq 使用最近读取结果的 readThroughSeq，避免清除读取后才到达的新消息；省略 throughSeq 会按旧行为清空当前全部未读，因此推荐始终带上水位。注意：每次设置潜水/下一次唤醒前，桥接要求先用 qq_wait_for_messages(timeoutMs=300000) 完成一次沉睡前观察：5 分钟内没人说话可 mark_read 收尾沉睡；期间有人发新消息则先查看 newMessages，判断不需要你参与也可直接 mark_read 收尾；若你参与了回复，则下次想睡需重新等待观察窗口。',
   {

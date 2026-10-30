@@ -1,5 +1,7 @@
 // 唤醒策略：纯图片/表情走独立的低概率通道，不放大文字闲聊。
 import assert from 'node:assert/strict';
+import fs from 'node:fs';
+import path from 'node:path';
 import { test } from 'node:test';
 import { bridgeHarness } from './audit-bridge-harness.mjs';
 
@@ -102,4 +104,31 @@ test('私聊任何消息都唤醒，不受媒体通道影响', async () => {
   await withWake(async (h) => {
     assert.equal(h.evaluateWakeTriggerV2(`private:${OWNER}`, state(), text('在吗'), 'private', '在吗', '在吗', false), 'private');
   }, { mediaProbability: 0 });
+});
+
+test('人格/仿真提示词热注入：同一 DSH 会话只注入一次，不要求清空上下文', async () => {
+  const h = await bridgeHarness({
+    config: {
+      allow: { groups: [GROUP], private: [OWNER] },
+      socialV2: { session: { hotReloadPersona: true } }
+    },
+    files: {
+      'data/current-role.json': JSON.stringify({ role: '热更新测试角色', mode: 'active' }),
+      'roles/热更新测试角色.md': '# 热更新测试角色\n\n说话短一点。\n'
+    }
+  });
+  h.setMode('reserved2');
+  const promptText = (index) => h.calls.prompts[index].content.map((p) => p.text ?? '').join('\n');
+  try {
+    await h.deliverPrompt(`group:${GROUP}`, 'wake', { wakeReason: 'wake' });
+    assert.match(promptText(0), /【当前人格（最新，优先于此前版本）】/);
+    await h.deliverPrompt(`group:${GROUP}`, 'wake', { wakeReason: 'wake' });
+    assert.doesNotMatch(promptText(1), /【当前人格（最新，优先于此前版本）】/);
+    fs.writeFileSync(path.join(h.temp, 'roles/热更新测试角色.md'), '# 热更新测试角色\n\n说话更短了。\n');
+    await h.deliverPrompt(`group:${GROUP}`, 'wake', { wakeReason: 'wake' });
+    assert.match(promptText(2), /【当前人格（最新，优先于此前版本）】/);
+    assert.match(promptText(2), /说话更短了/);
+  } finally {
+    await h.close();
+  }
 });

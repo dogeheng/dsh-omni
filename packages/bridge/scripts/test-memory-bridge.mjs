@@ -493,3 +493,38 @@ test('桥接工具路由：记忆关闭时长期记忆接口返回 409（旧轻�
     }
   }, { config: { memory: { enabled: false } } });
 });
+
+test('账户余额：控制台可查，agent 只在主人私聊可用，群聊拒绝且 prompt 不带', async () => {
+  await withBridge(async (h) => {
+    const server = h.startConsoleServer();
+    if (!server.listening) await new Promise((resolve) => server.once('listening', resolve));
+    const port = server.address().port;
+    try {
+      const consoleRes = await requestJson(port, '/api/account/balance');
+      assert.equal(consoleRes.status, 200, consoleRes.text);
+      assert.equal(consoleRes.body.ok, true);
+      assert.equal(consoleRes.body.amount, 12.34);
+
+      const ownerKey = `private:${OWNER}`;
+      const ownerToken = h.getSocialV2State(ownerKey).agentToken;
+      const ownerRes = await requestJson(port, `/api/account/balance?key=${encodeURIComponent(ownerKey)}`, { agentToken: ownerToken });
+      assert.equal(ownerRes.status, 200, ownerRes.text);
+      assert.equal(ownerRes.body.amount, 12.34);
+
+      const groupKey = `group:${A_GROUP}`;
+      const groupToken = h.getSocialV2State(groupKey).agentToken;
+      const groupRes = await requestJson(port, `/api/account/balance?key=${encodeURIComponent(groupKey)}`, { agentToken: groupToken });
+      assert.equal(groupRes.status, 403);
+
+      const ownerPrompt = await requestJson(port, `/api/socialV2/prompt?key=${encodeURIComponent(ownerKey)}`, { agentToken: ownerToken });
+      assert.equal(ownerPrompt.status, 200, ownerPrompt.text);
+      assert.equal(ownerPrompt.body.account.amount, 12.34);
+      const groupPrompt = await requestJson(port, `/api/socialV2/prompt?key=${encodeURIComponent(groupKey)}`, { agentToken: groupToken });
+      assert.equal(groupPrompt.status, 200, groupPrompt.text);
+      assert.equal(groupPrompt.body.account, null);
+      assert.ok(groupPrompt.body.enabledTools.includes('qq_get_balance'));
+    } finally {
+      await new Promise((resolve) => server.close(resolve));
+    }
+  });
+});

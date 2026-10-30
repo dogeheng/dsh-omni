@@ -642,6 +642,12 @@ export class NodeApiClient extends AbstractApiClient {
     list: (payload, signal) => this.callUnary('agentPresets.list', payload, signal),
   };
 
+  /** 账户余额（DSH 已登录的 Platform 账户；不读 API key）。 */
+  async getAccountBalance(client = {}) {
+    const response = await this.callUnary('account/getBalance', { client }, undefined);
+    return unwrap(response, 'account/getBalance');
+  }
+
   /**
    * 新版事件流：连接 /api/remote.mux，自动 follow 所有 session，并把
    * session/follow 的 event 帧映射成旧 pumpMux 能消费的 session/event 信封。
