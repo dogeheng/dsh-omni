@@ -1769,6 +1769,7 @@ button:active:not(:disabled) {
       <button data-view="persona" class="nav-item"><span class="nav-icon" aria-hidden="true">◉</span>人格与角色</button>
       <div class="nav-label">聊天行为</div>
       <button data-view="social-v2" class="nav-item"><span class="nav-icon" aria-hidden="true">◈</span>二代仿真<span class="nav-note">V2</span></button>
+      <button data-view="memory" class="nav-item"><span class="nav-icon" aria-hidden="true">▦</span>长期记忆<span class="nav-note">SQLite</span></button>
       <button data-view="social-v1" class="nav-item"><span class="nav-icon" aria-hidden="true">◇</span>一代仿真<span class="nav-note">V1</span></button>
       <button data-view="slang" class="nav-item"><span class="nav-icon" aria-hidden="true">▤</span>黑话词库</button>
       <div class="nav-label">管理</div>
@@ -2632,6 +2633,86 @@ button:active:not(:disabled) {
       <div class="meta" style="margin-top:4px">修改上面任意推荐/默认参数后，必须点这个按钮才会持久化；保存后会自动应用到仍使用默认唤醒配置的会话，重启后仍然保留。</div>
 
       </div></section>
+<section id="section-memory" data-page="memory" class="card span-all">
+      <h2>长期记忆（SQLite）</h2>
+      <div class="meta">这里保存跨会话的事实、偏好、经历、承诺与状态。每条都带作用域：群记忆不会出现在别的群，主人私聊不会进群；普通聊天不需要记忆时不会注入。关闭「启用」后新记忆系统停止读写（旧轻量记忆与社交状态不受影响）。</div>
+
+      <div class="row" style="margin-top:10px">
+        <label style="flex:1">启用长期记忆</label>
+        <input type="checkbox" id="memEnabled" style="width:auto" aria-label="启用长期记忆">
+        <label>读取模式</label>
+        <select id="memMode" style="max-width:170px" aria-label="长期记忆读取模式">
+          <option value="off">off（完全不查）</option>
+          <option value="shadow">shadow（只记账，不改提示词）</option>
+          <option value="live">live（真正注入）</option>
+        </select>
+        <button id="memSaveConfig" class="small">保存设置</button>
+        <span class="meta" id="memConfigMsg"></span>
+      </div>
+
+      <div class="row">
+        <label style="flex:1">自动批量提炼</label>
+        <input type="checkbox" id="memAutoExtract" style="width:auto" aria-label="自动批量提炼">
+        <label>每日 LLM 上限</label>
+        <input type="number" id="memMaxCalls" min="0" max="24" step="1" style="width:72px" aria-label="每日 LLM 调用上限">
+        <label>只提炼这些会话</label>
+        <input type="text" id="memExtractConvs" placeholder="private:952866364, group:123456789（留空=全部）" style="flex:1" aria-label="提炼会话白名单">
+      </div>
+
+      <div class="row">
+        <button id="memRefresh" class="small">刷新</button>
+        <button id="memExtractNow" class="small">立即提炼一次</button>
+        <span class="meta" id="memActionMsg"></span>
+        <span class="meta" id="memStatusLine" style="flex:1;text-align:right">读取中…</span>
+      </div>
+
+      <div class="row" style="margin-top:10px">
+        <input id="memQuery" type="search" placeholder="搜索内容或人物…" style="flex:1" aria-label="搜索记忆">
+        <select id="memKind" aria-label="记忆类型">
+          <option value="">全部类型</option>
+          <option value="fact">事实 fact</option>
+          <option value="preference">偏好 preference</option>
+          <option value="impression">印象 impression</option>
+          <option value="episode">经历 episode</option>
+          <option value="promise">承诺 promise</option>
+          <option value="state">状态 state</option>
+        </select>
+        <select id="memScope" aria-label="记忆作用域">
+          <option value="">全部作用域</option>
+          <option value="group">群 group</option>
+          <option value="dm">私聊 dm</option>
+          <option value="owner_private">主人私聊 owner_private</option>
+          <option value="person_shared">跨场景共享 person_shared</option>
+          <option value="self_public">公开身份 self_public</option>
+          <option value="session">本会话 session</option>
+        </select>
+        <select id="memStatus" aria-label="记忆状态">
+          <option value="active">active</option>
+          <option value="all">全部状态</option>
+          <option value="superseded">superseded</option>
+          <option value="expired">expired</option>
+        </select>
+        <button id="memSearch" class="small">查询</button>
+      </div>
+
+      <div id="memRows" class="tool-log-table" style="max-height:460px">（加载中…）</div>
+      <div class="meta" id="memCandidatesLine"></div>
+
+      <details class="settings-group" style="margin-top:12px"><summary>候选缓冲（规则筛出、等待提炼；不会直接注入）</summary><div class="settings-content">
+        <div id="memCandidates" class="tool-log-table" style="max-height:260px">（空）</div>
+      </div></details>
+
+      <details class="settings-group"><summary>高级：旧数据迁移 / 校验 / 回滚（谨慎操作）</summary><div class="settings-content">
+        <div class="row">
+          <button id="memMigrate" class="small">迁移旧数据</button>
+          <button id="memVerify" class="small">校验迁移</button>
+          <button id="memRollback" class="small danger">回滚迁移</button>
+          <span class="meta" id="memAdvancedMsg"></span>
+        </div>
+        <div class="meta" style="margin-top:8px">迁移会把 social-v2.json 的话题/印象复制进新库并先备份；回滚只删除本次迁移导入的行。旧文件不会被修改。</div>
+      </div></details>
+    </section>
+
 <section id="section-slang" data-page="slang" class="card span-all">
       <h2>群聊黑话 / 网络用语库</h2>
       <div class="meta">DSH 会从群聊中自动提取疑似黑话候选；二代仿真模式下 AI 也可用 <code>qq_slang_submit</code> 主动提交陌生词。候选可批量送 DSH 深度联网研究，研究结果回到控制台由你删改修正后转正；确认后的词条会写入“黑话提示词”，注入一代/二代 AI 的聊天上下文，成为 AI 可查询和使用的记忆。</div>
@@ -5274,6 +5355,7 @@ const consolePages = {
   persona: ['人格与角色', '给你的伙伴，一点独特个性。', '选择已有角色，或用自己的语言写下新的性格与表达方式。'],
   'social-v2': ['二代仿真', '自主参与，恰到好处。', '管理 AI 的工具、唤醒与发言节奏。展开需要调整的分组，修改后保存参数。'],
   'social-v1': ['一代仿真', '为自然对话，设定合适的节奏。', '调整参与概率、活跃周期和分条发送；所有配置项完整保留。'],
+  memory: ['长期记忆', '让记得的事，跨会话留下来。', '查看 AI 的事实、偏好、经历与承诺；按作用域隔离，只有相关时才会少量注入。'],
   slang: ['黑话词库', '读懂群聊里的，言外之意。', '从候选到确认，让 AI 逐渐熟悉大家的表达习惯。'],
   usage: ['令牌与花费', '每一次思考，都算得清楚。', '实时查看 AI 的 token 消耗与花费，可下钻到每个群、每个好友、每一轮对话。'],
   access: ['访问与安全', '明确边界，安心连接。', '管理允许对话的对象、管理员权限与控制台访问凭证。'],
@@ -5307,6 +5389,7 @@ function setConsolePage(page, { updateHash = true, focus = false, target = '' } 
   closeConsoleSearch();
   // 语音库按需加载：进入二代仿真页时才探测（避免每次开控制台都压网关）。
   if (page === 'social-v2' && typeof loadVoiceLibrary === 'function') loadVoiceLibrary();
+  if (page === 'memory' && typeof loadMemoryPanel === 'function') loadMemoryPanel();
   if (focus) {
     document.getElementById('mainContent').focus({ preventScroll: true });
     document.getElementById(target || 'mainContent')?.scrollIntoView({ block: 'start', behavior: 'instant' });
@@ -5889,6 +5972,181 @@ document.getElementById('usageClear').addEventListener('click', async () => {
   refreshUsage();
   refreshUsageRecent();
 });
+
+
+// ── 长期记忆（SQLite）控制台 ─────────────────────────────────────────────
+const MEMORY_KIND_NAMES = { fact: '事实', preference: '偏好', impression: '印象', episode: '经历', promise: '承诺', state: '状态' };
+const MEMORY_SCOPE_NAMES = { self_public: '公开身份', owner_private: '主人私聊', person_shared: '跨场景共享', group: '群', dm: '私聊', session: '本会话' };
+function fmtMemoryTime(ms) {
+  const n = Number(ms);
+  if (!Number.isFinite(n) || n <= 0) return '—';
+  return new Date(n).toLocaleString('zh-CN', { hour12: false });
+}
+function memoryScopeText(row) {
+  const base = MEMORY_SCOPE_NAMES[row.scope] || row.scope || '?';
+  return row.scopeKey ? `${base}:${row.scopeKey}` : base;
+}
+function memorySubjectText(row) {
+  if (row.subjectLabel && row.subjectId) return `${row.subjectLabel}（${row.subjectId}）`;
+  return row.subjectLabel || row.subjectId || '—';
+}
+function renderMemoryStatus(payload) {
+  const cfg = payload.config || {};
+  const st = payload.status || {};
+  const db = st.db || {};
+  const budget = st.budget || {};
+  document.getElementById('memEnabled').checked = cfg.enabled !== false;
+  document.getElementById('memMode').value = (cfg.retrieval && cfg.retrieval.mode) || 'off';
+  const cap = cfg.capture || {};
+  document.getElementById('memAutoExtract').checked = cap.autoExtractionEnabled === true;
+  document.getElementById('memMaxCalls').value = cap.maxExtraCallsPerDay ?? 6;
+  document.getElementById('memExtractConvs').value = Array.isArray(cap.extractionConversations) ? cap.extractionConversations.join(', ') : '';
+  const rss = st.memory && st.memory.rssMB ? ` · RSS ${st.memory.rssMB}MB` : '';
+  const openError = st.openError ? ` · ⚠ ${st.openError}` : '';
+  document.getElementById('memStatusLine').textContent =
+    `mode=${payload.mode} · active ${db.memories ?? 0} · 候选 ${db.candidates ?? 0} · 今日预算 ${budget.used ?? 0}/${budget.max ?? 0}${rss}${openError}`;
+}
+async function loadMemoryPanel() {
+  const msg = document.getElementById('memConfigMsg');
+  try {
+    const payload = await api('/api/memory/status');
+    if (!payload.ok) { document.getElementById('memStatusLine').textContent = '不可用：' + (payload.error || '未知错误'); return; }
+    renderMemoryStatus(payload);
+    await loadMemoryList();
+    msg.textContent = '';
+  } catch (error) {
+    document.getElementById('memStatusLine').textContent = '读取失败：' + (error?.message || error);
+  }
+}
+async function loadMemoryList() {
+  const rowsEl = document.getElementById('memRows');
+  const params = new URLSearchParams();
+  const q = document.getElementById('memQuery').value.trim();
+  const kind = document.getElementById('memKind').value;
+  const scope = document.getElementById('memScope').value;
+  const status = document.getElementById('memStatus').value || 'active';
+  if (q) params.set('q', q);
+  if (kind) params.set('kind', kind);
+  if (scope) params.set('scope', scope);
+  if (status) params.set('status', status);
+  params.set('limit', '100');
+  try {
+    const r = await api('/api/memory/list?' + params.toString());
+    if (!r.ok) { rowsEl.textContent = '读取失败：' + (r.error || '未知错误'); return; }
+    const memories = r.memories || [];
+    rowsEl.innerHTML = memories.length ? memories.map((row) => {
+      const statusTag = row.status && row.status !== 'active' ? ` <span class="meta">${esc(row.status)}</span>` : '';
+      return `<div style="padding:9px 11px;border-bottom:1px solid var(--card-border)">
+        <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
+          <b>#${row.id}</b>
+          <span class="meta">${esc(MEMORY_KIND_NAMES[row.kind] || row.kind)}</span>
+          <span class="meta">${esc(memoryScopeText(row))}</span>
+          <span class="meta">${esc(memorySubjectText(row))}</span>
+          <span class="meta">${fmtMemoryTime(row.updatedAt)}</span>${statusTag}
+          <button class="small danger" data-mem-del="${row.id}" style="margin-left:auto">删除</button>
+        </div>
+        <div style="margin-top:5px;white-space:pre-wrap;word-break:break-word">${esc(row.content)}</div>
+        <div class="meta" style="margin-top:3px">origin=${esc(row.origin)} · confidence=${row.confidence}${row.supersededBy ? ` · superseded_by=#${row.supersededBy}` : ''}</div>
+      </div>`;
+    }).join('') : '（没有匹配的记忆）';
+    document.getElementById('memCandidatesLine').textContent = `共 ${r.total} 条匹配；候选 ${r.candidatesTotal ?? 0} 条待提炼`;
+    const candidates = r.candidates || [];
+    document.getElementById('memCandidates').innerHTML = candidates.length ? candidates.map((c) => `<div style="padding:7px 10px;border-bottom:1px solid var(--card-border)">
+      <span class="meta">#${c.id} · ${esc(c.conversationKey)} · ${esc(c.kindHint || '')} · ${fmtMemoryTime(c.createdAt)}</span>
+      <div style="margin-top:3px">${esc(c.content)}</div>
+    </div>`).join('') : '（空）';
+  } catch (error) {
+    rowsEl.textContent = '读取失败：' + (error?.message || error);
+  }
+}
+async function saveMemoryConfig() {
+  const msg = document.getElementById('memConfigMsg');
+  msg.textContent = '保存中…';
+  msg.className = 'meta';
+  const conversations = document.getElementById('memExtractConvs').value
+    .split(/[,，\s]+/).map((x) => x.trim()).filter(Boolean);
+  const body = {
+    enabled: document.getElementById('memEnabled').checked,
+    mode: document.getElementById('memMode').value,
+    autoExtractionEnabled: document.getElementById('memAutoExtract').checked,
+    maxExtraCallsPerDay: Number(document.getElementById('memMaxCalls').value || 0),
+    extractionConversations: conversations
+  };
+  try {
+    const r = await api('/api/memory/config', 'POST', body);
+    if (!r.ok) { msg.textContent = '❌ ' + (r.error || '保存失败'); msg.className = 'meta err'; return; }
+    msg.textContent = '✅ 已保存并热更新';
+    msg.className = 'meta ok';
+    showConsoleToast('长期记忆设置已保存');
+    await loadMemoryPanel();
+  } catch (error) {
+    msg.textContent = '❌ ' + (error?.message || error);
+    msg.className = 'meta err';
+  }
+}
+async function deleteMemoryRow(id) {
+  if (!confirm(`确定删除 #${id}？会从数据库和 FTS 索引真删，并清理旧 social-v2 副本。`)) return;
+  const msg = document.getElementById('memActionMsg');
+  try {
+    const r = await api('/api/memory/delete', 'POST', { id: Number(id) });
+    msg.textContent = r.ok ? `✅ 已删除 #${id}` : ('❌ ' + (r.error || '删除失败'));
+    msg.className = r.ok ? 'meta ok' : 'meta err';
+    if (r.ok) { showConsoleToast('记忆已删除'); await loadMemoryPanel(); }
+  } catch (error) {
+    msg.textContent = '❌ ' + (error?.message || error);
+    msg.className = 'meta err';
+  }
+}
+async function extractMemoryNow() {
+  if (!confirm('立即提炼一次？会调用一次 LLM（计入每日预算），只处理候选缓冲里的内容。')) return;
+  const msg = document.getElementById('memActionMsg');
+  msg.textContent = '提炼中…（可能需要几十秒）';
+  msg.className = 'meta';
+  try {
+    const r = await api('/api/memory/extract', 'POST', { force: true });
+    if (!r.ok) { msg.textContent = '❌ ' + (r.error || '提炼失败'); msg.className = 'meta err'; return; }
+    msg.textContent = r.ran
+      ? `✅ 已提炼：写入 ${r.created ?? 0} 条，丢弃候选 ${r.discarded ?? 0} 条`
+      : `未运行：${r.reason || '没有满足条件'}`;
+    msg.className = 'meta ok';
+    await loadMemoryPanel();
+  } catch (error) {
+    msg.textContent = '❌ ' + (error?.message || error);
+    msg.className = 'meta err';
+  }
+}
+async function memoryAdvanced(action) {
+  const labels = { migrate: '迁移旧数据', verify: '校验迁移', rollback: '回滚本次迁移' };
+  const msg = document.getElementById('memAdvancedMsg');
+  if (action === 'rollback' && !confirm('回滚只删除本次迁移导入的记忆，并先备份当前库。确定？')) return;
+  if (action === 'migrate' && !confirm('迁移会把 social-v2.json 复制进新库（先备份，可重复执行）。继续？')) return;
+  msg.textContent = labels[action] + '中…';
+  msg.className = 'meta';
+  try {
+    const r = await api('/api/memory/' + action, 'POST', {});
+    if (!r.ok) { msg.textContent = '❌ ' + (r.error || '失败'); msg.className = 'meta err'; return; }
+    if (action === 'migrate') msg.textContent = r.skipped ? `跳过：${r.reason}` : `✅ 导入 ${r.imported} 条，重复 ${r.duplicates} 条`;
+    else if (action === 'verify') msg.textContent = r.ok === false ? `❌ 缺少 ${r.missing?.length ?? 0} 条，作用域不符 ${r.mismatched?.length ?? 0} 条` : `✅ 校验通过（${r.total} 条）`;
+    else msg.textContent = `✅ 已回滚，删除 ${r.removed} 条`;
+    msg.className = 'meta ok';
+    await loadMemoryPanel();
+  } catch (error) {
+    msg.textContent = '❌ ' + (error?.message || error);
+    msg.className = 'meta err';
+  }
+}
+document.getElementById('memRefresh').addEventListener('click', () => { loadMemoryPanel(); showConsoleToast('长期记忆已刷新'); });
+document.getElementById('memSearch').addEventListener('click', () => loadMemoryList());
+document.getElementById('memQuery').addEventListener('keydown', (event) => { if (event.key === 'Enter') { event.preventDefault(); loadMemoryList(); } });
+document.getElementById('memSaveConfig').addEventListener('click', saveMemoryConfig);
+document.getElementById('memExtractNow').addEventListener('click', extractMemoryNow);
+document.getElementById('memRows').addEventListener('click', (event) => {
+  const button = event.target.closest('[data-mem-del]');
+  if (button) deleteMemoryRow(button.dataset.memDel);
+});
+document.getElementById('memMigrate').addEventListener('click', () => memoryAdvanced('migrate'));
+document.getElementById('memVerify').addEventListener('click', () => memoryAdvanced('verify'));
+document.getElementById('memRollback').addEventListener('click', () => memoryAdvanced('rollback'));
 
 setConsolePage(location.hash.slice(1), { updateHash:false });
 

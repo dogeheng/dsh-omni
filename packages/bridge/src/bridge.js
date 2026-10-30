@@ -4239,6 +4239,90 @@ async function main() {
           sendJson({ ok: true, status: memory.status(), config: memory.cfg, mode: memory.mode });
           return;
         }
+        // 控制台「长期记忆」页：内容列表（管理端，不受会话 ACL 限制）。
+        if (req.method === 'GET' && url.pathname === '/api/memory/list') {
+          if (!memory) { sendJson({ ok: false, error: '记忆模块未初始化' }, 503); return; }
+          const q = String(url.searchParams.get('q') ?? '').slice(0, 120);
+          const kind = String(url.searchParams.get('kind') ?? '').trim();
+          const scope = String(url.searchParams.get('scope') ?? '').trim();
+          const status = String(url.searchParams.get('status') ?? 'active').trim() || 'active';
+          const limit = Math.min(200, Math.max(1, Number(url.searchParams.get('limit')) || 50));
+          const offset = Math.max(0, Number(url.searchParams.get('offset')) || 0);
+          const result = memory.listMemories({ query: q, kind, scope, status, limit, offset });
+          sendJson({ ...result, mode: memory.mode, enabled: memory.cfg.enabled }, result.ok === false ? 409 : 200);
+          return;
+        }
+        // 控制台删除：真删 + 墓碑；随后清 social-v2 旧副本。
+        if (req.method === 'POST' && url.pathname === '/api/memory/delete') {
+          const body = await readBody();
+          if (!memory) { sendJson({ ok: false, error: '记忆模块未初始化' }, 503); return; }
+          const result = memory.adminDelete({ id: body?.id });
+          if (result.ok) maybeReconcileTombstonesV2({ force: true });
+          sendJson(result, result.ok ? 200 : 400);
+          return;
+        }
+        // 控制台保存记忆设置：写回 config.json，并热更新 manager。
+        if (req.method === 'POST' && url.pathname === '/api/memory/config') {
+          const body = await readBody();
+          if (!memory) { sendJson({ ok: false, error: '记忆模块未初始化' }, 503); return; }
+          const patch = {};
+          if ('enabled' in body) {
+            if (typeof body.enabled !== 'boolean') { sendJson({ ok: false, error: 'enabled 必须是布尔值' }, 400); return; }
+            patch.enabled = body.enabled;
+          }
+          if ('mode' in body) {
+            const modeValue = String(body.mode ?? '').trim();
+            if (!['off', 'shadow', 'live'].includes(modeValue)) { sendJson({ ok: false, error: 'mode 必须是 off/shadow/live' }, 400); return; }
+            patch.mode = modeValue;
+          }
+          if ('autoExtractionEnabled' in body) {
+            if (typeof body.autoExtractionEnabled !== 'boolean') { sendJson({ ok: false, error: 'autoExtractionEnabled 必须是布尔值' }, 400); return; }
+            patch.autoExtractionEnabled = body.autoExtractionEnabled;
+          }
+          if ('maxExtraCallsPerDay' in body) {
+            const n = Number(body.maxExtraCallsPerDay);
+            if (!Number.isFinite(n) || n < 0 || n > 24) { sendJson({ ok: false, error: 'maxExtraCallsPerDay 必须是 0~24' }, 400); return; }
+            patch.maxExtraCallsPerDay = Math.round(n);
+          }
+          if ('extractionConversations' in body) {
+            const list = Array.isArray(body.extractionConversations) ? body.extractionConversations : [];
+            const valid = list.map((k) => String(k ?? '').trim()).filter(Boolean);
+            if (valid.some((k) => !/^(group|private):\d+$/.test(k))) {
+              sendJson({ ok: false, error: '提炼会话必须是 group:群号 或 private:QQ号' }, 400);
+              return;
+            }
+            patch.extractionConversations = valid;
+          }
+          const configFile = path.join(ROOT, 'config.json');
+          const file = readJsonSafe(configFile, {});
+          if (!file.memory || typeof file.memory !== 'object' || Array.isArray(file.memory)) file.memory = {};
+          if ('enabled' in patch) file.memory.enabled = patch.enabled;
+          if ('mode' in patch) file.memory.retrieval = { ...(file.memory.retrieval ?? {}), mode: patch.mode };
+          if ('autoExtractionEnabled' in patch || 'maxExtraCallsPerDay' in patch || 'extractionConversations' in patch) {
+            file.memory.capture = {
+              ...(file.memory.capture ?? {}),
+              ...('autoExtractionEnabled' in patch ? { autoExtractionEnabled: patch.autoExtractionEnabled } : {}),
+              ...('maxExtraCallsPerDay' in patch ? { maxExtraCallsPerDay: patch.maxExtraCallsPerDay } : {}),
+              ...('extractionConversations' in patch ? { extractionConversations: patch.extractionConversations } : {})
+            };
+          }
+          atomicWriteJson(configFile, file);
+          const applied = memory.applyConfig(patch);
+          cfg.memory = {
+            ...cfg.memory,
+            enabled: applied.enabled,
+            retrieval: { ...(cfg.memory?.retrieval ?? {}), mode: applied.mode },
+            capture: {
+              ...(cfg.memory?.capture ?? {}),
+              autoExtractionEnabled: applied.autoExtractionEnabled,
+              maxExtraCallsPerDay: applied.maxExtraCallsPerDay,
+              extractionConversations: applied.extractionConversations
+            }
+          };
+          log(`控制台：长期记忆设置已保存（${JSON.stringify(applied)}）`);
+          sendJson({ ok: true, applied, status: memory.status() });
+          return;
+        }
         if (req.method === 'POST' && url.pathname === '/api/memory/migrate') {
           const body = await readBody().catch(() => ({}));
           if (!memory) { sendJson({ ok: false, error: '记忆模块未初始化' }, 503); return; }
@@ -13874,7 +13958,7 @@ async function main() {
    * 的「候选数 / 间隔 / 每日预算 / 空闲 / 插电」五道闸门才会真的发一次 LLM 调用。
    * 定时器本身不碰事件循环的退出（unref），不会拖住进程退出。
    */
-  if (memory && cfg.memory.enabled && (cfg.memory.capture.autoExtractionEnabled || cfg.memory.consolidation.enabled)) {
+  if (memory) {
     const interval = Math.max(5 * 60 * 1000, Math.min(Number(cfg.memory.consolidation.intervalMs) || 3600000, 3600000));
     let ticking = false;
     const timer = setInterval(() => {
@@ -13899,7 +13983,7 @@ async function main() {
       })();
     }, interval);
     timer.unref?.();
-    log(`长期记忆后台整理已启动（每 ${Math.round(interval / 60000)} 分钟检查一次；每日预算 ${cfg.memory.capture.maxExtraCallsPerDay} 次）`);
+    log(`长期记忆后台整理定时器已就绪（每 ${Math.round(interval / 60000)} 分钟检查一次；自动提炼=${cfg.memory.capture.autoExtractionEnabled ? '开' : '关'}，每日预算 ${cfg.memory.capture.maxExtraCallsPerDay} 次）`);
   }
 
   await pumpMux();

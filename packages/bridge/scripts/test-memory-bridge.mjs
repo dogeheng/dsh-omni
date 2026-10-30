@@ -287,6 +287,63 @@ test('桥接删除：同时清掉旧 social-v2 副本，降级路径与后续唤
   }, { config: { memory: memoryConfig() } });
 });
 
+test('控制台长期记忆接口：list / config 热更新 / delete', async () => {
+  await withBridge(async (h) => {
+    const key = `group:${A_GROUP}`;
+    incoming(h, key, { sender: '小明', userId: XIAOMING, text: '我下周要面试' });
+    const s = h.memory.store();
+    const rec = s.addMemory({
+      personaId: h.memory.personaId, scope: 'group', scopeKey: A_GROUP, kind: 'fact',
+      subjectId: XIAOMING, subjectLabel: '小明', content: '小明下周三去上海出差，回来带蝴蝶酥'
+    });
+
+    const server = h.startConsoleServer();
+    if (!server.listening) await new Promise((resolve) => server.once('listening', resolve));
+    const port = server.address().port;
+    try {
+      // 列表：内容 / 过滤 / 统计
+      const list = await requestJson(port, `/api/memory/list?q=${encodeURIComponent('蝴蝶酥')}`);
+      assert.equal(list.status, 200, list.text);
+      assert.equal(list.body.ok, true);
+      assert.ok(list.body.memories.some((m) => m.id === rec.id));
+      assert.equal(list.body.mode, 'live');
+      const filtered = await requestJson(port, '/api/memory/list?kind=promise');
+      assert.equal(filtered.body.total, 0);
+
+      // 配置：写回 config.json + 热更新 mode / 预算 / 提炼白名单
+      const cfgRes = await requestJson(port, '/api/memory/config', {
+        method: 'POST',
+        body: { mode: 'shadow', maxExtraCallsPerDay: 3, extractionConversations: [`private:${OWNER}`], autoExtractionEnabled: true }
+      });
+      assert.equal(cfgRes.status, 200, cfgRes.text);
+      assert.equal(cfgRes.body.applied.mode, 'shadow');
+      assert.equal(h.memory.mode, 'shadow', 'manager 读取模式应立即生效');
+      assert.equal(h.getCfg().memory.retrieval.mode, 'shadow', '桥接配置对象应同步');
+      const fileCfg = JSON.parse(fs.readFileSync(path.join(h.temp, 'config.json'), 'utf8'));
+      assert.equal(fileCfg.memory.retrieval.mode, 'shadow');
+      assert.equal(fileCfg.memory.capture.maxExtraCallsPerDay, 3);
+      assert.deepEqual(fileCfg.memory.capture.extractionConversations, [`private:${OWNER}`]);
+      const statusAfter = await requestJson(port, '/api/memory/status');
+      assert.equal(statusAfter.body.mode, 'shadow');
+
+      // 非法 mode 必须拒绝，且不能写坏配置
+      const bad = await requestJson(port, '/api/memory/config', { method: 'POST', body: { mode: 'turbo' } });
+      assert.equal(bad.status, 400);
+      assert.equal(JSON.parse(fs.readFileSync(path.join(h.temp, 'config.json'), 'utf8')).memory.retrieval.mode, 'shadow');
+
+      // 删除：真删 + 墓碑
+      const del = await requestJson(port, '/api/memory/delete', { method: 'POST', body: { id: rec.id } });
+      assert.equal(del.status, 200, del.text);
+      assert.equal(s.getMemory(rec.id), null);
+      assert.ok(s.countTombstones({ personaId: h.memory.personaId }) >= 1);
+      const after = await requestJson(port, `/api/memory/list?status=all`);
+      assert.equal(after.body.memories.some((m) => m.id === rec.id), false);
+    } finally {
+      await new Promise((resolve) => server.close(resolve));
+    }
+  }, { config: { memory: memoryConfig() }, allow: { private: [OWNER], groups: [A_GROUP, B_GROUP] } });
+});
+
 test('桥接预算：真实提示词里的记忆块不超过 350 tokens', async () => {
   await withBridge(async (h) => {
     const s = h.memory.store();

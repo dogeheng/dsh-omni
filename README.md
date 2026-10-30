@@ -19,7 +19,7 @@
 - **大功能开关**：控制台「运行总览」一页开关一代/二代仿真、B 站卡片、联网搜索、语音、表情包、黑话学习、主动机会、看图与长期记忆；细粒度工具开关在「二代仿真」页。
 - **离电省电**：检测 macOS 电源，离电时只放行你勾选的能力（默认只留表情与长期记忆），其余工具调用直接拒答；插电自动解除限制并恢复原思考档位，可顺带暂停主动冒泡。核心聊天永远可用，检测失败一律放行。见 [docs/POWER.md](docs/POWER.md)。
 - **reserved2 仿真**：分条发送、引用、唤醒/潜水、拍一拍、主动机会、回复检查。
-- **长期记忆（SQLite）**：本地 `node:sqlite` + FTS5（中文双字索引），按群/私聊/主人私聊隔离；显式记忆 + 规则候选 + 可选低频提炼（默认关，每日 ≤6 次 LLM）。普通聊天不查就不注入，单轮硬上限 350 tokens。旧 `social-v2.json` 可无损迁移/校验/回滚。见 [docs/MEMORY.md](docs/MEMORY.md)。
+- **长期记忆（SQLite）**：本地 `node:sqlite` + FTS5（中文双字索引），按群/私聊/主人私聊隔离；显式记忆 + 规则候选 + 可选低频提炼（当前灰度 2 次/天）。普通聊天不查就不注入，单轮硬上限 350 tokens。控制台新增「长期记忆」页：查看/搜索/删除、shadow/live 热切换、提炼与迁移/校验/回滚。旧 `social-v2.json` 可无损迁移。见 [docs/MEMORY.md](docs/MEMORY.md)。
 - **表情包**：同步 QQ 收藏表情、AI 看图标注、按情绪搜索、按语义自检、可配置发送概率与“发完文字后提醒补一张”。
 - **B 站卡片**：解析 QQ 小程序卡（`b23.tv` → `BV...`），把标题/BV 注入消息；AI 可按需调用 `bili_video_info` / `bili_subtitle`，再决定回复还是安静。
 - **听懂语音 / 开口说话**：群友的 QQ 语音用本地 SenseVoice-Small 转写成「[语音 6秒·语气开心] 原话」（免费、单条约 1 秒）；可选让 AI 用自己的声音说话（`qq_speak` 主动说 + 短句随机转语音，默认百炼 CosyVoice 3.5，也支持小米 MiMo / 豆包 / OpenAI 兼容 / GPT-SoVITS）。想唱 15–20 秒短歌时，可以用曲库干声 + [Seed-VC](https://github.com/Plachtaa/seed-vc) 按需换嗓，不常驻、不跑整首。见 [docs/VOICE_IO.md](docs/VOICE_IO.md) 与 [docs/SINGING.md](docs/SINGING.md)。

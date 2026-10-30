@@ -20,7 +20,7 @@ import {
   buildFtsMatchQuery, localDayKey, normalizeForDedupe, sanitizeMemoryContent, tokenizeMemoryText
 } from './text.js';
 import { classifyMemoryNeed, rankMemoryRows, renderMemoryBlock } from './retrieve.js';
-import { effectiveRetrievalMode, normalizeMemoryConfig, resolveMemoryDbPath } from './config.js';
+import { MEMORY_RETRIEVAL_MODES, effectiveRetrievalMode, normalizeMemoryConfig, resolveMemoryDbPath } from './config.js';
 import { planExtraction, runConsolidation, runExtractionOnce } from './extract.js';
 import { rollbackLegacyMigration, runLegacyMigration, verifyLegacyMigration } from './legacy.js';
 
@@ -80,7 +80,7 @@ export function createMemoryManager({
   const cfg = normalizeMemoryConfig(config, { root });
   const personaId = cfg.personaId;
   const dbFile = resolveMemoryDbPath(cfg);
-  const mode = effectiveRetrievalMode(cfg);
+  let mode = effectiveRetrievalMode(cfg);
   const cache = new LruCache(cfg.cache);
   const metrics = {
     injections: 0,
@@ -573,6 +573,113 @@ export function createMemoryManager({
     };
   }
 
+  /**
+   * 控制台用：列出记忆内容（管理端，不受 ACL 限制；调用方必须是 consoleToken）。
+   * 支持内容/人物关键词、kind/scope/status 过滤与分页。
+   */
+  function listMemories({ query = '', kind = '', scope = '', status = 'active', limit = 50, offset = 0 } = {}) {
+    const s = store();
+    if (!s) return { ok: false, reason: '记忆库不可用', memories: [], total: 0, candidates: [], candidatesTotal: 0 };
+    return safe(() => {
+      const where = ['persona_id = ?'];
+      const params = [personaId];
+      if (status && status !== 'all') { where.push('status = ?'); params.push(String(status)); }
+      if (kind) { where.push('kind = ?'); params.push(String(kind)); }
+      if (scope) { where.push('scope = ?'); params.push(String(scope)); }
+      const q = String(query ?? '').trim();
+      if (q) {
+        const like = `%${q.replace(/[\\%_]/g, (ch) => `\\${ch}`)}%`;
+        where.push("(content LIKE ? ESCAPE '\\' OR subject_label LIKE ? ESCAPE '\\')");
+        params.push(like, like);
+      }
+      const whereSql = where.join(' AND ');
+      const total = Number(s.db.prepare(`SELECT COUNT(*) AS n FROM memories WHERE ${whereSql}`).get(...params)?.n ?? 0);
+      const rows = s.db.prepare(`SELECT * FROM memories WHERE ${whereSql} ORDER BY updated_at DESC LIMIT ? OFFSET ?`)
+        .all(...params, Math.min(200, Math.max(1, Number(limit) || 50)), Math.max(0, Number(offset) || 0));
+      const memories = rows.map((row) => ({
+        id: row.id,
+        scope: row.scope,
+        scopeKey: row.scope_key,
+        kind: row.kind,
+        subjectId: row.subject_id,
+        subjectLabel: row.subject_label,
+        content: row.content,
+        status: row.status,
+        origin: row.origin,
+        confidence: row.confidence,
+        subjectKey: row.subject_key,
+        sourceConversation: row.source_conversation,
+        createdAt: row.created_at,
+        updatedAt: row.updated_at,
+        validFrom: row.valid_from,
+        validUntil: row.valid_until,
+        expiresAt: row.expires_at,
+        supersededBy: row.superseded_by
+      }));
+      const candidates = s.listCandidates({ personaId, status: 'pending', limit: 20 });
+      return {
+        ok: true,
+        total,
+        memories,
+        candidates: candidates.map((c) => ({
+          id: c.id, conversationKey: c.conversationKey, kindHint: c.kindHint,
+          content: c.content, confidence: c.confidence, createdAt: c.createdAt
+        })),
+        candidatesTotal: s.countPendingCandidates({ personaId })
+      };
+    }, { ok: false, reason: '读取记忆列表失败', memories: [], total: 0, candidates: [], candidatesTotal: 0 }, '记忆列表');
+  }
+
+  /** 控制台删除：真删 + 墓碑（桥接随后会清 social-v2 副本）。 */
+  function adminDelete({ id } = {}) {
+    const s = store();
+    if (!s) return { ok: false, reason: '记忆库不可用' };
+    return safe(() => {
+      const numeric = Number(id);
+      if (!Number.isInteger(numeric) || numeric <= 0) return { ok: false, reason: 'id 无效' };
+      const row = s.getMemory(numeric);
+      if (!row) return { ok: false, reason: `没有 id=${numeric}` };
+      s.deleteMemory(numeric, { reason: '控制台删除' });
+      s.addTombstone({ personaId, row, now: now() });
+      bumpGeneration();
+      return { ok: true, removed: { id: row.id, scope: row.scope, kind: row.kind, content: row.content } };
+    }, { ok: false, reason: '删除失败' }, '控制台删除记忆');
+  }
+
+  /**
+   * 热更新可安全调整的字段（控制台保存）。
+   * 只改内存中的 cfg 与 mode；config.json 的持久化由桥接负责。
+   */
+  function applyConfig({ enabled, mode: nextMode, autoExtractionEnabled, maxExtraCallsPerDay, extractionConversations } = {}) {
+    const before = `${cfg.enabled}|${mode}`;
+    if (typeof enabled === 'boolean') cfg.enabled = enabled;
+    if (nextMode !== undefined && MEMORY_RETRIEVAL_MODES.includes(String(nextMode))) {
+      cfg.retrieval.mode = String(nextMode);
+      mode = effectiveRetrievalMode(cfg);
+    }
+    if (typeof autoExtractionEnabled === 'boolean') cfg.capture.autoExtractionEnabled = autoExtractionEnabled;
+    if (maxExtraCallsPerDay !== undefined && maxExtraCallsPerDay !== '') {
+      const n = Number(maxExtraCallsPerDay);
+      if (Number.isFinite(n)) cfg.capture.maxExtraCallsPerDay = Math.max(0, Math.min(24, Math.round(n)));
+    }
+    if (Array.isArray(extractionConversations)) {
+      cfg.capture.extractionConversations = extractionConversations
+        .map((k) => String(k ?? '').trim())
+        .filter((k) => /^(group|private):\d+$/.test(k))
+        .slice(0, 20);
+    }
+    const after = `${cfg.enabled}|${mode}`;
+    if (before !== after) bumpGeneration();
+    log(`memory: 配置已热更新（enabled=${cfg.enabled}，mode=${mode}，自动提炼=${cfg.capture.autoExtractionEnabled}，每日上限=${cfg.capture.maxExtraCallsPerDay}）`);
+    return {
+      enabled: cfg.enabled,
+      mode,
+      autoExtractionEnabled: cfg.capture.autoExtractionEnabled,
+      maxExtraCallsPerDay: cfg.capture.maxExtraCallsPerDay,
+      extractionConversations: [...cfg.capture.extractionConversations]
+    };
+  }
+
   function status() {
     const base = {
       enabled: cfg.enabled,
@@ -640,7 +747,8 @@ export function createMemoryManager({
   return {
     cfg,
     personaId,
-    mode,
+    // 热更新后 mode 会变：用 getter，别让控制台/状态接口读到启动时的旧值。
+    get mode() { return mode; },
     dbFile,
     buildContext,
     observeMessage,
@@ -655,6 +763,9 @@ export function createMemoryManager({
     tick,
     metricsSummary,
     status,
+    listMemories,
+    adminDelete,
+    applyConfig,
     listTombstones({ limit = 500 } = {}) {
       const s = store();
       if (!s) return [];

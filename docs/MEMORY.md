@@ -405,6 +405,22 @@ people: 3 个可解析身份建档
 
 ---
 
+### 控制台「长期记忆」页（v1）
+
+侧栏「聊天行为 → 长期记忆」提供：
+
+- 状态：读取模式、active 条数、候选数、每日预算、RSS、库错误；
+- 开关与热更新：`enabled`、`off/shadow/live`、自动提炼、每日 LLM 上限、
+  提炼会话白名单；保存会写回 `config.json` 并**立即**作用于运行中的 manager
+  （其余字段仍以重启为准）；
+- 内容列表：按内容/人物搜索、按 kind/scope/status 过滤、逐条删除（真删 + 墓碑 +
+  清理 social-v2 旧副本）；
+- 候选缓冲：待提炼列表（只读）；
+- 操作：立即提炼一次（计入预算）、迁移旧数据、校验、回滚（均需二次确认）。
+
+接口仅控制台令牌可调（`/api/memory/status|list|config|delete|extract|migrate|verify|rollback`），
+agent token 不在 `/api/memory/*` 白名单里。
+
 ## 9. 启用 / 停用 / 回滚
 
 **启用（推荐顺序）**
