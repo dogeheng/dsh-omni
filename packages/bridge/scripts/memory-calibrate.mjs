@@ -111,7 +111,13 @@ async function runSample({ name, text }) {
   const why = await done;
   try { socket.close(); } catch {}
   if (!keep) {
+    // 探针工作区/会话用完就删：否则每跑一次校准，DSH 工作区列表里就多一个
+    // dsh-omni-probe-*，文件也留在系统临时目录里。
     try { await rpc('workspace/archiveSession', { request: { sessionId } }); } catch {}
+    try { await rpc('workspace/delete', { request: { workspaceId: wsId } }); } catch (error) {
+      console.error(`[calibrate] 清理工作区失败: ${error?.message ?? error}`);
+    }
+    try { fs.rmSync(dir, { recursive: true, force: true }); } catch {}
   }
   const input = buckets.reduce((sum, b) => sum + b.cacheMiss + b.cacheHit + b.cacheWrite, 0);
   const output = buckets.reduce((sum, b) => sum + b.output, 0);

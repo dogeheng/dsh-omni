@@ -471,8 +471,13 @@ async function runLive(offline) {
   const dir = probe.probeWorkspaceDir('memory-eval');
   const ws = await rpc('workspace/create', { request: { path: dir } });
   if (!ws.ok) return { skipped: `workspace/create 失败：${ws.error?.message}` };
-  const sc = await rpc('session/create', { request: { workspaceId: ws.value.workspace.workspaceId } });
-  if (!sc.ok) return { skipped: `session/create 失败：${sc.error?.message}` };
+  const workspaceId = ws.value.workspace.workspaceId;
+  const sc = await rpc('session/create', { request: { workspaceId } });
+  if (!sc.ok) {
+    try { await rpc('workspace/delete', { request: { workspaceId } }); } catch {}
+    try { fs.rmSync(dir, { recursive: true, force: true }); } catch {}
+    return { skipped: `session/create 失败：${sc.error?.message}` };
+  }
   const sessionId = sc.value.sessionId;
   await rpc('session/selectModel', { request: { sessionId, provider: PROVIDER, model: MODEL, reasoningEffort: 'low' } });
 
@@ -534,7 +539,12 @@ async function runLive(offline) {
     if (persona) personaOk += 1;
     rows.push({ case: item.case, q: item.q, pass: ok, persona, answer: answer.slice(0, 160) });
   }
+  // 评测会话/工作区用完即删，避免每跑一次 live 评测就在 DSH 里留一个工作区。
   try { await rpc('workspace/archiveSession', { request: { sessionId } }); } catch {}
+  try { await rpc('workspace/delete', { request: { workspaceId } }); } catch (error) {
+    console.error(`[eval] 清理工作区失败: ${error?.message ?? error}`);
+  }
+  try { fs.rmSync(dir, { recursive: true, force: true }); } catch {}
   return {
     answered,
     answerAccuracy: answered ? +(correct / answered).toFixed(3) : null,

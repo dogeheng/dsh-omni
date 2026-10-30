@@ -30,7 +30,7 @@ const DSH_HOME = process.env.DSH_HOME || path.join(os.homedir(), '.dsh');
 const REGISTRY = path.join(DSH_HOME, 'storages', 'workspace.json');
 const CONFIG = path.join(ROOT, 'config.json');
 const TMP = (() => { try { return fs.realpathSync(os.tmpdir()); } catch { return path.resolve(os.tmpdir()); } })();
-const TEMP_PREFIX = /^(qq-probe-|qq-preset-|sticker-)/;
+const TEMP_PREFIX = /^(qq-probe-|qq-preset-|sticker-|dsh-omni-probe-)/;
 
 const args = new Set(process.argv.slice(2));
 const apply = args.has('--apply');
