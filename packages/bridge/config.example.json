@@ -211,6 +211,8 @@
       "recommendedSleepMinMs": 300000,
       "recommendedSleepMaxMs": 7200000,
       "recommendedProbability": 0.05,
+      "mediaProbability": 0.15,
+      "mediaCooldownMs": 600000,
       "recommendedKeywords": [
         "小鲸鱼",
         "DeepSeek",

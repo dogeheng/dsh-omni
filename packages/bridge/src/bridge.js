@@ -835,6 +835,10 @@ function loadConfig() {
         recommendedSleepMinMs: 300000,
         recommendedSleepMaxMs: 7200000,
         recommendedProbability: 0.05,
+        // 纯图片/表情消息的额外唤醒概率（0=关闭）。普通文字消息仍按各会话的
+        // triggers.probability 走，避免「为了接梗图把文字闲聊也调吵」。
+        mediaProbability: 0,
+        mediaCooldownMs: 600000,
         recommendedKeywords: ['小鲸鱼', 'DeepSeek', 'deepseek', 'DS', 'D老师', 'd老师', 'D指导', 'd指导', 'D师傅', 'd师傅', '深度求索', '大肥鱼', '鲸鱼', 'DeepSeek V3', 'DeepSeek R1', 'R1'],
         recommendedAtMention: true,
         recommendedNameMention: true,
@@ -5362,15 +5366,16 @@ async function main() {
           // wake：数值与字符串数组归一化
           if (body.wake && typeof body.wake === 'object') {
             merged.wake = { ...(current.wake ?? {}), ...body.wake };
-            for (const k of ['sleepMinMs', 'sleepMaxMs', 'recommendedSleepMinMs', 'recommendedSleepMaxMs', 'recommendedProbability', 'batchWindowMs', 'maxWakePerMinute', 'maxWakePerHour', 'noActionLimit', 'maxWakeConfigReminders', 'preSleepWaitMs']) {
+            for (const k of ['sleepMinMs', 'sleepMaxMs', 'recommendedSleepMinMs', 'recommendedSleepMaxMs', 'recommendedProbability', 'mediaProbability', 'mediaCooldownMs', 'batchWindowMs', 'maxWakePerMinute', 'maxWakePerHour', 'noActionLimit', 'maxWakeConfigReminders', 'preSleepWaitMs']) {
               if (merged.wake[k] !== undefined) {
                 const n = Number(merged.wake[k]);
                 merged.wake[k] = Number.isFinite(n) ? n : current.wake?.[k] ?? 0;
                 // 毫秒/次数类字段统一非负取整；概率字段单独 clamp。
-                if (k !== 'recommendedProbability') merged.wake[k] = Math.max(0, Math.round(merged.wake[k]));
+                if (!['recommendedProbability', 'mediaProbability'].includes(k)) merged.wake[k] = Math.max(0, Math.round(merged.wake[k]));
               }
             }
             if (merged.wake.recommendedProbability !== undefined) merged.wake.recommendedProbability = Math.min(1, Math.max(0, Number(merged.wake.recommendedProbability) || 0));
+            if (merged.wake.mediaProbability !== undefined) merged.wake.mediaProbability = Math.min(1, Math.max(0, Number(merged.wake.mediaProbability) || 0));
             if (merged.wake.preSleepWaitEnabled !== undefined) merged.wake.preSleepWaitEnabled = merged.wake.preSleepWaitEnabled === true;
             if (merged.wake.recommendedDefaultInfinite !== undefined) merged.wake.recommendedDefaultInfinite = merged.wake.recommendedDefaultInfinite === true;
             if (merged.wake.recommendedPoke !== undefined) merged.wake.recommendedPoke = merged.wake.recommendedPoke === true;
@@ -11938,6 +11943,19 @@ async function main() {
         return `speaker:${senderLabel}`;
       }
     }
+    // 纯图片/表情（梗图、表情包）没有文字，@/关键词/提问都命中不了；单独给一条
+    // 低概率唤醒通道，避免「为了接梗图把全部文字消息的概率一起调高」。
+    const segments = Array.isArray(event?.message) ? event.message : [];
+    const hasMedia = segments.some((seg) => seg?.type === 'image' || seg?.type === 'face' || seg?.type === 'mface');
+    const hasText = segments.some((seg) => seg?.type === 'text' && String(seg?.data?.text ?? '').trim());
+    if (hasMedia && !hasText) {
+      const mediaProb = Math.min(1, Math.max(0, Number(cfg.socialV2?.wake?.mediaProbability) || 0));
+      if (mediaProb <= 0) return null;
+      const cooldown = Math.max(0, Number(cfg.socialV2?.wake?.mediaCooldownMs) || 0);
+      const lastAi = Number(st?.lastAiReplyAt) || 0;
+      if (cooldown > 0 && lastAi > 0 && Date.now() - lastAi < cooldown) return null;
+      return Math.random() < mediaProb ? 'media' : null;
+    }
     if (Number(tr.probability) > 0 && Math.random() < Number(tr.probability)) return 'probability';
     return null;
   }
@@ -12135,6 +12153,9 @@ async function main() {
     }
     if (reason === 'proactiveCheck') {
       return `${base}【主动机会】${key}\n原因：群里已经安静了一段时间，这是一次你可以主动冒泡的机会。\n优先主动开个话题、追问上次没聊完的事、分享一个刚想到的想法；如果一时想不到，可以用 mcp__web-search-safe__web_search 搜一下当前热点/时事/网络热梗，再结合记忆里的群友兴趣挑一个自然角度。只要内容自然，就大胆开口；如果实在没话想说，再安静收尾（qq_mark_read 或 qq_set_wake_config）。`;
+    }
+    if (reason === 'media') {
+      return `${base}【唤醒】${key}\n原因：群里有人发了图片/表情，可能是梗图。\n先判断值不值得接：看得懂、有想吐的槽就回一句短的（一条就够，不解释图）；没感觉、不好笑或看不懂就安静收尾（qq_mark_read 或 qq_set_wake_config），不要用“哈哈哈”“笑死”凑数，也不要对同一张图反复回。需要看清内容时按快照里的【图片/表情】提示调用 qq_get_message_images。`;
     }
     if (reason === 'poke') {
       return `${base}【唤醒】${key}\n原因：有人拍了一拍（可能拍了你，也可能拍了别人）。\n先看未读/最近消息里的 [拍一拍] 事件：如果是拍你，可以自然回应一句，也可以用 qq_send_poke 回一个拍一拍；如果是拍别人，觉得有趣也可以接梗。除了回应，偶尔也可以主动戳一下正在聊的人/熟人，像真人手贱/提醒/逗一下，但别频繁。不想接就安静收尾（qq_mark_read 或 qq_set_wake_config）。`;

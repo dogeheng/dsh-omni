@@ -50,6 +50,8 @@ const tests = [
   // 长期记忆：SQLite/FTS5 检索、作用域隔离、Token 预算、事实更新、删除、迁移回滚、
   // 提炼预算、降级；以及桥接层的真实注入/隔离/工具路由（跑真 bridge.js + 假 DSH）。
   'test-memory.mjs', 'test-memory-bridge.mjs',
+  // 二代唤醒：纯图片/表情的独立概率通道（不放大文字闲聊）、冷却、@ 优先。
+  'test-wake-media.mjs',
   // 语音系统整体结构检查（入口/依赖/端点/开关/文档一致性）
   'test-voice-system.mjs',
   // SnowLuma 账号/token 自发现（换 QQ 账号后 token 会变，写死的工具会 401）

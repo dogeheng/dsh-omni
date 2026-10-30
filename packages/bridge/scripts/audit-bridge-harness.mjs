@@ -160,6 +160,7 @@ export async function bridgeHarness({ config = {}, savedState, files = {}, globa
     appendMemoryV2, saveSocialV2State,
     getCfg() { return cfg; },
     powerSnapshot,
+    evaluateWakeTriggerV2,
     setReady(value) { dshReady = value; },
     setPresets(value) { dshPresetIds = value; dshDefaultPreset = 'standard'; },
     resetEpoch() { sessionEpoch++; },
