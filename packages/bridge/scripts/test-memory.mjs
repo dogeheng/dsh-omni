@@ -687,6 +687,32 @@ test('17. 恶意/特殊字符查询不会抛错（FTS 语法字符、超长、NU
   }
 });
 
+test('19. 第一人称问题能召回"已写成日期"的自己事实，且不混入别人', () => {
+  const root = tempRoot();
+  const m = makeManager(root);
+  try {
+    const ctx = groupCtx(m, A_GROUP, [[XIAOMING, '小明']]);
+    // 真实灰度里的形状：agent 把"明天"写成了具体日期，查询却说"明天"
+    remember(m, ctx, {
+      kind: 'fact', content: '小明 10/30 要去波士顿，回来要吃龙虾', subjectId: XIAOMING, subjectLabel: '小明',
+      subjectKey: '波士顿行程'
+    });
+    remember(m, ctx, {
+      kind: 'impression', content: '小红 明天早八不想去上课', subjectId: '222333444', subjectLabel: '小红'
+    });
+    const block = m.buildPromptBlock({ ctx, text: '我明天去哪？', reason: 'wake' });
+    assert.ok(block.text.includes('波士顿'), '应召回自己的行程');
+    assert.ok(!block.text.includes('小红'), '不应把别人的"明天"混进来');
+    assert.ok(block.tokens <= 350);
+    // 普通第一人称陈述不触发
+    const casual = m.buildPromptBlock({ ctx, text: '我今天吃了饭', reason: 'wake' });
+    assert.equal(casual.tokens, 0);
+  } finally {
+    m.close();
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
 test('16a. 实测：P95 检索耗时与新增堆内存（本机真实数据）', () => {
   const root = tempRoot('memory-perf');
   const m = makeManager(root);

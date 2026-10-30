@@ -106,7 +106,7 @@ function clamp01(n) {
  */
 export function rankMemoryRows({
   ftsRows = [], structuredRows = [], queryTokens = [], ctx, now = Date.now(), halfLifeDays = 30,
-  minScore = 0.18, limit = 8, queryText = '', subjectFilter = []
+  minScore = 0.18, limit = 8, queryText = '', subjectFilter = [], selfQuestion = false
 } = {}) {
   const byId = new Map();
   for (const row of ftsRows) byId.set(row.id, row);
@@ -153,7 +153,10 @@ export function rankMemoryRows({
       // （否则查任何词都会把"这个人的承诺"带出来；空查询=列举时才保留）。
       if (queryNorm) {
         const label = String(row.subjectLabel ?? '').toLowerCase().replace(/\s+/g, '');
-        if (!label || !queryNorm.includes(label)) continue;
+        const aboutSender = selfQuestion && row.subjectId && (ctx?.senderIds ?? []).includes(String(row.subjectId));
+        // "我明天去哪"这类第一人称问题时，当前说话人自己的事实/计划也算相关；
+        // 其它情况仍然要求问题里明确提到这个人。
+        if (!(label && queryNorm.includes(label)) && !aboutSender) continue;
       }
     }
     const bm25 = Number(row.bm25);
@@ -171,6 +174,22 @@ export function rankMemoryRows({
     // 另外做一点加减分，让"这个人的记录"排序更靠前。
     if (subjectSet.size && row.subjectId) {
       score = Math.round((score + (subjectSet.has(String(row.subjectId)) ? 0.12 : -0.12)) * 1000) / 1000;
+    }
+    // 第一人称问题：当前说话人自己的事实/计划优先（但不硬过滤别人的公开记忆）。
+    if (selfQuestion) {
+      const senderIds = ctx?.senderIds ?? [];
+      const senderNames = (ctx?.senderNames ?? []).map((n) => String(n ?? '').toLowerCase());
+      const rowLabel = String(row.subjectLabel ?? '').toLowerCase();
+      const aboutSender = (row.subjectId && senderIds.includes(String(row.subjectId)))
+        || (rowLabel && senderNames.includes(rowLabel));
+      const aboutOther = (row.subjectId && !senderIds.includes(String(row.subjectId)))
+        || (rowLabel && senderNames.length && !senderNames.includes(rowLabel));
+      if (aboutSender) score = Math.round((score + 0.15) * 1000) / 1000;
+      else if (aboutOther && !subjectSet.size) {
+        // 问题里没有点名别人时，"我…"问的是自己：别人的档案只可能是误匹配
+        // （例如另一条含"明天"的印象）。直接丢弃，避免模型被别人的"明天"带偏。
+        continue;
+      }
     }
     if (score < minScore) continue;
     scored.push({ ...row, coverage, score });

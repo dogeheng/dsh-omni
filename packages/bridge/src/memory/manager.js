@@ -304,8 +304,17 @@ export function createMemoryManager({
     const ftsRows = q ? s.queryFts({
       ctx, matchExpression: q.expression, limit: cfg.retrieval.candidateLimit, now: now(), includeSession
     }) : [];
+    // "我明天去哪"这类第一人称问题：把当前说话人的事实/计划也纳入结构化召回，
+    // 否则"10/30 去波士顿"这种已经写成日期的记忆永远匹配不到"明天"。
+    const selfQuestion = /我/.test(String(text)) && /[?？]|哪|什么|怎么|几点|吗|呢|谁|多少/.test(String(text));
     const structuredRows = s.queryAboutPeople({
-      ctx, subjectIds: ctx.senderIds, limit: Math.min(8, cfg.retrieval.candidateLimit), now: now()
+      ctx,
+      subjectIds: ctx.senderIds,
+      kinds: selfQuestion
+        ? ['impression', 'promise', 'state', 'fact', 'preference']
+        : ['impression', 'promise', 'state'],
+      limit: Math.min(8, cfg.retrieval.candidateLimit),
+      now: now()
     });
     const subjectFilter = s.findPeopleMentioned({ personaId, text });
     const ranked = rankMemoryRows({
@@ -318,7 +327,8 @@ export function createMemoryManager({
       minScore,
       limit: Math.max(maxResults, 1),
       queryText: text,
-      subjectFilter
+      subjectFilter,
+      selfQuestion
     });
     const ms = Number(process.hrtime.bigint() - started) / 1e6;
     state.lastRetrievalMs = ms;
