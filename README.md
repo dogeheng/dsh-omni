@@ -1,288 +1,187 @@
-# dsh-omni
+<p align="center">
+  <img src="docs/media/mark.svg" width="88" height="88" alt="dsh-omni 鲸鱼标志">
+</p>
 
-> **我想给大肥鱼完整的一生！！！**
+<h1 align="center">dsh-omni</h1>
 
-**这是QQ ↔ DeepSeek Harness 的整合包。** 把 QQ（SnowLuma / OneBot v11）接到 DeepSeek Harness，让 DSH agent 以 QQ 会话的形式聊天、发表情、发语音、看 B 站卡片、上网查梗、记住群里的事、潜水与唤醒，并附带控制台和 DSH 设置页入口。
+<p align="center">把 DeepSeek Harness 接到 QQ，聊天、听语音、看图，也记得住事。</p>
 
-这不是一个“QQ 机器人框架”，更像一次长期实验：把 QQ 当身体，把 DSH 当大脑，把表情、语音、记忆、黑话、B 站、联网搜索都接成感官，看一个 agent 能不能在真实的群聊里活得像个具体的人。
+<p align="center">
+  <a href="packages/bridge/package.json"><img src="docs/media/badge-node.svg" alt="Node.js ≥ 22.13"></a>
+  <a href="#quick-start"><img src="docs/media/badge-dsh.svg" alt="DeepSeek Harness 0.2.x"></a>
+  <a href="LICENSE"><img src="docs/media/badge-license.svg" alt="MIT License"></a>
+</p>
 
-> 本仓库基于 [qq-bridge](https://github.com/Derpyu520/qq-bridge)（Derpyu520，MIT）做整合与二次开发；B 站能力复用 [dsh-bili-scroll](https://github.com/c1overzz/dsh-bili-scroll)（c1overzz，MIT）。署名与许可证见 [NOTICE.md](NOTICE.md)。
+<p align="center">
+  <a href="README.md"><img src="docs/media/lang-zh-selected.svg" alt="简体中文 · 当前语言" height="34"></a>
+  <a href="README.en.md"><img src="docs/media/lang-en.svg" alt="Read in English" height="34"></a>
+</p>
 
-[English README](README.en.md)
+<p align="center">
+  <a href="#preview">看看界面</a> ·
+  <a href="#quick-start">快速开始</a> ·
+  <a href="#features">功能</a> ·
+  <a href="#docs">文档</a> ·
+  <a href="https://github.com/dogeheng/dsh-omni/issues">反馈问题</a>
+</p>
 
----
+这是我的 QQ 伙伴「大肥鱼」用的整合包。我想让她能听懂群友的语音、看大家分享的图，记住聊过的事，也知道什么时候该安静。
 
-## 特性
+消息通过 SnowLuma 进出 QQ，由 DeepSeek Harness（DSH）处理对话。角色、权限、聊天节奏和用量都可以在本地控制台里调整。项目基于 [qq-bridge](https://github.com/Derpyu520/qq-bridge) 做整合与二次开发。
 
-- **QQ ↔ DSH 会话桥接**：群聊/私聊消息进入独立 DSH 会话，agent 的回复通过工具发回 QQ。
-- **四种模式**：`chat`、`reserved`、`reserved2`（仿真）、`closed-agent`，可在控制台切换。
-- **能力开关**：在「运行与安全 → 连接与模式」管理能力总开关；图片、B 站卡片和联网开关位于「感知与表达 → 视觉与视频」，细粒度权限位于「感知与表达 → 工具权限」。
-- **离电省电**：检测 macOS 电源，离电时只放行你勾选的能力（默认只留表情与长期记忆），其余工具调用直接拒答；插电自动解除限制并恢复原思考档位，可顺带暂停主动冒泡。核心聊天永远可用，检测失败一律放行。见 [docs/POWER.md](docs/POWER.md)。
-- **reserved2 仿真**：分条发送、引用、唤醒/潜水、拍一拍、主动机会、回复检查。
-- **长期记忆（SQLite）**：本地 `node:sqlite` + FTS5（中文双字索引），按群/私聊/主人私聊隔离；显式记忆 + 规则候选 + 可选低频提炼（当前灰度 2 次/天）。普通聊天不查就不注入，单轮硬上限 350 tokens。控制台新增「长期记忆」页：查看/搜索/删除、shadow/live 热切换、提炼与迁移/校验/回滚。旧 `social-v2.json` 可无损迁移。见 [docs/MEMORY.md](docs/MEMORY.md)。
-- **人格 / 提示词热更新**：DSH 会话默认持久；角色卡或仿真提示词变化后，桥接在下一次唤醒把最新版作为高优先级更新注入，不用清空对话上下文。`freshEveryTurn` 仍可单独打开。
-- **账户余额**：`qq_get_balance`（仅主人私聊）和 `qq_get_prompt.account` 读取 DSH 已登录账户的余额；群聊/其他人私聊一律拒绝，余额不会进入群提示词。
-- **表情包**：同步 QQ 收藏表情、AI 看图标注、按情绪搜索、按语义自检、可配置发送概率与“发完文字后提醒补一张”。
-- **B 站卡片**：解析 QQ 小程序卡（`b23.tv` → `BV...`），把标题/BV 注入消息；AI 可按需调用 `bili_video_info` / `bili_subtitle`，再决定回复还是安静。
-- **听懂语音 / 开口说话**：群友的 QQ 语音用本地 SenseVoice-Small 转写成「[语音 6秒·语气开心] 原话」（免费、单条约 1 秒）；可选让 AI 用自己的声音说话（`qq_speak` 主动说 + 短句随机转语音，默认百炼 CosyVoice 3.5，也支持小米 MiMo / 豆包 / OpenAI 兼容 / GPT-SoVITS）。想唱 15–20 秒短歌时，可以用曲库干声 + [Seed-VC](https://github.com/Plachtaa/seed-vc) 按需换嗓，不常驻、不跑整首。见 [docs/VOICE_IO.md](docs/VOICE_IO.md) 与 [docs/SINGING.md](docs/SINGING.md)。
-- **Web 控制台**：五个主分类、参数影响说明、搜索定位、跨页草稿，以及分层互动大肥鱼；支持挥手、捂眼、动耳朵、摸头、开口、害羞、思考、开心举手、哈欠和待机眨眼。保留白名单、唤醒、人格、表情、花费等完整设置。见 [界面与交互说明](docs/CONSOLE_UI.md)。
-- **受限文件工作区**：`sandbox_*` 工具把 agent 的文件读写限制在 `~/dsh-sandbox/workspace`，拒绝绝对路径、`..`、symlink 和目录删除；不提供 shell/网络，完整命令执行需另接 VM/容器。见 [docs/SANDBOX.md](docs/SANDBOX.md)。
-- **群内短翻唱**：群友说「唱15秒雨爱」时，`sing_short_cover` 自动搜索本地授权曲库、QQ 音乐/网易云（可选，付费门禁）或 CC 音源，找副歌、Demucs 分离、Seed-VC 换成 yuki 音色、混音并回发 10–20 秒 QQ 语音；异步队列、缓存、语音失败文件兜底和自动回收。见 [docs/SHORT_COVER.md](docs/SHORT_COVER.md)。
+<a id="preview"></a>
+## 看看界面
 
-- **DSH 集成**：两个 agent preset（`qq-chat` / `qq-chat-v2`）、模式控制台 bundle、可选的设置页入口 launcher。
-- **可迁移**：从 qq-bridge 的 `state/` + `config.json` 一键复制到本项目的 `data/`。
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="docs/media/console-overview-dark.png">
+  <img src="docs/media/console-overview.png" alt="大肥鱼控制台：首页、连接状态、五个主分类与角色互动入口" width="1100">
+</picture>
 
-### 功能开关
+控制台按「总览、聊天与性格、感知与表达、记忆与学习、运行与安全」组织。参数旁有用途和影响说明，也能直接搜索定位。
 
-控制台「运行与安全 → 连接与模式 → 能力总开关」管理跨模式能力；视觉与联网的总开关位于「感知与表达 → 视觉与视频」。每个开关都写回 `config.json` 原本的配置段；标 ⚠ 的项要重启 DSH 才会刷新工具清单或重载 MCP 代码，细粒度开关在「感知与表达 → 工具权限」。
+<details>
+<summary>查看聊天设置与参数说明</summary>
 
-## 架构
+<img src="docs/media/console-settings.png" alt="聊天习惯设置：冷场冒泡概率、检查间隔，以及悬停时显示的解释" width="1100">
 
-```
-QQ 客户端
-   │
-   ▼
-SnowLuma（Docker，OneBot v11）
-   │  WebSocket / HTTP（127.0.0.1:3001 / 3000）
-   ▼
-packages/bridge  ── 消息归一化、模式/权限、唤醒、表情、B 站卡片
-   │  DSH API（Cookie 鉴权 / slash-RPC / remote.mux）
-   ▼
-DeepSeek Harness agent（preset: qq-chat / qq-chat-v2）
-   │  MCP 工具
-   ▼
-qq_send_message / qq_send_sticker / qq_reply / ...  →  QQ
-```
+比如，调高冒泡概率会增加冷场后的主动参与机会；实际是否开口，还会受到夜间时段、近期活跃程度和 AI 判断的影响。
 
-- 桥接进程只监听本机；SnowLuma 端口也绑定 `127.0.0.1`。
-- 每个 QQ 会话对应一个 DSH 会话；reserved2 默认持久会话（`socialV2.session.freshEveryTurn=false`），人格/提示词变化时由桥接注入最新版本；长期记忆放在桥接的 `data/`（`data/memory/memory.sqlite`，WAL）。
-- B 站工具是**只读**的，且只允许看别人分享的卡片，不允许主动刷视频。
+</details>
 
-## 仓库结构
+### 碰一碰大肥鱼
 
-```
-dsh-omni/
-├─ packages/
-│  ├─ bridge/                 # 桥接本体 + Web 控制台 + DSH presets/模式控制台
-│  │  ├─ src/                 # bridge.js、MCP server、安全抓取、表情/语音库
-│  │  ├─ dsh/agent-presets/   # preset 源（改完跑 build 脚本）
-│  │  ├─ plugins/             # dsh-omni-agent-presets / dsh-omni-mode-console
-│  │  ├─ public/console.html  # 本地控制台
-│  │  ├─ roles/               # 人格卡示例（傲娇助手、小鲸鱼）
-│  │  ├─ scripts/             # 安装、测试、迁移脚本
-│  │  ├─ data/                # 运行时数据（gitignore，不提交）
-│  │  └─ config.json          # 本地配置（gitignore，不提交）
-│  ├─ launcher/               # 可选：DSH 设置页「dsh-omni」入口
-│  └─ bili-mcp/               # 可选：把 dsh-bili-scroll 的只读 MCP 挂进 DSH
-├─ docs/
-│  ├─ ARCHITECTURE.md
-│  ├─ POWER.md                # 离电省电：电源检测、能力闸门、自动启服务
-│  └─ VOICE_IO.md             # 听懂语音 / 开口说话：配置、策略与致谢
-├─ LICENSE
-├─ NOTICE.md
-└─ README.md
-```
+<p align="center">
+  <picture>
+    <source media="(prefers-reduced-motion: reduce)" srcset="docs/media/companion-still.png">
+    <img src="docs/media/companion-actions.gif" alt="大肥鱼挥手、捂眼、动耳朵、摸头、害羞和思考的交互演示" width="480">
+  </picture>
+</p>
 
-## 环境要求
+碰眼睛会捂眼，碰耳朵会动一动；点一下就能进入对应设置。共九种动作，支持键盘和触屏，也可以暂停。角色采用分层 2D 动画，详见[交互说明](docs/CONSOLE_UI.md)。
 
-- macOS / Linux；Node.js **>= 22.13**
-- DeepSeek Harness **0.2.x**（桌面版或 Web 版）
-- Docker（推荐用 SnowLuma 镜像跑 QQ）
-- 可选：B 站能力需要先安装 [dsh-bili-scroll](https://github.com/c1overzz/dsh-bili-scroll)
+<sub>截图与动图均来自离线演示，使用模拟数据，不含真实聊天记录。</sub>
 
-> DSH 桌面版每次启动会换随机端口；`start-mac.sh` 会自动探测并同步到 `config.json`，所以不要用裸 `npm start` 替代它。
+<a id="features"></a>
+## 能做什么
 
+| 用途 | 已有功能 |
+| --- | --- |
+| 参与聊天 | 群聊和私聊分别对应 DSH 会话；支持引用、分条发送、拍一拍、潜水、唤醒与冷场冒泡。 |
+| 听与说 | 本地 SenseVoice 语音识别；可选语音合成、语音库和短句随机转语音。支持多种 TTS 服务。 |
+| 看图与读链接 | 图片理解、QQ 收藏表情、B 站卡片信息与字幕、联网搜索。B 站工具只读，处理群友分享的内容。 |
+| 角色与记忆 | 人格卡和提示词热更新、长期记忆、群内黑话学习。群和私聊的记忆按作用域隔离。 |
+| 本地管理 | 白名单、管理员权限、能力与工具开关、token 花费看板；macOS 上还可设置离电省电策略。 |
+
+唱歌、短翻唱、受限文件工作区等能力需要另外准备环境。可以先跑通文字聊天，再按需开启；配置方法见[文档](#docs)。
+
+<details>
+<summary>四种运行模式怎么选？</summary>
+
+| 模式 | 行为 |
+| --- | --- |
+| `chat` | 白名单内的普通对话。 |
+| `reserved` | 一代仿真，按触发概率和活跃周期参与群聊。 |
+| `reserved2` | 二代仿真，自主阅读、发言、等待、潜水和安排唤醒。 |
+| `closed-agent` | 仅管理员私聊可用的 Agent 模式。 |
+
+在「运行与安全 → 连接与模式」切换。想调整二代的参与节奏，到「聊天与性格 → 聊天习惯」。
+
+</details>
+
+<a id="quick-start"></a>
 ## 快速开始
 
-### 1. 安装依赖
+下面以 **macOS + DSH 桌面版** 为例。先准备 Node.js ≥ 22.13、已安装并登录的 DSH 0.2.x，以及正在运行的 Docker。其他 profile、可选组件和排障见[安装与维护](docs/SETUP.md)。
+
+### 1. 下载并配置
 
 ```bash
 git clone https://github.com/dogeheng/dsh-omni.git
 cd dsh-omni
 npm --prefix packages/bridge install
+cp -n packages/bridge/config.example.json packages/bridge/config.json
+cp -n packages/bridge/.env.example packages/bridge/.env
 ```
 
-### 2. 配置
+后面的命令都在 **`dsh-omni` 仓库根目录** 执行。
+
+编辑 `packages/bridge/config.json`，填写管理员 `ownerQQ` 和 QQ 白名单 `allow.private` / `allow.groups`。在 `packages/bridge/.env` 里把 `VNC_PASSWD` 改成自己的密码。配置字段说明见[这里](docs/SETUP.md#config)。
+
+### 2. 启动 QQ 网关
 
 ```bash
-cp packages/bridge/config.example.json packages/bridge/config.json
+docker compose --env-file packages/bridge/.env -f packages/bridge/docker-compose.snowluma.yml up -d
 ```
 
-至少检查：
+打开 [扫码桌面](http://127.0.0.1:6081) 登录 QQ，再到 [SnowLuma WebUI](http://127.0.0.1:5099) 配置 OneBot v11 HTTP（`3000`）和正向 WebSocket（`3001`）。如启用了访问令牌，把同一个值填入 `snowluma.accessToken`。
 
-- `dsh.baseUrl`：通常不用手改，`start-mac.sh` 会写入当前 DSH 端口；
-- `snowluma.wsUrl` / `httpUrl`：默认 `ws://127.0.0.1:3001` / `http://127.0.0.1:3000`；
-- `allow.private` / `allow.groups`：允许机器人工作的 QQ 白名单；
-- `ownerQQ`：管理员 QQ；
-- `consolePort`：默认 `3100`。
-
-控制台令牌首次启动会生成到 `packages/bridge/data/console-token`。
-
-### 3. 启动 SnowLuma
-
-```bash
-cd packages/bridge
-cp .env.example .env        # 改 VNC_PASSWD
-docker compose -f docker-compose.snowluma.yml up -d
-```
-
-- 扫码桌面：<http://127.0.0.1:6081>
-- SnowLuma WebUI：<http://127.0.0.1:5099>
-- OneBot HTTP/WS：`127.0.0.1:3000` / `127.0.0.1:3001`
-
-首次需要在 WebUI 里登录 QQ、配置 OneBot v11 反向/正向 WS，并把 access token 填进 `config.json` 的 `snowluma.accessToken`（如启用）。
-
-### 4. 安装 DSH preset / MCP
+### 3. 接入 DSH，再启动桥接
 
 ```bash
 node packages/bridge/scripts/setup-dsh.mjs desktop
 ```
 
-- 注册 `qq-chat` / `qq-chat-v2` 两个 agent preset；
-- 注册 `dsh-omni-mode-console`、`dsh-omni-agent-presets` 两个 bundle；
-- 挂 `mcp-snowluma`、`mcp-snowluma-host`、`mcp-web-search-safe` 三个 MCP server。
-
-改完 preset 源（`packages/bridge/dsh/agent-presets/`）后要重跑：
-
-```bash
-node packages/bridge/scripts/build-agent-preset-patches.mjs
-node packages/bridge/scripts/setup-dsh.mjs desktop
-```
-
-### 5. 启动桥接
+安装完成后，**重启 DSH，等它启动好**，再运行：
 
 ```bash
 bash packages/bridge/start-mac.sh
 ```
 
-它会：探测当前 DSH 端口 → 写回 `config.json` → 停旧进程 → 后台启动并写 `data/bridge.pid`。
+脚本会探测 DSH 当前端口并启动桥接。打开 [本地控制台](http://127.0.0.1:3100)，按提示使用 `packages/bridge/data/console-token` 中的令牌，然后在白名单会话里测试聊天。
 
-### 自动跟随 DSH 重启（可选，推荐）
+DSH 桌面版重启后可能更换端口，需要重新运行启动脚本。也可以安装[自动跟随服务](docs/SETUP.md#watchdog)。
 
-DSH 每次重启都会换端口并带走桥接进程。装一个 per-user LaunchAgent，让它每 20 秒校准一次整条服务栈（Docker → SnowLuma 容器 → 桥接）：
+<details>
+<summary>只想先试试控制台？</summary>
 
-```bash
-node packages/bridge/scripts/install-watchdog.mjs
-```
-
-- 不需要 sudo；plist 在 `~/Library/LaunchAgents/com.dogeheng.dsh-omni-bridge.plist`；
-- 登录时自动运行，之后每 20 秒检查一次；
-- DSH 换端口 / 桥接退出时，自动执行 `start-mac.sh`（内部用 detached spawn，不会被 launchd 一起收掉）；
-- Docker 没开就先 `open -a Docker`（最多等 `config.stack.dockerWaitMs`），容器没跑就 `docker start snowluma`；
-- 端口抖动要求连续两次探测一致，且桥接重启有 90 秒冷却，避免 DSH 启动窗口期反复重启；
-- 不想自动管 Docker 就把 `config.json` 的 `stack.docker` 设为 `false`，整段关掉用 `stack.autoStart: false`；
-- `dsh-omni-mode-console` 插件在 DSH 启动时还会主动 kick 一次，把最多 20 秒的空窗压到几秒；
-- 日志：`packages/bridge/data/watchdog.log`；
-- 查看/卸载：
-  ```bash
-  node packages/bridge/scripts/install-watchdog.mjs --status
-  node packages/bridge/scripts/install-watchdog.mjs --uninstall
-  ```
-
-打开控制台：<http://127.0.0.1:3100/>（令牌在 `data/console-token`）。
-
-### 6. 重启 DSH
-
-preset / MCP / bundle 安装后需要重启 DSH 才生效。之后在允许的群或私聊里 @ 机器人即可。
-
-## 可选：launcher、B 站 MCP 与 Seed-VC
-
-`packages/launcher` 和 `packages/bili-mcp` 是标准 DSH bundle，但不是桥接运行的必需项：
-
-- **launcher**：在 DSH 设置页加一个「dsh-omni」入口，一键打开扫码桌面、SnowLuma WebUI、桥接控制台。仓库里的 `client.js` 只有 URL 占位符；安装时由脚本读取本机配置并注入，不会把凭据写进仓库：
-
-  ```bash
-  # 先启动一次桥接，确保 data/console-token 已生成
-  node packages/launcher/scripts/install.mjs
-  ```
-
-  脚本会读取 `packages/bridge/.env` 的 `VNC_PASSWD`、`packages/bridge/data/console-token` 和 `config.json` 的 `consolePort`，把 launcher 复制到 `~/.dsh/plugins/dsh-omni-launcher` 并替换占位符；如果 profile 里还没有，会自动注册。之后刷新 DSH 页面即可。密码/token 改了要重跑一次。
-- **bili-mcp**：把 `dsh-bili-scroll` 安装的只读 Python MCP（`bili_video_info` / `bili_subtitle`）挂成全局 MCP，供 QQ 会话使用。
-  - 先安装 dsh-bili-scroll；
-  - 默认路径是 `~/.dsh/bili-duty`；可用 `DSH_BILI_HOME`、`DSH_BILI_PYTHON`、`DSH_BILI_MCP_SERVER` 覆盖；
-  - 通过 DSH 的插件管理安装这个本地 bundle，或在 profile 的 `cordis.patch.yml` 中插入 `packages/bili-mcp/cordis.patch.yml`。
-
-- **[Seed-VC](https://github.com/Plachtaa/seed-vc)**（可选，唱歌）：15–20 秒零样本换嗓，只从曲库取已分离干声，不跑整首、不在 Mac 上做人声分离。按需启动独立 Python 进程，用完退出；峰值 RSS/超时/可用内存都有硬性守卫。安装、曲库格式和内存策略见 [docs/SINGING.md](docs/SINGING.md)。Seed-VC 是 GPL-3.0，本仓库不 vendor 其代码/权重。
-- **短翻唱**（可选）：`sing_short_cover` 自然语言点歌，本地授权曲库/QQ 音乐/网易云/CC → 自动选段 → Demucs → Seed-VC → 混音 → QQ 语音（付费候选默认拒绝）。检查环境：`npm --prefix packages/bridge run setup:cover`；详见 [docs/SHORT_COVER.md](docs/SHORT_COVER.md)。
-
-## 从 qq-bridge 迁移
-
-仓库自带迁移脚本（**不会**自动执行，确认后再运行）：
+安装 Node 依赖后运行：
 
 ```bash
-# 只预览
-node packages/bridge/scripts/migrate-from-qq-bridge.mjs --dry-run
-
-# 复制 config.json、state/ → data/、roles/、audio/
-node packages/bridge/scripts/migrate-from-qq-bridge.mjs
-
-# 覆盖已有文件（谨慎）
-node packages/bridge/scripts/migrate-from-qq-bridge.mjs --force
+npm --prefix packages/bridge run preview:console
 ```
 
-默认从 `~/Documents/qq-bridge` 读取；可用 `--from` / `--to` 指定。脚本会跳过 `bridge.lock`、`bridge.pid`、`*.log`，避免把旧进程状态带过来。
+访问 <http://127.0.0.1:4173>。这是离线预览：保存只改内存中的示例数据，试发不会连接 QQ，也不需要登录 DSH。
 
-迁移后：
+</details>
 
-1. 检查 `packages/bridge/config.json` 里的绝对路径（语音库、launcher 等）；
-2. 跑一次 `node packages/bridge/scripts/setup-dsh.mjs desktop`；
-3. 重启 DSH；
-4. 用 `bash packages/bridge/start-mac.sh` 启动新桥接。
+<a id="docs"></a>
+## 文档
 
-## 清理测试/一次性工作区
+| 想了解什么 | 入口 |
+| --- | --- |
+| 配置、其他 profile、自动启动、迁移、常见问题 | [安装与维护](docs/SETUP.md) |
+| 控制台分类、参数说明、角色互动 | [控制台界面](docs/CONSOLE_UI.md) |
+| 消息如何在 QQ 与 DSH 之间流转 | [架构](docs/ARCHITECTURE.md) |
+| 语音识别、音色、合成服务与读音修正 | [语音收发](docs/VOICE_IO.md) |
+| 记忆的作用域、检索与提炼 | [长期记忆](docs/MEMORY.md) |
+| macOS 离电时保留哪些能力 | [电源与省电](docs/POWER.md) |
+| 曲库唱歌 / 群内短翻唱 | [唱歌](docs/SINGING.md) · [短翻唱](docs/SHORT_COVER.md) |
+| 限制 Agent 文件读写范围 | [文件工作区](docs/SANDBOX.md) |
 
-probe、preset 测试、表情标注这类一次性会话会在 DSH 里留下临时 workspace。清理命令默认 dry-run，加 `--apply` 才会执行：
+### 开发与验证
+
+运行代码位于 `packages/bridge`；`packages/launcher` 和 `packages/bili-mcp` 是可选的 DSH 集成组件。
 
 ```bash
-# 删除 /tmp 下的 probe/preset/sticker 工作区，并把旧 QQ 工作区改名为 QQ 聊天（旧）
-node packages/bridge/scripts/cleanup-workspaces.mjs --delete-temp --rename-qq --apply
-
-# 删除旧 qq-bridge 路径下的 QQ 黑话学习工作区
-node packages/bridge/scripts/cleanup-workspaces.mjs --delete-obsolete --apply
+npm test
+npm --prefix packages/bridge run test:console-ui
+npm --prefix packages/bridge run test:console-character
 ```
 
-`workspace.delete` 只移除 DSH 的分组注册，**不会删除文件或 Session 日志**；旧 QQ 工作区默认保留为 `QQ 聊天（旧）`，确认不需要历史后再从 UI 删除。
+浏览器检查需要 Playwright 和 Chromium。完整审计有平台与安装环境依赖，已有失败及覆盖范围记录在[验证说明](docs/CONSOLE_UI.md#验证)。修改预设后的构建步骤见[维护文档](docs/SETUP.md#presets)。
 
-## 安全与隐私
+## 数据与访问
 
-- `config.json`、`data/`、`.env`、`audio/` 全部在 `.gitignore` 中，**不要提交**。
-- `data/` 含控制台令牌、OneBot token、全部聊天记录，桥接启动时会收紧目录权限。
-- SnowLuma 的 VNC 密码只放在本地 `.env`；launcher 不会把它写进 URL。
-- B 站 MCP 只读；QQ 侧写操作（发评论/私信/上传）没有授权。
-- 公开仓库不包含个人 QQ 号、Cookie、token 或个人角色卡。
+`config.json`、`.env`、`data/`、`audio/` 留在本机，已加入 `.gitignore`。其中可能包含令牌和聊天记录，请勿上传。控制台及网关默认绑定本机回环地址，聊天范围由白名单控制。
 
-## 常见问题
+账户余额查询仅用于主人私聊，不会带进群聊提示词。语音合成或其他外接服务可能产生费用，是否启用及用量上限由你配置。
 
-**DSH 重启后机器人没反应？**
-DSH 端口会变，桥接进程也可能随 DSH 退出。跑 `bash packages/bridge/start-mac.sh` 重新同步端口并拉起；装了 watchdog 的话它会自动处理（最多 20 秒）。
+## 来源与许可证
 
-**Yuki 发语音时把自己的名字读错？**
-TTS 前端常把英文名按拼音读。`socialV2.speak.pronunciations` 默认把 `Yuki` 替换成 `优key`（读作 you-key）；改这里可覆盖任意词，保存后重启桥接。用 `POST /api/voice/speak {dryRun:true}` 试听时，返回的 `text` 会显示实际朗读文本。
+由 [dogeheng](https://github.com/dogeheng) 维护，采用 [MIT](LICENSE)。这个项目用到了以下开源项目：
 
-**离电后语音 / 唱歌 / 联网搜索用不了，但机器人只说「没电 / 不方便」？**
-这是「运行总览 → 电源与省电」的离电白名单在生效，不是故障；对群友她不会提省电模式、ASR/TTS、工具或参数，只用人话带过。真实原因在控制台电源页、`/api/status` 和日志里。插电会自动解除并恢复思考档位；想立刻验证可以点「模拟离电 / 模拟插电」。读不到电源状态时会全放行。详见 [docs/POWER.md](docs/POWER.md)。
+- [qq-bridge](https://github.com/Derpyu520/qq-bridge)：Derpyu520 与 qq-bridge / QSH contributors，MIT。
+- [dsh-bili-scroll](https://github.com/c1overzz/dsh-bili-scroll)：c1overzz，MIT；其内置的 bilibili-mcp 来自 AGI_Ananas，MIT。
+- [Seed-VC](https://github.com/Plachtaa/seed-vc)：Plachtaa，GPL-3.0。可选组件，通过独立进程调用，代码和权重未打包进本仓库。
 
-**控制台打不开？**
-确认 `consolePort` 没被占用；令牌在 `data/console-token`。
-
-**QQ 工具全部返回「未授权：请提供控制台访问令牌」？**
-MCP 没读到控制台令牌。确认 `packages/bridge/data/console-token` 存在（旧布局 `state/console-token` 也兼容）；升级/改路径后要重启 DSH，让 MCP 进程重新加载。
-
-**B 站卡片没有解析？**
-确认消息是 QQ 小程序卡（`json` 段），且 `b23.tv` 可访问；桥接会缓存短链解析结果 24 小时。
-
-**表情发不出去/变成图片？**
-确认走的是 `qq_send_sticker`（OneBot `send_custom_face`），并检查控制台的表情参数与 `sendProbability`。
-
-## 署名
-
-- **qq-bridge** — Derpyu520 与 qq-bridge / QSH contributors，MIT：<https://github.com/Derpyu520/qq-bridge>
-- **dsh-bili-scroll** — c1overzz，MIT：<https://github.com/c1overzz/dsh-bili-scroll>
-- **bilibili-mcp** — AGI_Ananas，MIT（由 dsh-bili-scroll 内置）
-- **Seed-VC** — Plachtaa，GPL-3.0，零样本歌声转换引擎（本项目只通过独立进程调用，未 vendor 其代码/权重）：<https://github.com/Plachtaa/seed-vc>
-
-本仓库的整合、改动与文档由 dogeheng 维护。
-
-## License
-
-[MIT](LICENSE)。第三方代码/资源的许可证与署名见 [NOTICE.md](NOTICE.md)。
+完整第三方声明见 [NOTICE.md](NOTICE.md)。
