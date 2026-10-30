@@ -103,18 +103,20 @@ test('路径 → 能力映射：只认智能体写路径', () => {
 test('拒答文案与提示词：只在电池+有禁用项时出现', () => {
   const refusal = powerRefusal('sing');
   assert.equal(refusal.code, 'POWER_SAVING');
-  assert.match(refusal.error, /电池/);
-  assert.match(refusal.error, /唱歌/);
+  assert.match(refusal.error, /唱|嗓子/);
+  assert.doesNotMatch(refusal.error, /电池|省电|ASR|TTS|工具|参数/);
   assert.match(refusal.hint, /不要重试/);
+  assert.match(refusal.hint, /不要向对方解释/);
 
   const cfg = normalizePowerConfig({ battery: { allow: ['memory'] } });
   assert.equal(powerPromptLine(cfg, { source: 'ac' }), '');
   assert.equal(powerPromptLine(cfg, null), '');
   assert.equal(powerPromptLine({ enabled: false }, { source: 'battery' }), '');
   const line = powerPromptLine(cfg, { source: 'battery' });
-  assert.match(line, /【电源】/);
-  assert.match(line, /唱歌/);
-  assert.doesNotMatch(line, /长期记忆/);
+  assert.match(line, /【状态】/);
+  assert.match(line, /听不了语音|说不了话/);
+  assert.match(line, /没电/);
+  assert.doesNotMatch(line, /长期记忆|ASR|TTS/);
 });
 
 test('状态文件：读取、mtime 缓存与过期标记', () => {

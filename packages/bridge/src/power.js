@@ -204,26 +204,52 @@ export function powerCapabilityLabel(id) {
   return POWER_CAPABILITIES.find((item) => item.id === id)?.label ?? id;
 }
 
-/** 给模型的拒答文案：一句话、说明原因、给出替代动作，避免它反复重试。 */
+/**
+ * 给模型的拒答文案：给模型看，最终不应原样转述给群友。
+ * 因此这里只给「人的状态」，后台原因留在日志/控制台，避免模型把省电、工具、
+ * 参数这些词直接说给用户听。
+ */
 export function powerRefusal(capability) {
-  const label = powerCapabilityLabel(capability);
+  const human = {
+    voice: '现在说不了话，先打字吧',
+    speak: '现在说不了话，先打字吧',
+    asr: '现在听不太清语音，你打字吧',
+    sing: '今天嗓子不行，唱不了',
+    images: '现在看不了图',
+    sticker: '表情包先不发了',
+    memory: '我现在记性不太好',
+    webSearch: '现在查不了东西',
+  }[capability] || '现在做不了这个';
   return {
     code: 'POWER_SAVING',
     capability,
-    error: `现在使用电池，省电模式已关闭「${label}」`,
-    hint: '不要重试这个工具；用文字正常回复，或告诉对方插电后就可以了。',
+    error: human,
+    hint: '不要重试；不要向对方解释后台原因，用“没电/在外面/嗓子不舒服/听不清”带过，然后继续用文字聊。只有主人明确问技术原因时才解释。',
   };
 }
 
-/** 每轮提示词里的一行电源说明；插电/关闭策略时返回空串（不占 token）。 */
+/**
+ * 每轮提示词里的一行电源说明；插电/关闭策略时返回空串（不占 token）。
+ *
+ * 这里刻意不出现 ASR/TTS/省电策略/工具名：模型看得到「不能做什么」，但被要求
+ * 用人的状态（没电、在外面、嗓子哑了、看不清）向群友解释。真正的技术细节在
+ * /api/status、控制台电源页和日志里，主人问起时再由模型说明。
+ */
 export function powerPromptLine(powerCfg, state) {
   const cfg = normalizePowerConfig(powerCfg);
   if (!cfg.enabled) return '';
   if (!state || state.stale === true || state.source !== 'battery') return '';
   const policy = decidePowerPolicy(cfg, state);
   if (!policy.deny.length) return '';
-  const denied = policy.deny.map(powerCapabilityLabel).join('、');
-  return `【电源】现在用电池，省电模式已关闭：${denied}。需要这些能力时直接说明「现在省电模式关了」，不要调用对应工具。`;
+  const human = [];
+  if (policy.deny.includes('asr')) human.push('听不了语音');
+  if (policy.deny.includes('speak') || policy.deny.includes('voice') || policy.deny.includes('sing')) human.push('说不了话');
+  if (policy.deny.includes('images')) human.push('看不了图');
+  if (policy.deny.includes('webSearch')) human.push('查不了东西');
+  if (policy.deny.includes('sticker')) human.push('发不了表情');
+  if (policy.deny.includes('memory')) human.push('记性不太好');
+  const stateText = human.length ? `你现在没电/在外面，${human.join('、')}，只能打字。` : '你现在没电/在外面，只能打字。';
+  return `【状态】${stateText}有人问就说“我现在没电/不太方便，先打字”；不要解释后台原因。只有主人明确问技术原因时才说明。`;
 }
 
 /** 状态文件（别的进程只读它）。 */

@@ -32,7 +32,7 @@ function loadWebTools({ safeFetch, webSearch, powerAllows = () => true, powerSta
     powerRefusal: (capability) => ({
       code: 'POWER_SAVING',
       capability,
-      error: `现在使用电池，省电模式已关闭「${capability}」`,
+      error: '现在查不了东西',
       hint: '不要重试；用文字回复。',
     }),
   });
@@ -92,7 +92,7 @@ test('离电时联网搜索在调用期被拒，且不发出网络请求', async
   for (const [name, args] of [['web_search', { query: 'fixture' }], ['web_fetch', { url: 'https://example.com/' }]]) {
     const result = await callTool(name, args);
     assert.equal(result.isError, true, name);
-    assert.match(result.content[0].text, /省电模式已关闭/);
+    assert.match(result.content[0].text, /查不了东西|做不了/);
   }
 });
 

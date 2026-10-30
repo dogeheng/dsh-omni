@@ -465,7 +465,8 @@ await test('R17 离电时非白名单工具 403 POWER_SAVING，核心聊天仍�
       assert.equal(images.status, 403, images.body);
       assert.equal(images.json.code, 'POWER_SAVING');
       assert.equal(images.json.capability, 'images');
-      assert.match(images.json.error, /电池/);
+      assert.match(images.json.error, /看不了图|做不了/);
+      assert.doesNotMatch(images.json.error, /电池|省电|ASR|TTS|工具|参数/);
       assert.match(images.json.hint, /不要重试/);
 
       // 核心聊天不被电源策略挡（否则离电 = 机器人失联）

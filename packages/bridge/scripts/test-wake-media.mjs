@@ -86,6 +86,16 @@ test('forceAnyMessage=true 仍覆盖媒体通道', async () => {
   }, { forceAnyMessage: true });
 });
 
+test('唤醒提示词带「后台原因封口」规则', async () => {
+  await withWake(async (h) => {
+    const prompt = h.buildWakePromptV2(`group:${GROUP}`, 'media');
+    assert.match(prompt, /【话术】/);
+    assert.match(prompt, /不要提模型/);
+    assert.match(prompt, /没电/);
+    assert.doesNotMatch(prompt, /省电模式已关闭/);
+  });
+});
+
 test('私聊任何消息都唤醒，不受媒体通道影响', async () => {
   await withWake(async (h) => {
     assert.equal(h.evaluateWakeTriggerV2(`private:${OWNER}`, state(), text('在吗'), 'private', '在吗', '在吗', false), 'private');

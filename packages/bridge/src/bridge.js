@@ -102,6 +102,10 @@ const TOKEN_USAGE_FILE = path.join(STATE_DIR, 'token-usage.jsonl');
 const ACTIVITY_LOG = path.join(STATE_DIR, 'qq-activity.log');
 const BRIDGE_LOG = path.join(STATE_DIR, 'bridge.log');
 
+// 对群友/非主人的「后台原因封口」：模型可以知道能力受限，但不应把模型、工具、
+// 省电、ASR/TTS、限频、配额、记忆库这些词原样说出去。主人明确问技术原因时例外。
+const FACADE_PROMPT_LINE = '【话术】对群友/非主人，不要提模型、提示词、工具、MCP、API、token、上下文、桥接、DSH、ASR/TTS、省电策略、电量、限频、配额、记忆库、报错或参数；能力受限就用“没电/在外面/嗓子哑了/听不清/卡了一下/想不起来”带过，不要原样念工具报错。只有主人明确问技术原因时才解释；群聊里也尽量一句人话带过。';
+
 /**
  * 模式拼写的**唯一**归一入口（输入边界）。
  *
@@ -11319,7 +11323,7 @@ async function main() {
     // 插电时 powerPromptLine() 返回空串，不占 token。
     const role = roleHintForMode('v1');
     const power = powerPromptLine(cfg.power, powerMonitor?.state?.() ?? null);
-    return [role, power].filter(Boolean).join('\n\n');
+    return [role, power, FACADE_PROMPT_LINE].filter(Boolean).join('\n\n');
   }
 
   // 二代仿真模式专用角色提示：去掉一代的 [SILENT] / 空格分句等状态机指令，避免与工具协议冲突。
@@ -12091,6 +12095,7 @@ async function main() {
     const participationText = formatParticipationV2(st);
     const participationLine = participationText ? `${participationText}\n\n` : '';
     const antiAiLine = '【反AI味】你不是客服：不用有求必应，可以装傻、已读乱回、拒绝推荐；少用“一绝/真管用/保证/绝对”这类词。\n\n';
+    const facadeLine = `${FACADE_PROMPT_LINE}\n\n`;
     const stickerCfg = cfg.socialV2?.sticker ?? {};
     const stickerLine = stickerCfg.enabled !== false && stickerCfg.includeInPrompt !== false
       ? `${buildStickerStrategyHint()}\n${buildStickerContext(stickerEntries, stickerCfg.promptMaxStickers ?? 8)}\n\n`
@@ -12141,7 +12146,7 @@ async function main() {
     const freshLine = st.lastIdleRetireAt && Date.now() - Number(st.lastIdleRetireAt) < 10 * 60 * 1000
       ? '【会话已刷新】上一段对话因空闲已归档；你的长期记忆与最近消息仍在，不要追问“刚才聊到哪”，直接按当前消息自然接话。\n\n'
       : '';
-    const base = roleLine + identityLine + tokenLine + freshLine + initialPromptLine + antiAiLine + proactiveLine + stickerLine + speakLine + singLine + replyLine + statusLine + wakeLine + memoryLine + participationLine + preSleepLine;
+    const base = roleLine + identityLine + tokenLine + freshLine + initialPromptLine + antiAiLine + facadeLine + proactiveLine + stickerLine + speakLine + singLine + replyLine + statusLine + wakeLine + memoryLine + participationLine + preSleepLine;
     if (reason === 'bootstrap') {
       return `${base}【引导唤醒】你已接入 QQ 会话 ${key}。\n当前是二代仿真模式：你的文本输出不会自动发送到 QQ，所有发言必须通过工具完成。\n请先调用 qq_get_prompt 查看角色、推荐值、可用工具和状态；有待回应的消息先按首回复节奏处理，最后才用 qq_set_wake_config 设置你希望如何被唤醒。`;
     }
@@ -12170,7 +12175,7 @@ async function main() {
     const st = getSocialV2State(key);
     const tokenLine = `【会话令牌】${st.agentToken}（调用二代状态工具时请在参数中带上此令牌）\n\n`;
     const preSleepMs = Math.max(0, Number(cfg.socialV2?.wake?.preSleepWaitMs) || 300000);
-    return `${roleLine}${identityLine}${tokenLine}【提醒】你还没有完成回合收尾。请调用 qq_set_wake_config 设置下一次唤醒条件（例如继续潜水多久、@/名字/关键词/提问/概率/指定成员等），或者调用 qq_mark_read 表示你看过且决定不接。这是为了防止你忘记收尾后进入“永眠”。注意：设置潜水前先用 qq_wait_for_messages(timeoutMs=${preSleepMs}) 完成沉睡前观察；等待期间有人说话时查看 newMessages，判断不需要你参与即可收尾。`;
+    return `${roleLine}${identityLine}${tokenLine}${FACADE_PROMPT_LINE}\n\n【提醒】你还没有完成回合收尾。请调用 qq_set_wake_config 设置下一次唤醒条件（例如继续潜水多久、@/名字/关键词/提问/概率/指定成员等），或者调用 qq_mark_read 表示你看过且决定不接。这是为了防止你忘记收尾后进入“永眠”。注意：设置潜水前先用 qq_wait_for_messages(timeoutMs=${preSleepMs}) 完成沉睡前观察；等待期间有人说话时查看 newMessages，判断不需要你参与即可收尾。`;
   }
 
   async function sendWakePromptV2(key, reason) {
