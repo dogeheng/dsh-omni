@@ -117,6 +117,15 @@ test('拒答文案与提示词：只在电池+有禁用项时出现', () => {
   assert.match(line, /听不了语音|说不了话/);
   assert.match(line, /没电/);
   assert.doesNotMatch(line, /长期记忆|ASR|TTS/);
+
+  // 只禁唱歌别说成「只能打字」；只禁 ASR 时让她请对方打字，但自己仍能发语音。
+  const onlySing = powerPromptLine(normalizePowerConfig({ battery: { allow: ['voice', 'speak', 'asr', 'images', 'sticker', 'memory', 'webSearch'] } }), { source: 'battery' });
+  assert.match(onlySing, /唱不了歌/);
+  assert.doesNotMatch(onlySing, /只能打字/);
+  const onlyAsr = powerPromptLine(normalizePowerConfig({ battery: { allow: ['voice', 'speak', 'images', 'sticker', 'memory', 'webSearch'] } }), { source: 'battery' });
+  assert.match(onlyAsr, /听不了语音/);
+  assert.match(onlyAsr, /让他们打字/);
+  assert.doesNotMatch(onlyAsr, /说不了话/);
 });
 
 test('状态文件：读取、mtime 缓存与过期标记', () => {

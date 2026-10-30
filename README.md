@@ -254,8 +254,8 @@ node packages/bridge/scripts/cleanup-workspaces.mjs --delete-obsolete --apply
 **DSH 重启后机器人没反应？**
 DSH 端口会变，桥接进程也可能随 DSH 退出。跑 `bash packages/bridge/start-mac.sh` 重新同步端口并拉起；装了 watchdog 的话它会自动处理（最多 20 秒）。
 
-**离电后语音 / 唱歌 / 联网搜索都提示「省电模式已关闭」？**
-这是「运行总览 → 电源与省电」的离电白名单在生效，不是故障。插电会自动解除并恢复思考档位；想立刻验证可以点「模拟离电 / 模拟插电」。读不到电源状态时会全放行。详见 [docs/POWER.md](docs/POWER.md)。
+**离电后语音 / 唱歌 / 联网搜索用不了，但机器人只说「没电 / 不方便」？**
+这是「运行总览 → 电源与省电」的离电白名单在生效，不是故障；对群友她不会提省电模式、ASR/TTS、工具或参数，只用人话带过。真实原因在控制台电源页、`/api/status` 和日志里。插电会自动解除并恢复思考档位；想立刻验证可以点「模拟离电 / 模拟插电」。读不到电源状态时会全放行。详见 [docs/POWER.md](docs/POWER.md)。
 
 **控制台打不开？**
 确认 `consolePort` 没被占用；令牌在 `data/console-token`。

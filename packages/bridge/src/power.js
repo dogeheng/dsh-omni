@@ -242,13 +242,21 @@ export function powerPromptLine(powerCfg, state) {
   const policy = decidePowerPolicy(cfg, state);
   if (!policy.deny.length) return '';
   const human = [];
-  if (policy.deny.includes('asr')) human.push('听不了语音');
-  if (policy.deny.includes('speak') || policy.deny.includes('voice') || policy.deny.includes('sing')) human.push('说不了话');
+  const noHear = policy.deny.includes('asr');
+  const noSpeak = policy.deny.includes('speak') || policy.deny.includes('voice');
+  if (noHear) human.push('听不了语音');
+  if (noSpeak) human.push('说不了话');
+  else if (policy.deny.includes('sing')) human.push('唱不了歌');
   if (policy.deny.includes('images')) human.push('看不了图');
   if (policy.deny.includes('webSearch')) human.push('查不了东西');
   if (policy.deny.includes('sticker')) human.push('发不了表情');
   if (policy.deny.includes('memory')) human.push('记性不太好');
-  const stateText = human.length ? `你现在没电/在外面，${human.join('、')}，只能打字。` : '你现在没电/在外面，只能打字。';
+  let stateText = '你现在没电/在外面';
+  if (human.length) stateText += `，${human.join('、')}`;
+  else stateText += '，只能打字';
+  if (noHear && !noSpeak) stateText += '，别人发语音你听不清，让他们打字';
+  if (noSpeak) stateText += '，只能打字';
+  stateText += '。';
   return `【状态】${stateText}有人问就说“我现在没电/不太方便，先打字”；不要解释后台原因。只有主人明确问技术原因时才说明。`;
 }
 
