@@ -12205,7 +12205,7 @@ async function main() {
     const statusLine = `【此刻状态】${statusBits.join('；')}\n\n`;
     // 只给主人私聊：余额是账户信息，不给群聊/其他人。主人在群里问时先私聊或说“回头私聊”。
     const accountLine = key === `private:${cfg.ownerQQ}`
-      ? '【账户】主人问“还有多少钱/余额”时，可以调用 qq_get_balance，或 qq_get_prompt 查看 account；不要把余额、账户或付费信息告诉其他人。\n\n'
+      ? '【账户】主人问“还有多少钱/余额”时，调用 qq_get_prompt 查看 account；不要把余额、账户或付费信息告诉其他人。\n\n'
       : '';
     const wc = st.wakeConfig || {};
     const wcTr = wc.triggers || {};
