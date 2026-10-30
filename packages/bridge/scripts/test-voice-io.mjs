@@ -11,7 +11,7 @@ import path from 'node:path';
 import { createRequire } from 'node:module';
 import { fileURLToPath } from 'node:url';
 import {
-  autoSpeakable, createTtsService, normalizeSpeakConfig, prepareSpeechText, redactSpeakConfig,
+  applyPronunciations, autoSpeakable, createTtsService, normalizeSpeakConfig, prepareSpeechText, redactSpeakConfig,
   sniffAudio, spokenChars, trimWavSilence, wavInfo
 } from '../src/voice-tts.js';
 import {
@@ -101,6 +101,10 @@ await test('默认关闭；非法值收敛；密钥脱敏', () => {
   assert.equal(n.provider, 'cosyvoice');
   assert.equal(n.maxChars, 500);
   assert.equal(n.autoConvert.probability, 1);
+  assert.equal(d.pronunciations.Yuki, '优key');
+  assert.equal(applyPronunciations('我是Yuki，YUKI和Yukiko', d.pronunciations), '我是优key，优key和Yukiko');
+  const custom = normalizeSpeakConfig({ pronunciations: { Yuki: 'Youkey' } });
+  assert.equal(custom.pronunciations.Yuki, 'Youkey');
   const r = redactSpeakConfig({ mimo: { apiKey: 'sk-secret' } });
   assert.equal(r.mimo.apiKey, '********');
   assert.equal(r.mimo.apiKeySet, true);
@@ -149,6 +153,15 @@ await test('MiMo：预置音色 + 风格指令放 user + 文本放 assistant', a
   assert.equal(r.ext, 'wav');
   assert.ok(r.seconds > 1.1 && r.seconds < 1.3);
 });
+await test('TTS 发音替换：Yuki 读作 you-key', async () => {
+  const f = fakeFetch(() => new Response(JSON.stringify({ choices: [{ message: { audio: { data: wav.toString('base64') } } }] }), { status: 200 }));
+  const tts = createTtsService({ getConfig: () => ({ provider: 'mimo', mimo: { apiKey: 'k' } }), root: tmpRoot, fetchImpl: f });
+  await tts.synthesize('我是Yuki，YUKI。');
+  const text = f.calls[0].body.messages[1].content;
+  assert.match(text, /优key/);
+  assert.doesNotMatch(text, /Yuki/i);
+});
+
 await test('MiMo：style=唱歌 自动加 (唱歌) 标签；voiceDesign/clone 明确拒绝', async () => {
   const f = fakeFetch(() => new Response(JSON.stringify({ choices: [{ message: { audio: { data: wav.toString('base64') } } }] }), { status: 200 }));
   const tts = createTtsService({ getConfig: () => ({ provider: 'mimo', mimo: { apiKey: 'k' } }), root: tmpRoot, fetchImpl: f });

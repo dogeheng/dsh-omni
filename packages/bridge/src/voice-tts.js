@@ -58,6 +58,9 @@ export const SPEAK_DEFAULTS = Object.freeze({
   dailyCharBudget: 0,          // 每日合成字数上限（0=不限）；按量计费的服务商用它兜底成本
   trimSilence: true,
   allowEmotion: true,
+  // 发音替换：TTS 前端经常把英文名按中文拼音/字母读错。键不区分大小写，
+  // 只替换独立单词（不会把 Yukiko 里的 Yuki 换掉）。
+  pronunciations: Object.freeze({ Yuki: '优key' }),
   // 随机把短句文字改成语音发出（MaiBot 生态 random_llm 模式；AstrBot 的 trigger_probability）
   autoConvert: Object.freeze({
     enabled: false,
@@ -158,6 +161,15 @@ export function normalizeSpeakConfig(raw = {}) {
     dailyCharBudget: num(r.dailyCharBudget, D.dailyCharBudget, { min: 0, max: 10_000_000, int: true }),
     trimSilence: r.trimSilence !== false,
     allowEmotion: r.allowEmotion !== false,
+    pronunciations: (() => {
+      const merged = { ...D.pronunciations };
+      for (const [key, value] of Object.entries(obj(r.pronunciations))) {
+        const k = String(key ?? '').trim();
+        const v = String(value ?? '').trim();
+        if (k && v && k.length <= 40 && v.length <= 40) merged[k] = v;
+      }
+      return merged;
+    })(),
     autoConvert: {
       enabled: a.enabled === true,
       probability: num(a.probability, D.autoConvert.probability, { min: 0, max: 1 }),
@@ -377,6 +389,23 @@ function ensureTerminal(text) {
  * @returns {{ text: string, ok: boolean, reason?: string, styleTags: string[], notes: string[], chars: number }}
  *   chars 是去掉括号标签后真正会念出来的字数（限长与计费都按它算）。
  */
+/** 按独立单词做发音替换；键不区分大小写，长键优先（如 "Yuki" 先于 "Yu"）。 */
+export function applyPronunciations(text, pronunciations = {}) {
+  let out = String(text ?? '');
+  const entries = Object.entries(pronunciations ?? {})
+    .filter(([key, value]) => key && value)
+    .sort((a, b) => String(b[0]).length - String(a[0]).length);
+  for (const [key, value] of entries) {
+    const escaped = String(key).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    try {
+      out = out.replace(new RegExp(`(?<![A-Za-z])${escaped}(?![A-Za-z])`, 'gi'), String(value));
+    } catch {
+      // 非法正则键（理论上不会）直接跳过，绝不让 TTS 因配置写坏而崩。
+    }
+  }
+  return out;
+}
+
 export function prepareSpeechText(raw, { keepTags = true, foldEllipsis = true, punctuationLimit = 30, emotionTag = '' } = {}) {
   const notes = [];
   let s = String(raw ?? '');
@@ -861,8 +890,12 @@ export function createTtsService({ getConfig, root, log = () => {}, fetchImpl = 
     const keepTags = provider === 'mimo';
     const emo = cfg.allowEmotion ? normalizeEmotion(emotion) : '';
     const emotionTag = keepTags && emo ? (MIMO_EMOTION[emo] ?? emo) : '';
-    const prepared = prepareSpeechText(rawText, { keepTags, emotionTag });
+    let prepared = prepareSpeechText(rawText, { keepTags, emotionTag });
     if (!prepared.ok) throw new Error(prepared.reason);
+    const pronounced = applyPronunciations(prepared.text, cfg.pronunciations);
+    if (pronounced !== prepared.text) {
+      prepared = { ...prepared, text: pronounced, chars: spokenChars(pronounced) };
+    }
     const limit = maxChars ?? cfg.maxChars;
     if (prepared.chars > limit) throw new Error(`这句太长了（${prepared.chars} 字，语音最多 ${limit} 字）；长内容请打字`);
     budgetCheck(cfg, prepared.chars);

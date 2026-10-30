@@ -374,6 +374,9 @@
         "sampleRate": 24000,
         "instruction": "",
         "timeoutMs": 30000
+      },
+      "pronunciations": {
+        "Yuki": "优key"
       }
     },
     "singing": {

@@ -256,6 +256,9 @@ node packages/bridge/scripts/cleanup-workspaces.mjs --delete-obsolete --apply
 **DSH 重启后机器人没反应？**
 DSH 端口会变，桥接进程也可能随 DSH 退出。跑 `bash packages/bridge/start-mac.sh` 重新同步端口并拉起；装了 watchdog 的话它会自动处理（最多 20 秒）。
 
+**Yuki 发语音时把自己的名字读错？**
+TTS 前端常把英文名按拼音读。`socialV2.speak.pronunciations` 默认把 `Yuki` 替换成 `优key`（读作 you-key）；改这里可覆盖任意词，保存后重启桥接。用 `POST /api/voice/speak {dryRun:true}` 试听时，返回的 `text` 会显示实际朗读文本。
+
 **离电后语音 / 唱歌 / 联网搜索用不了，但机器人只说「没电 / 不方便」？**
 这是「运行总览 → 电源与省电」的离电白名单在生效，不是故障；对群友她不会提省电模式、ASR/TTS、工具或参数，只用人话带过。真实原因在控制台电源页、`/api/status` 和日志里。插电会自动解除并恢复思考档位；想立刻验证可以点「模拟离电 / 模拟插电」。读不到电源状态时会全放行。详见 [docs/POWER.md](docs/POWER.md)。
 
