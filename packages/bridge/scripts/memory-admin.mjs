@@ -3,6 +3,8 @@
 //
 // 用法（在 packages/bridge 下）：
 //   node scripts/memory-admin.mjs status
+//   node scripts/memory-admin.mjs list [--kind fact] [--scope group] [--status active] [--q 龙虾] [--limit 50]
+//   node scripts/memory-admin.mjs show --id 20
 //   node scripts/memory-admin.mjs migrate [--force]
 //   node scripts/memory-admin.mjs verify
 //   node scripts/memory-admin.mjs rollback
@@ -62,6 +64,49 @@ function open({ required = true, create = false } = {}) {
 
 function print(obj) {
   console.log(JSON.stringify(obj, null, 2));
+}
+
+/** 列出记忆内容（控制台没有长期记忆页面时的查看入口）。 */
+function listMemories() {
+  const store = open();
+  const kind = flag('kind');
+  const scope = flag('scope');
+  const status = flag('status') || 'active';
+  const q = typeof flag('q') === 'string' ? String(flag('q')).trim() : '';
+  const limit = Math.min(500, Math.max(1, Number(flag('limit')) || 50));
+  const params = [cfg.personaId, status];
+  let sql = 'SELECT * FROM memories WHERE persona_id = ? AND status = ?';
+  if (kind) { sql += ' AND kind = ?'; params.push(kind); }
+  if (scope) { sql += ' AND scope = ?'; params.push(scope); }
+  sql += ' ORDER BY updated_at DESC LIMIT ?';
+  params.push(limit);
+  let rows = store.db.prepare(sql).all(...params);
+  if (q) {
+    const needle = q.toLowerCase();
+    rows = rows.filter((row) => String(row.content).toLowerCase().includes(needle)
+      || String(row.subject_label ?? '').toLowerCase().includes(needle));
+  }
+  if (args.includes('--json')) {
+    print({ count: rows.length, memories: rows });
+  } else {
+    console.log(`# ${rows.length} 条（status=${status}${kind ? `, kind=${kind}` : ''}${scope ? `, scope=${scope}` : ''}${q ? `, q=${q}` : ''}）`);
+    for (const row of rows) {
+      const when = new Date(Number(row.updated_at)).toLocaleString('zh-CN', { hour12: false });
+      const who = row.subject_label ? `${row.subject_label}(${row.subject_id ?? '-'})` : (row.subject_id ?? '-');
+      const key = row.scope_key ? `${row.scope}:${row.scope_key}` : row.scope;
+      console.log(`#${row.id}\t${when}\t[${row.kind}/${key}]\t${who}\t${String(row.content).replace(/\n/g, ' ').slice(0, 140)}${row.superseded_by ? `\t(superseded_by=${row.superseded_by})` : ''}`);
+    }
+  }
+  store.close();
+}
+
+function showMemory() {
+  const id = Number(flag('id'));
+  if (!Number.isInteger(id) || id <= 0) { console.error('需要 --id <数字>'); process.exit(1); }
+  const store = open();
+  const row = store.getMemory(id);
+  print(row ?? { ok: false, error: `没有 id=${id}` });
+  store.close();
 }
 
 function status() {
@@ -163,12 +208,14 @@ function forget() {
 
 switch (command) {
   case 'status': status(); break;
+  case 'list': listMemories(); break;
+  case 'show': showMemory(); break;
   case 'migrate': migrate(); break;
   case 'verify': verify(); break;
   case 'rollback': rollback(); break;
   case 'backup': backup(); break;
   case 'forget': forget(); break;
   default:
-    console.error(`未知命令：${command}\n可用：status | migrate | verify | rollback | backup | forget`);
+    console.error(`未知命令：${command}\n可用：status | list | show | migrate | verify | rollback | backup | forget`);
     process.exit(1);
 }
