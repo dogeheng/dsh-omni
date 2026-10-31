@@ -3,7 +3,7 @@
  * Coordinates use the 1024 × 1536 body drawing. Atlas rectangles only sample the
  * generated texture; the original PNG assets are retained unchanged.
  */
-window.createCompanionRig = function ({ host, stage, fallback, onReaction }) {
+window.createCompanionRig = function ({ host, stage, fallback, onReaction, assetBase = '/console-assets', assetExtension = 'png' }) {
   const canvas = document.createElement('canvas');
   canvas.className = 'companion-canvas'; canvas.setAttribute('aria-hidden', 'true');
   canvas.hidden = true; host.prepend(canvas);
@@ -13,8 +13,10 @@ window.createCompanionRig = function ({ host, stage, fallback, onReaction }) {
   const parts = {
     upperLeft: { rect: [164, 22, 284, 413], root: [330, 115], tip: [300, 405] },
     upperRight: { rect: [614, 22, 287, 413], root: [725, 115], tip: [755, 405] },
-    lowerLeft: { rect: [178, 557, 233, 439], root: [292, 605], tip: [292, 883] },
-    lowerRight: { rect: [645, 557, 234, 439], root: [756, 605], tip: [756, 883] },
+    lowerLeft: { rect: [178, 557, 233, 282], root: [292, 605], tip: [292, 832] },
+    lowerRight: { rect: [645, 557, 234, 282], root: [756, 605], tip: [756, 832] },
+    handLeft: { rect: [178, 818, 233, 178], root: [292, 832], tip: [292, 927] },
+    handRight: { rect: [645, 818, 234, 178], root: [756, 832], tip: [756, 927] },
     earLeft: { rect: [1052, 182, 439, 273], root: [1434, 255], tip: [1070, 255] },
     earRight: { rect: [1060, 670, 449, 274], root: [1124, 752], tip: [1490, 752] },
   };
@@ -31,6 +33,14 @@ window.createCompanionRig = function ({ host, stage, fallback, onReaction }) {
   };
   const values = { ...Object.fromEntries(Object.keys(gestures).map(key => [key, 0])), lookX: 0, lookY: 0 };
   const velocity = Object.fromEntries(Object.keys(values).map(key => [key, 0]));
+  const radians = degrees => degrees * Math.PI / 180;
+  // Angles are mirrored around the torso, measured from a hanging upper arm.
+  // Signed elbow angles describe the frontal projection of an inward/outward
+  // arm plane; their magnitude is always limited to normal elbow flexion.
+  const jointLimits = { shoulder: [-25, 165], elbow: [-145, 145], wrist: [-25, 25] };
+  const armLengths = { upper: 140, forearm: 135, hand: 56.5 };
+  const neutralArm = [8, 10, -5];
+  const lastJoints = {};
   let ready = false, visible = false, inViewport = true, paused = false, greeted = false;
   let frame = 0, previousTime = 0, elapsed = 0, lastPaint = 0, hoverAction = '', playAction = '', playUntil = 0;
   let pointer = { x: 0, y: 0 }, body, atlas, expression, destroyed = false;
@@ -50,19 +60,24 @@ window.createCompanionRig = function ({ host, stage, fallback, onReaction }) {
     ctx.drawImage(atlas, sx, sy, sw, sh, sx - part.root[0], sy - part.root[1], sw, sh);
     ctx.restore();
   }
-  function arm(side, target) {
+  function arm(side, angles) {
     const left = side === 'Left';
     const root = { x: left ? 352 : 674, y: 795 };
-    const upper = 145, lower = 190;
-    const dx = target.x - root.x, dy = target.y - root.y;
-    const distance = clamp(Math.hypot(dx, dy), 20, upper + lower - 1);
-    const axis = Math.atan2(dy, dx);
-    const bend = Math.acos(clamp((upper * upper + distance * distance - lower * lower) / (2 * upper * distance), -1, 1));
-    const angle = axis + (left ? -1 : 1) * bend;
-    const elbow = { x: root.x + Math.cos(angle) * upper, y: root.y + Math.sin(angle) * upper };
-    const palm = { x: root.x + Math.cos(axis) * distance, y: root.y + Math.sin(axis) * distance };
+    const shoulder = clamp(angles[0], ...jointLimits.shoulder);
+    const flexion = clamp(angles[1], ...jointLimits.elbow);
+    const wristAngle = clamp(angles[2], ...jointLimits.wrist);
+    const direction = left ? -1 : 1;
+    const endpoint = (origin, length, degrees) => ({
+      x: origin.x + direction * Math.sin(radians(degrees)) * length,
+      y: origin.y + Math.cos(radians(degrees)) * length,
+    });
+    const elbow = endpoint(root, armLengths.upper, shoulder);
+    const wrist = endpoint(elbow, armLengths.forearm, shoulder + flexion);
+    const palm = endpoint(wrist, armLengths.hand, shoulder + flexion + wristAngle);
     texture('upper' + side, root, elbow);
-    texture('lower' + side, elbow, palm);
+    texture('lower' + side, elbow, wrist);
+    texture('hand' + side, wrist, palm);
+    lastJoints[side] = { shoulder, flexion, wristAngle, root, elbow, wrist, palm };
   }
   function ear(left, amount, seconds) {
     const root = { x: left ? 210 : 813, y: 423 };
@@ -80,13 +95,16 @@ window.createCompanionRig = function ({ host, stage, fallback, onReaction }) {
     ctx.setTransform(scale, 0, 0, scale, 0, 0);
     const breath = paused ? 0 : Math.sin(seconds * 2.05) * 3;
     // A small lean accompanies the gesture; hands and ears remain separate joints.
-    const bounce = -values.cheer * Math.abs(Math.sin(seconds * 5)) * 18;
-    ctx.translate(512 + values.lookX * 8, 1310 + breath + values.lookY * 4 + bounce);
-    ctx.rotate(values.lookX * .015 - values.cover * .025 + values.wave * .018
-      - values.pat * .055 + values.think * .04 - values.heart * .025 + values.yawn * .025);
+    // Keep the painted legs and feet planted. Only the torso leans/breathes;
+    // a small overlap under the skirt hides the waist boundary.
+    ctx.drawImage(body, 0, 1260, 1024, 276, 0, 1260, 1024, 276);
+    ctx.save();
+    ctx.translate(512 + values.lookX * 5, 1275 + breath + values.lookY * 2);
+    ctx.rotate(values.lookX * .01 - values.cover * .015 + values.wave * .012
+      - values.pat * .025 + values.think * .02 - values.heart * .015 + values.yawn * .015);
     ctx.scale(1, 1 + (paused ? 0 : Math.sin(seconds * 2.05) * .002));
-    ctx.translate(-512, -1310);
-    ctx.drawImage(body, 0, 0, 1024, 1536);
+    ctx.translate(-512, -1275);
+    ctx.drawImage(body, 0, 0, 1024, 1285, 0, 0, 1024, 1285);
     // Expressions are independent texture regions; the rest of the drawing never swaps frames.
     if (expression) {
       const phase = seconds - blinkStart;
@@ -109,25 +127,25 @@ window.createCompanionRig = function ({ host, stage, fallback, onReaction }) {
     }
     const earMotion = Math.max(values.ears, values.cheer * .45);
     ear(true, earMotion, seconds); ear(false, earMotion, seconds);
-    const waveCycle = Math.sin(seconds * 11.5);
+    const waveCycle = Math.sin(seconds * 6);
     const targets = {
-      wave: [[219, 1020], [818 + waveCycle * 38, 525 + Math.cos(seconds * 11.5) * 9]],
-      cover: [[399, 550], [604, 548]],
-      pat: [[240, 985], [720, 670]],
-      speak: [[240, 980], [795, 765 + Math.sin(seconds * 4) * 12]],
-      heart: [[450, 850], [575, 850]],
-      think: [[290, 1000], [620, 670]],
-      cheer: [[190 + waveCycle * 16, 560], [835 - waveCycle * 16, 560]],
-      yawn: [[495, 646], [810, 1070]],
+      wave: [neutralArm, [116, 68, waveCycle * 14]],
+      cover: [[148, 80, -5], [148, 80, -5]],
+      pat: [neutralArm, [115, 107, -8]],
+      speak: [neutralArm, [15, 140 + Math.sin(seconds * 3) * 3, -10]],
+      heart: [[25, -130, 8], [25, -130, 8]],
+      think: [neutralArm, [98, 145, -8]],
+      cheer: [[125, 48, -6], [125, 48, -6]],
+      yawn: [[158, 105, 0], neutralArm],
     };
-    for (const [index, side, restX] of [[0, 'Left', 219], [1, 'Right', 805]]) {
-      const palm = { x: restX, y: 1020 };
+    for (const [index, side] of [[0, 'Left'], [1, 'Right']]) {
+      const angles = [...neutralArm];
       for (const [key, target] of Object.entries(targets)) {
-        palm.x += values[key] * (target[index][0] - restX);
-        palm.y += values[key] * (target[index][1] - 1020);
+        for (let joint = 0; joint < 3; joint++) angles[joint] += values[key] * (target[index][joint] - neutralArm[joint]);
       }
-      arm(side, palm);
+      arm(side, angles);
     }
+    ctx.restore();
   }
   function resize() {
     const rect = host.getBoundingClientRect();
@@ -185,7 +203,8 @@ window.createCompanionRig = function ({ host, stage, fallback, onReaction }) {
   const load = src => new Promise((resolve, reject) => {
     const image = new Image(); image.onload = () => resolve(image); image.onerror = () => reject(new Error('Character texture unavailable')); image.src = src;
   });
-  Promise.all([load('/console-assets/mascot-body.png'), load('/console-assets/mascot-parts.png'), load('/console-assets/mascot-expression.png').catch(() => null)]).then(images => {
+  const asset = name => `${assetBase}/${name}.${assetExtension}`;
+  Promise.all([load(asset('mascot-body')), load(asset('mascot-parts')), load(asset('mascot-expression')).catch(() => null)]).then(images => {
     if (destroyed) return;
     [body, atlas, expression] = images; ready = true; resize(); paint(0);
     stage.dataset.expressionsReady = expression ? 'ready' : 'unavailable';
@@ -193,6 +212,13 @@ window.createCompanionRig = function ({ host, stage, fallback, onReaction }) {
     resume();
   }).catch(() => { stage.dataset.rigReady = 'fallback'; canvas.hidden = true; fallback.hidden = false; });
   return {
+    capture(seconds, pose = 'wave', amount = 1) {
+      stop(); paused = true;
+      for (const key of Object.keys(values)) { values[key] = 0; velocity[key] = 0; }
+      if (pose in gestures) values[pose] = clamp(amount, 0, 1);
+      paint(seconds);
+    },
+    inspectPose() { return { lengths: { ...armLengths }, limits: jointLimits, joints: structuredClone(lastJoints) }; },
     hover(action) { if (paused || (action && !gestures[action])) return; hoverAction = action; playAction = ''; resume(); },
     play(action) { if (paused || !ready || !gestures[action]) return; hoverAction = ''; playAction = action; playUntil = elapsed + gestures[action].duration; resume(); },
     look(x, y) { pointer = { x: clamp(x, -1, 1), y: clamp(y, -1, 1) }; resume(); },
