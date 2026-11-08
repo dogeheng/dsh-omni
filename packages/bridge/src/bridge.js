@@ -52,6 +52,7 @@ import { resolvePriceTable } from './model-prices.js';
 import { createTokenLedger } from './token-ledger.js';
 import { createInbox } from './inbox.js';
 import { createOutbox } from './outbox.js';
+import { createRelay } from './relay/index.js';
 import { extractReplyTargetId, resolveThreadId, threadSlice, THREAD_LIMIT, THREAD_WINDOW_MS } from './thread.js';
 import {
   loadSlang,
@@ -755,6 +756,16 @@ function loadConfig() {
     questionTimeoutMs: file.questionTimeoutMs ?? 5 * 60 * 1000,
     consolePort: file.consolePort ?? 3100,
     consoleToken: file.consoleToken ?? '',
+    // 外部应用中继：本机程序 → QQ → 你的回答 → 本机程序。
+    // 默认只发主人私聊；要发群必须在控制台显式改成群并填群号（不会从消息里猜）。
+    relay: {
+      enabled: file.relay?.enabled !== false,
+      target: {
+        mode: file.relay?.target?.mode === 'group' ? 'group' : 'private',
+        groupId: String(file.relay?.target?.groupId ?? '')
+      },
+      defaultTimeoutSec: Number(file.relay?.defaultTimeoutSec) > 0 ? Number(file.relay.defaultTimeoutSec) : 1800
+    },
     // 价目表覆盖项（可选）。留空即用 src/model-prices.js 的官方默认价。
     pricing: file.pricing ?? null,
     security: {
@@ -3244,6 +3255,7 @@ async function main() {
   // 但 DSH 0.1.5 已不存在该 preset，硬编码会让 closed-agent 模式永远挂不上 preset。
   let dshPresetIds = [];        // 当前 DSH 可用的 preset id 列表（agentPresets/list）
   let dshDefaultPreset = '';    // DSH settings `agent-presets.default`，取不到时用列表里的 isDefault
+  let relay = null; // 外部应用中继（bot 就绪后创建；见 createRelay）
   const queued = new Map(); // key -> { promptText }[]
   const queuedHintAt = new Map(); // key -> timestamp（冷却提示）
   const QUEUE_MAX = 50;
@@ -4085,6 +4097,103 @@ async function main() {
     return { ...base, enabled: on, ...(on && base.engine === 'off' ? { engine: 'sensevoice' } : {}) };
   }
 
+  /**
+   * 外部应用中继的应用侧 API（/api/relay/*）。
+   *
+   * 鉴权用每应用独立令牌（data/relay/apps.json 里只存 hash），和控制台的
+   * 「管理端全权」彻底分开：拿到中继令牌只能发/查自己的请求，碰不到会话、配置、白名单。
+   */
+  async function handleRelayApi(req, res, url, { readBody, sendJson }) {
+    const auth = String(req.headers.authorization ?? '').replace(/^Bearer\s+/i, '').trim()
+      || String(req.headers['x-relay-token'] ?? '').trim();
+    if (!auth) { sendJson({ ok: false, error: '未授权：请提供中继应用令牌（Authorization: Bearer <token>）' }, 401); return; }
+    const app = relay?.verify(auth);
+    if (!app) { sendJson({ ok: false, error: '中继令牌无效或已吊销' }, 401); return; }
+    if (cfg.relay?.enabled === false) {
+      sendJson({ ok: false, error: '中继已关闭：请在控制台「调试与运维 → 外部应用中继」打开' }, 403);
+      return;
+    }
+
+    const publicRequest = (r) => r && {
+      id: r.id,
+      code: r.code,
+      kind: r.kind,
+      status: r.status,
+      text: r.text,
+      choices: r.choices,
+      createdAt: r.createdAt,
+      sentAt: r.sentAt,
+      answeredAt: r.answeredAt,
+      expiresAt: r.expiresAt,
+      answer: r.answer,
+      lastError: r.lastError || ''
+    };
+
+    try {
+      if (req.method === 'POST' && url.pathname === '/api/relay/ask') {
+        const body = await readBody();
+        const created = await relay.create({
+          app,
+          kind: 'ask',
+          text: body.text,
+          choices: body.choices,
+          level: body.level,
+          timeoutSec: body.timeoutSec,
+          dedupeKey: body.dedupeKey
+        });
+        const waitMs = Math.max(0, Math.min(120, Number(body.waitSec) || 0)) * 1000;
+        let final = created;
+        if (waitMs > 0 && !['answered', 'timeout', 'cancelled', 'undeliverable'].includes(created.status)) {
+          final = await relay.wait(created.id, waitMs);
+        }
+        const done = ['answered', 'timeout', 'cancelled', 'undeliverable'].includes(final.status);
+        sendJson({ ok: true, ...publicRequest(final) }, done && final.status === 'answered' ? 200 : 202);
+        return;
+      }
+      if (req.method === 'POST' && url.pathname === '/api/relay/notify') {
+        const body = await readBody();
+        const created = await relay.create({
+          app,
+          kind: 'notify',
+          text: body.text,
+          level: body.level,
+          timeoutSec: 120,
+          dedupeKey: body.dedupeKey
+        });
+        sendJson({ ok: true, ...publicRequest(created) }, 202);
+        return;
+      }
+      if (req.method === 'GET' && url.pathname === '/api/relay/requests') {
+        const status = String(url.searchParams.get('status') ?? '').trim() || undefined;
+        const list = relay.list({ status, limit: 50 }).filter((r) => r.appId === app.id).map(publicRequest);
+        sendJson({ ok: true, requests: list });
+        return;
+      }
+      const one = /^\/api\/relay\/requests\/([A-Za-z0-9_]+)$/.exec(url.pathname);
+      if (one && req.method === 'GET') {
+        const waitSec = Math.max(0, Math.min(60, Number(url.searchParams.get('wait')) || 0));
+        let request = relay.get(one[1]);
+        if (!request || request.appId !== app.id) { sendJson({ ok: false, error: '请求不存在' }, 404); return; }
+        if (waitSec > 0 && !['answered', 'timeout', 'cancelled', 'undeliverable'].includes(request.status)) {
+          request = await relay.wait(request.id, waitSec * 1000);
+        }
+        sendJson({ ok: true, ...publicRequest(request) });
+        return;
+      }
+      const cancelOne = /^\/api\/relay\/requests\/([A-Za-z0-9_]+)\/cancel$/.exec(url.pathname);
+      if (cancelOne && req.method === 'POST') {
+        const request = relay.get(cancelOne[1]);
+        if (!request || request.appId !== app.id) { sendJson({ ok: false, error: '请求不存在' }, 404); return; }
+        const cancelled = relay.cancel(request.id);
+        sendJson({ ok: true, ...publicRequest(cancelled) });
+        return;
+      }
+      sendJson({ ok: false, error: '未知的中继接口' }, 404);
+    } catch (error) {
+      sendJson({ ok: false, error: String(error?.message ?? error) }, 400);
+    }
+  }
+
   function startConsoleServer() {
     const port = cfg.consolePort ?? 3100;
     // 控制台鉴权：优先用 config.consoleToken，未配置则自动生成并持久化，不再默认无鉴权。
@@ -4230,6 +4339,15 @@ async function main() {
       }
       // Public UI artwork/code contains no configuration. Keep API/page authentication intact.
       if (serveConsoleAsset(req, res, url.pathname, path.join(ROOT, 'public'), SECURITY_HEADERS)) return;
+      // 外部应用中继：用**每应用独立令牌**，不走控制台令牌——外部程序不该拿到管理端全权。
+      // 所有 /api/relay/* 请求都在这里自己鉴权，失败一律 401，绝不回落到管理端。
+      if (url.pathname.startsWith('/api/relay/')) {
+        await handleRelayApi(req, res, url, {
+          readBody,
+          sendJson: (obj, status) => sendJson(obj, status)
+        });
+        return;
+      }
       // 控制台鉴权：所有管理请求需带 x-console-token 或 ?token=
       // 定长比较：`!==` 会在第一个不同的字符处短路，理论上可被本机进程用响应时延逐字节试探。
       // 令牌是 192 bit 随机值且只监听回环，所以这是纵深防御而非在野漏洞。
@@ -4270,6 +4388,12 @@ async function main() {
       // 限制到这条非 v2 会话面；整个 /api/socialV2/ 前缀一概不放——那里的 token 校验全是
       // `if (x-agent-token && …)`，放进来就等于退化成管理端全权（confused deputy）。
       if (req.headers['x-agent-call'] !== undefined) {
+        // 中继管理面（发令牌/改落点）只给控制台。即使智能体带着有效会话令牌也不放行：
+        // 它没有任何理由签发外部应用令牌，这是纯粹的权限外溢面。
+        if (url.pathname.startsWith('/api/relay-admin/')) {
+          sendJson({ ok: false, error: '中继管理接口不接受智能体调用' }, 403);
+          return;
+        }
         const agentToken = req.headers['x-agent-token'];
         const hasToken = typeof agentToken === 'string' && agentToken !== '';
         if (hasToken && !isLiveAgentToken(agentToken)) {
@@ -4395,6 +4519,73 @@ async function main() {
           } catch {
             res.end('控制台页面缺失：dsh-omni/public/console.html');
           }
+          return;
+        }
+        // ── 外部应用中继（管理端）────────────────────────────────────────────
+        // 走控制台令牌：这里能改落点、能发应用令牌，属于管理动作；应用侧见 /api/relay/*。
+        if (url.pathname.startsWith('/api/relay-admin/')) {
+          const configFile = path.join(ROOT, 'config.json');
+          if (req.method === 'GET' && url.pathname === '/api/relay-admin/status') {
+            const conversation = relayConversation();
+            sendJson({
+              ok: true,
+              enabled: cfg.relay?.enabled !== false,
+              mode: cfg.relay?.target?.mode === 'group' ? 'group' : 'private',
+              groupId: String(cfg.relay?.target?.groupId ?? ''),
+              conversation,
+              ownerReady: !!cfg.ownerQQ,
+              defaultTimeoutSec: Number(cfg.relay?.defaultTimeoutSec) || 1800,
+              apps: relay ? relay.listApps() : [],
+              pending: relay ? relay.list({ status: 'sent', limit: 20 }) : [],
+              queued: relay ? relay.list({ status: 'queued', limit: 20 }) : []
+            });
+            return;
+          }
+          if (req.method === 'POST' && url.pathname === '/api/relay-admin/config') {
+            const body = await readBody();
+            const mode = body.mode === 'group' ? 'group' : 'private';
+            const groupId = String(body.groupId ?? '').trim();
+            if (mode === 'group' && !/^\d{5,12}$/.test(groupId)) {
+              sendJson({ ok: false, error: '发群里必须填群号（5~12 位数字）' }, 400);
+              return;
+            }
+            if (!cfg.ownerQQ && mode === 'private') {
+              sendJson({ ok: false, error: '还没配置 ownerQQ，私聊落点无从确定' }, 400);
+              return;
+            }
+            const file = readConfigObject(configFile);
+            file.relay = {
+              ...(file.relay && typeof file.relay === 'object' ? file.relay : {}),
+              enabled: typeof body.enabled === 'boolean' ? body.enabled : cfg.relay?.enabled !== false,
+              target: { mode, groupId }
+            };
+            atomicWriteJson(configFile, file);
+            cfg.relay = {
+              enabled: file.relay.enabled,
+              target: { mode, groupId },
+              defaultTimeoutSec: Number(file.relay.defaultTimeoutSec) > 0 ? Number(file.relay.defaultTimeoutSec) : 1800
+            };
+            log(`控制台：中继落点已改为 ${relayConversation() || '（未配置）'}${cfg.relay.enabled ? '' : '，且已关闭'}`);
+            sendJson({ ok: true, enabled: cfg.relay.enabled, mode, groupId, conversation: relayConversation() });
+            return;
+          }
+          if (req.method === 'POST' && url.pathname === '/api/relay-admin/apps') {
+            const body = await readBody();
+            const created = relay.createApp(body.name);
+            log(`控制台：已签发中继令牌「${created.app.name}」`);
+            // 令牌只在这里出现一次（磁盘上只有 hash）；页面刷新后不再显示。
+            sendJson({ ok: true, app: created.app, token: created.token });
+            return;
+          }
+          if (req.method === 'POST' && url.pathname === '/api/relay-admin/apps/revoke') {
+            const body = await readBody();
+            const ok = relay.revokeApp(String(body.id ?? ''));
+            if (!ok) { sendJson({ ok: false, error: '应用不存在' }, 404); return; }
+            log(`控制台：已吊销中继令牌 ${body.id}`);
+            sendJson({ ok: true });
+            return;
+          }
+          sendJson({ ok: false, error: '未知的中继管理接口' }, 404);
           return;
         }
         if (req.method === 'GET' && url.pathname === '/api/status') {
@@ -13240,6 +13431,29 @@ async function main() {
     if (!isSessionAllowedInCurrentMode(key)) return;
     if (!plainContent && !quoteTargetIsSelf) return;
     const isOwner = String(event.user_id) === String(cfg.ownerQQ ?? '');
+    // ── 外部应用中继的回答 ──────────────────────────────────────────────────
+    // 放在所有模式分支之前：中继是桥接层能力，跟 chat / reserved2 无关。
+    // 只认两种：引用那条消息，或正文带 #短码（**不做隐式匹配**）。命中就消费掉——
+    // 这条不是给大肥鱼的，叫醒模型只会答非所问，还白付一个回合。
+    if (relay) {
+      try {
+        const verdict = relay.onInbound({
+          conversation: key,
+          quoteId: extractReplyTargetId(event.message),
+          text: plainContent,
+          isOwner
+        });
+        if (verdict.consumed) {
+          if (verdict.ambiguous) await sendToQQ(key, '没找到这个编号：请引用那条消息，或核对 # 后面的四位。');
+          appendActivity(`${key} [relay] ${verdict.ambiguous
+            ? '短码未匹配'
+            : `已回答 ${verdict.request?.id ?? ''}（${verdict.request?.answer?.via ?? ''}）`}`);
+          return;
+        }
+      } catch (error) {
+        log(`[relay] 处理入站回答失败：${error?.message ?? error}`);
+      }
+    }
     const roleState = readRoleState();
 
     // 若该会话有挂起的提问/审批，先当作回答处理（用当前消息自己的文字，不含引用原文）。
@@ -14219,6 +14433,45 @@ async function main() {
     accessToken: cfg.snowluma.accessToken || undefined,
     reconnect: true
   });
+
+  // ── 外部应用中继 ────────────────────────────────────────────────────────────
+  // 落点：默认主人私聊；控制台切到 group 时必须填群号（不从消息里猜目标）。
+  function relayConversation() {
+    const target = cfg.relay?.target ?? {};
+    if (target.mode === 'group' && /^\d+$/.test(String(target.groupId ?? ''))) return `group:${target.groupId}`;
+    return cfg.ownerQQ ? `private:${cfg.ownerQQ}` : '';
+  }
+
+  // 直接走 SDK 而不是 sendToQQ：中继需要把 message_id 收下来做引用关联，
+  // sendToQQ 只 await 发送、把返回的 message_id 丢了。
+  async function relaySend(conversation, body) {
+    const [kind, id] = String(conversation).split(':');
+    const safe = redactKnownTokensOnly(String(body));
+    const result = kind === 'private'
+      ? await bot.sendPrivateMessage(Number(id), text(escapeCqText(safe)))
+      : await bot.sendGroupMessage(Number(id), text(escapeCqText(safe)));
+    return result?.message_id != null ? String(result.message_id) : null;
+  }
+
+  relay = createRelay({
+    stateFile: path.join(STATE_DIR, 'relay', 'state.json'),
+    appsFile: path.join(STATE_DIR, 'relay', 'apps.json'),
+    log,
+    send: relaySend,
+    recordSelf: (conversation, body) => recordSentMessagesV2(conversation, [body]),
+    defaultConversation: relayConversation,
+    defaultTimeoutSec: Number(cfg.relay?.defaultTimeoutSec) || 1800
+  });
+  relay.load();
+  // 超时扫描：不立刻清理的话，调用方会挂到天荒地老（HTTP 长轮询会一直返回 pending）。
+  const relaySweepTimer = setInterval(() => {
+    try {
+      for (const expired of relay.sweep()) {
+        log(`[relay] ${expired.id}（#${expired.code}）超时未回答，已通知调用方`);
+      }
+    } catch (error) { log(`[relay] 超时扫描异常：${error?.message ?? error}`); }
+  }, 30_000);
+  relaySweepTimer.unref?.();
 
   bot.onPrivateMessage(async (event) => {
     // 统一按字符串比较：网关可能把 id 序列化成 number/string 混用，

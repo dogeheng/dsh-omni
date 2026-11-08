@@ -2973,6 +2973,35 @@ button:active:not(:disabled) {
         <span class="meta" id="aiNotifyMsg"></span>
       </div>
     </section>
+<section id="section-relay" data-page="operations" class="card span-all">
+      <h2>外部应用中继</h2>
+      <div class="meta">让本机程序（脚本、Codex、定时任务）通过 QQ 问你一句话，并把你的回答<b>原样</b>交回去。回答时<b>引用那条消息</b>，或在正文里带上它给的 <code>#短码</code>。默认只发到主人私聊。</div>
+      <div class="row" style="margin-top:10px">
+        <label style="margin:0"><input type="checkbox" id="relayEnabled"> 启用中继</label>
+        <label style="margin:0 0 0 12px;width:60px">发到</label>
+        <select id="relayMode" style="width:130px">
+          <option value="private">主人私聊</option>
+          <option value="group">指定群</option>
+        </select>
+        <input type="text" id="relayGroupId" placeholder="群号（选群时必填）" style="width:170px">
+        <button id="relaySave" class="small">保存</button>
+        <span class="meta" id="relayMsg"></span>
+      </div>
+      <div class="meta" style="margin-top:8px">当前落点：<b id="relayTarget">-</b></div>
+
+      <h3 style="margin-top:16px">应用令牌</h3>
+      <div class="meta">每个应用一份令牌，只能发/查自己的请求，碰不到会话与配置。令牌只在生成时显示一次，吊销后立刻失效。</div>
+      <div class="row" style="margin-top:8px">
+        <input type="text" id="relayAppName" placeholder="应用名，例如 resume-bot" style="width:220px">
+        <button id="relayAppCreate" class="small">生成令牌</button>
+        <span class="meta" id="relayAppMsg"></span>
+      </div>
+      <pre id="relayAppToken" style="display:none"></pre>
+      <div id="relayAppList" style="margin-top:8px">加载中…</div>
+
+      <h3 style="margin-top:16px">待回答</h3>
+      <div id="relayPending" class="meta">（无）</div>
+    </section>
 <section id="section-usage" data-page="usage" class="card span-all">
       <h2 data-note="每 3 秒自动同步">令牌与花费</h2>
       <div class="meta">数据来源是 DSH 会话事件里的 provider usage。<b>累计总量</b>取 <code>tokenUsage</code> 投影（整条会话日志的权威累计，含桥接启动前的历史）；<b>逐轮明细</b>由 <code>assistant/message</code> 的 usage 折叠而来，能追溯到多深取决于会话开场快照带回的历史条数。金额按 DeepSeek 官方价目表折算，区分高峰 / 空闲时段（高峰单价为空闲的 2 倍）。</div>
@@ -5447,6 +5476,134 @@ function showConsoleToast(message) {
   clearTimeout(toastTimer);
   toastTimer = setTimeout(() => { toast.hidden = true; }, 4200);
 }
+// ── 外部应用中继 ───────────────────────────────────────────────────────────
+// 保持和其它卡片一样的口径：只显示"现在要你做什么"，不堆历史、不做多级菜单。
+function relayRow(text, extra) {
+  const row = document.createElement('div');
+  row.className = 'row';
+  row.style.cssText = 'margin:4px 0;align-items:center;gap:8px';
+  const span = document.createElement('span');
+  span.textContent = text;
+  row.appendChild(span);
+  if (extra) row.appendChild(extra);
+  return row;
+}
+
+function fmtRelayTime(ms) {
+  if (!ms) return '—';
+  const diff = Math.max(0, Date.now() - Number(ms));
+  if (diff < 60000) return '刚刚';
+  if (diff < 3600000) return `${Math.floor(diff / 60000)} 分钟前`;
+  if (diff < 86400000) return `${Math.floor(diff / 3600000)} 小时前`;
+  return new Date(Number(ms)).toLocaleDateString();
+}
+
+async function loadRelay() {
+  const target = document.getElementById('relayTarget');
+  if (!target) return;
+  try {
+    const s = await api('/api/relay-admin/status');
+    document.getElementById('relayEnabled').checked = s.enabled !== false;
+    document.getElementById('relayMode').value = s.mode === 'group' ? 'group' : 'private';
+    const gid = document.getElementById('relayGroupId');
+    if (document.activeElement !== gid) gid.value = s.groupId || '';
+    gid.disabled = s.mode !== 'group';
+    target.textContent = s.conversation || '（未配置 ownerQQ，私聊落点不可用）';
+
+    const list = document.getElementById('relayAppList');
+    list.innerHTML = '';
+    if (!s.apps || !s.apps.length) {
+      list.innerHTML = '<span class="meta">还没有应用。生成一个令牌交给脚本即可。</span>';
+    } else {
+      for (const app of s.apps) {
+        const btn = document.createElement('button');
+        btn.className = 'small';
+        btn.textContent = app.revoked ? '已吊销' : '吊销';
+        btn.disabled = !!app.revoked;
+        btn.addEventListener('click', async () => {
+          if (!confirm(`吊销「${app.name}」的令牌？该应用会立刻失去权限。`)) return;
+          await api('/api/relay-admin/apps/revoke', 'POST', { id: app.id });
+          loadRelay();
+        });
+        list.appendChild(relayRow(
+          `${app.name} · ${app.hint}… · 最近使用 ${fmtRelayTime(app.lastUsedAt)}`,
+          btn
+        ));
+      }
+    }
+
+    const pending = document.getElementById('relayPending');
+    pending.innerHTML = '';
+    const items = Array.isArray(s.pending) ? s.pending : [];
+    if (!items.length) {
+      pending.textContent = '（无）';
+    } else {
+      for (const r of items) {
+        pending.appendChild(relayRow(`#${r.code} ${r.appName}：${String(r.text).slice(0, 40)} · 已等 ${fmtRelayTime(r.sentAt)}`));
+      }
+    }
+  } catch (error) {
+    target.textContent = `读取失败：${error?.message ?? error}`;
+  }
+}
+
+async function saveRelay() {
+  const button = document.getElementById('relaySave');
+  const msg = document.getElementById('relayMsg');
+  const payload = {
+    enabled: document.getElementById('relayEnabled').checked,
+    mode: document.getElementById('relayMode').value,
+    groupId: document.getElementById('relayGroupId').value.trim()
+  };
+  button.disabled = true;
+  try {
+    const r = await api('/api/relay-admin/config', 'POST', payload);
+    msg.textContent = r.ok ? '已保存' : (r.error || '保存失败');
+    if (r.ok) loadRelay();
+  } catch (error) {
+    msg.textContent = `保存失败：${error?.message ?? error}`;
+  } finally {
+    button.disabled = false;
+  }
+}
+
+async function createRelayApp() {
+  const name = document.getElementById('relayAppName').value.trim();
+  const msg = document.getElementById('relayAppMsg');
+  const box = document.getElementById('relayAppToken');
+  if (!name) { msg.textContent = '先起个应用名'; return; }
+  try {
+    const r = await api('/api/relay-admin/apps', 'POST', { name });
+    if (!r.ok) { msg.textContent = r.error || '生成失败'; return; }
+    msg.textContent = '已生成，复制保存';
+    box.style.display = '';
+    box.textContent = `export DSH_OMNI_RELAY_TOKEN=${r.token}\n# 或写进 ~/.config/dsh-omni/relay.json`;
+    box.onclick = () => {
+      const range = document.createRange();
+      range.selectNodeContents(box);
+      const sel = window.getSelection();
+      sel.removeAllRanges();
+      sel.addRange(range);
+    };
+    document.getElementById('relayAppName').value = '';
+    loadRelay();
+  } catch (error) {
+    msg.textContent = `生成失败：${error?.message ?? error}`;
+  }
+}
+
+document.addEventListener('DOMContentLoaded', () => {
+  const save = document.getElementById('relaySave');
+  if (save) save.addEventListener('click', saveRelay);
+  const create = document.getElementById('relayAppCreate');
+  if (create) create.addEventListener('click', createRelayApp);
+  const mode = document.getElementById('relayMode');
+  if (mode) mode.addEventListener('change', () => {
+    const gid = document.getElementById('relayGroupId');
+    if (gid) gid.disabled = mode.value !== 'group';
+  });
+});
+
 function setConsolePage(page, { updateHash = true, focus = false, target = '' } = {}) {
   if (!Object.hasOwn(consolePages, page)) page = 'overview';
   currentConsolePage = page;
@@ -5467,6 +5624,7 @@ function setConsolePage(page, { updateHash = true, focus = false, target = '' } 
   // 语音库按需加载；旧服务缺新素材时，仍支持原版二代页面。
   if ((page === 'voice' || (page === 'social-v2' && consolePages === legacyConsolePages)) && typeof loadVoiceLibrary === 'function') loadVoiceLibrary();
   if (page === 'memory' && typeof loadMemoryPanel === 'function') loadMemoryPanel();
+  if (page === 'operations' && typeof loadRelay === 'function') loadRelay();
   if (focus) {
     document.getElementById('mainContent').focus({ preventScroll: true });
     document.getElementById(target || 'mainContent')?.scrollIntoView({ block: 'start', behavior: 'instant' });

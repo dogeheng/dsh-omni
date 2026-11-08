@@ -42,6 +42,14 @@
   "questionTimeoutMs": 300000,
   "consolePort": 3100,
   "consoleToken": "",
+  "relay": {
+    "enabled": true,
+    "target": {
+      "mode": "private",
+      "groupId": ""
+    },
+    "defaultTimeoutSec": 1800
+  },
   "pricing": {
     "models": {
       "my-relay-model": {

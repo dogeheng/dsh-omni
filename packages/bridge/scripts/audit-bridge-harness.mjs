@@ -34,6 +34,7 @@ import * as memory from '../src/memory/index.js';
 import * as inboxModule from '../src/inbox.js';
 import * as outboxModule from '../src/outbox.js';
 import * as threadModule from '../src/thread.js';
+import * as relayModule from '../src/relay/index.js';
 import { unwrap, createTurnCollector } from '../src/dsh-client.js';
 
 const root = fileURLToPath(new URL('..', import.meta.url));
@@ -106,8 +107,9 @@ export async function bridgeHarness({ config = {}, savedState, files = {}, globa
     callUnary: async (method, params) => { calls.cancelled.push({ method, params }); return success({ accepted: true }); },
   };
   class FakeBot {
-    async sendPrivateMessage(id, text) { calls.sent.push({ kind: 'private', id, text }); }
-    async sendGroupMessage(id, text) { calls.sent.push({ kind: 'group', id, text }); }
+    // 返回 message_id：中继把它写进请求里做「引用关联」，没有它就只能靠短码。
+    async sendPrivateMessage(id, message) { calls.sent.push({ kind: 'private', id, text: message }); return { message_id: 9000 + calls.sent.length }; }
+    async sendGroupMessage(id, message) { calls.sent.push({ kind: 'group', id, text: message }); return { message_id: 9000 + calls.sent.length }; }
     async getImage({ file }) {
       calls.images.push(file);
       // Valid 1 × 1 PNG, supplied entirely in memory by the fixture gateway.
@@ -171,7 +173,7 @@ export async function bridgeHarness({ config = {}, savedState, files = {}, globa
     memoryActorForV2, noteMemoryActorV2, maybeReconcileTombstonesV2, scrubLegacyForTombstonesV2,
     appendMemoryV2, saveSocialV2State,
     getCfg() { return cfg; },
-    inbox, outbox,
+    inbox, outbox, get relay() { return relay; },
     enqueueDelivery, restoreOutboxDeliveries,
     deliveryProblems, deliverySnapshot, noteDeliveryFailure, clearDeliveryFailure, noteLeaseTimeout, noteSlowTurn,
     powerSnapshot,
@@ -200,7 +202,7 @@ export async function bridgeHarness({ config = {}, savedState, files = {}, globa
     ...modelPrices, ...tokenLedger, ...voiceLib, ...stateAcl, ...presetPrompt,
     ...voiceAsr, ...voiceTts, ...singing, ...shortCover, ...shortCoverV2, ...shortCoverConfig,
     ...power, ...roleCard, ...memory, ...consoleAssets, ...reminders,
-    ...inboxModule, ...outboxModule, ...threadModule,
+    ...inboxModule, ...outboxModule, ...threadModule, ...relayModule,
     // 电源监控在测试里必须确定：不 spawn pmset、不按宿主机当前电源改变策略、不留下轮询定时器。
     // 纯函数（normalizePowerConfig / powerAllowsCapability …）仍用 src/power.js 的真实现。
     createPowerMonitor: () => ({

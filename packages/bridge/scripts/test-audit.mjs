@@ -37,6 +37,8 @@ const tests = [
   'test-inbox-outbox.mjs',
   // 会话内的「这件事」：回复链/同发送者两条硬信号，宁可多开也不误并
   'test-thread.mjs',
+  // 外部应用中继：短码/引用关联、队列、超时、重启、令牌吊销
+  'test-relay.mjs',
   // 语音发送（纯函数 + 端点存在性；真发语音只在 --live 或 CLI 里做）
   'test-voice.mjs',
   // 语音 I/O + Seed-VC 按需 worker（假 fetch / 假 Python，不访问真实服务）

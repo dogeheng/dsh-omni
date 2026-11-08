@@ -54,6 +54,11 @@ QQ
 - `src/outbox.js` — durable queue of prompts the bridge has not handed to DSH
   yet. The in-memory `queued` map is rebuilt from it at startup, so a restart,
   crash or `ensure-bridge` restart no longer drops undelivered replies.
+- `src/relay/` — the external-app relay: a local script asks a question over QQ
+  and gets the answer back. Each app holds its own token (only the hash is
+  stored); answers are matched by quoting the sent message or by `#code`, never
+  implicitly. The target is the owner's private chat by default and can be
+  switched to one group in the console. State lives in `data/relay/`.
 - `src/thread.js` — the conversation-local "this one thing" id. A message
   inherits its thread from the message it replies to, or from the same sender
   within a ten-minute window; nothing else merges. Wake snapshots carry the

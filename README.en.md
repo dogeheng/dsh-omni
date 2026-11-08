@@ -71,8 +71,17 @@ Hover over her eyes and she covers them; touch an ear and it moves. Click to ope
 | Images and links | Image understanding, QQ favorite stickers, Bilibili card information and subtitles, and web search. Bilibili tools are read-only and handle shared content. |
 | Persona and memory | Persona and prompt updates on the next wake, long-term memory, and group slang learning. Memory is scoped to keep groups and private conversations separate. |
 | Local management | Allowlists, owner permissions, capability and tool switches, and token/cost views. macOS also supports battery-aware capability settings. |
+| App relay | A local script or coding agent asks a question through QQ; you reply to that message or prefix `#code`, and the answer is handed back verbatim. Private chat by default, per-app tokens, group target switchable in the console. |
 
 Singing, short covers, and the restricted file workspace need additional setup. Start with text chat, then enable the capabilities you want. Configuration guides are linked [below](#docs).
+
+The app relay lets a script ask you something and wait for the answer:
+
+```bash
+ANSWER=$(node packages/bridge/scripts/relay.mjs ask "Which salary range?" --choices 25k,30k --timeout 1800)
+```
+
+Generate a token under "调试与运维 → 外部应用中继" in the console; answer by quoting the message or prefixing its `#code`.
 
 <details>
 <summary>Which conversation mode should I use?</summary>

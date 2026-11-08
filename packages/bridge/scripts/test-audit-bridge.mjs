@@ -129,6 +129,80 @@ await test('reply chain beats the same-sender rule', async (h) => {
   assert.notEqual(m3.threadId, m1.threadId);
 });
 
+await test('relay: a script asks a question and gets the quoted answer back', async (h) => {
+  const server = h.startConsoleServer();
+  if (!server.listening) await new Promise((resolve) => server.once('listening', resolve));
+  const port = server.address().port;
+  const call = (path, method = 'GET', headers = {}, body) => new Promise((resolve, reject) => {
+    const request = http.request(
+      { host: '127.0.0.1', port, path, method, headers: { 'content-type': 'application/json', ...headers } },
+      (response) => {
+        let data = '';
+        response.on('data', (chunk) => { data += chunk; });
+        response.on('end', () => resolve({ status: response.statusCode, body: JSON.parse(data || '{}') }));
+      }
+    );
+    request.on('error', reject);
+    request.setTimeout(3000, () => request.destroy(new Error('relay request hung')));
+    request.end(body === undefined ? undefined : JSON.stringify(body));
+  });
+  const admin = { 'x-console-token': 'fixture-console-token' };
+  try {
+    // 1. 管理端签发一个应用令牌
+    const issued = await call('/api/relay-admin/apps', 'POST', admin, { name: 'resume-bot' });
+    assert.equal(issued.status, 200);
+    assert.ok(issued.body.token.startsWith('relay_'));
+    const auth = { authorization: `Bearer ${issued.body.token}` };
+
+    // 2. 无令牌/错令牌一律拒绝（不能回落到控制台全权）
+    assert.equal((await call('/api/relay/ask', 'POST', {}, { text: 'x' })).status, 401);
+    assert.equal((await call('/api/relay/ask', 'POST', { authorization: 'Bearer relay_wrong' }, { text: 'x' })).status, 401);
+
+    // 3. 提问 → 立刻 202，并且 QQ 侧真的收到一条带短码的中继消息
+    const asked = await call('/api/relay/ask', 'POST', auth, {
+      text: '「期望薪资」填哪个？', choices: ['25k', '30k'], waitSec: 0
+    });
+    assert.equal(asked.status, 202);
+    assert.equal(asked.body.status, 'sent');
+    const sentEntry = h.calls.sent.at(-1);
+    assert.match(sentEntry.text, /📨 resume-bot · #[0-9a-f]{4}/, '发出去的中继消息要带应用名与短码');
+    assert.match(sentEntry.text, /回复本条，或带上 #/);
+
+    // 4. 主人引用那条消息回答 → 中继消费掉，且不叫醒模型
+    const messageId = h.relay.get(asked.body.id).messageId;
+    const promptsBefore = h.calls.prompts.length;
+    await h.handleIncoming('private', 123, {
+      user_id: 123,
+      self_id: 999,
+      message_id: 70001,
+      message: [
+        { type: 'reply', data: { id: Number(messageId) } },
+        { type: 'text', data: { text: '30k' } }
+      ]
+    }, h.cfg);
+    assert.equal(h.calls.prompts.length, promptsBefore, '中继回答不该再叫醒模型');
+
+    // 5. 调用方拿回答案（原样，且选项也对上了）
+    const polled = await call(`/api/relay/requests/${encodeURIComponent(asked.body.id)}`, 'GET', auth);
+    assert.equal(polled.status, 200);
+    assert.equal(polled.body.status, 'answered');
+    assert.equal(polled.body.answer.text, '30k');
+    assert.equal(polled.body.answer.choice, '30k');
+    assert.equal(polled.body.answer.via, 'quote');
+
+    // 6. 别的应用查不到这条请求
+    const other = await call('/api/relay-admin/apps', 'POST', admin, { name: 'other-app' });
+    const foreign = await call(`/api/relay/requests/${encodeURIComponent(asked.body.id)}`, 'GET', { authorization: `Bearer ${other.body.token}` });
+    assert.equal(foreign.status, 404, '应用之间不能互相查请求');
+
+    // 7. 吊销后立刻失效
+    await call('/api/relay-admin/apps/revoke', 'POST', admin, { id: issued.body.app.id });
+    assert.equal((await call('/api/relay/ask', 'POST', auth, { text: 'x' })).status, 401);
+  } finally {
+    await new Promise((resolve) => server.close(resolve));
+  }
+});
+
 await test('closed-agent session is not reused after switching to chat', async (h) => {
   h.setMode('closed-agent');
   const privileged = await h.ensureSession('private:123');
@@ -484,6 +558,8 @@ await test('malformed HTTP request targets return 400 without hanging', async (h
       ['GET', '/api/dsh/model'], ['POST', '/api/dsh/effort'],
       ['GET', '/api/whitelist'], ['POST', '/api/whitelist'], ['POST', '/api/restart'],
       ['POST', '/api/console/token'], ['GET', '/api/role'], ['POST', '/api/role'],
+      // 中继管理面：签发外部应用令牌属于纯权限外溢，智能体一律不许碰。
+      ['GET', '/api/relay-admin/status'], ['POST', '/api/relay-admin/apps'],
     ];
     for (const [method, path] of mustDeny) {
       const res = await call(path, method, asAgent, method === 'POST' ? {} : undefined);
