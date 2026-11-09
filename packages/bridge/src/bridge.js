@@ -3314,7 +3314,9 @@ async function main() {
   const sleepWatch = { count: 0, lastAt: 0 };
   function sampleSleepEvents() {
     if (process.platform !== 'darwin' || typeof execFile !== 'function') return;
-    execFile('pmset', ['-g', 'log'], { timeout: 20000, maxBuffer: 8 * 1024 * 1024 }, (error, stdout) => {
+    // pmset 的日志是累积的（这台机器 12MB+）。maxBuffer 给足，否则 spawn 直接 ENOBUFS，
+    // 采样静默失败——第一版就是踩了这个坑，日志里一行都不报。
+    execFile('pmset', ['-g', 'log'], { timeout: 30000, maxBuffer: 64 * 1024 * 1024 }, (error, stdout) => {
       if (error) return;
       const { count, lastAt } = countRecentSleeps(stdout, { now: Date.now(), windowMs: 24 * 60 * 60 * 1000 });
       const before = sleepWatch.count;
@@ -3363,7 +3365,7 @@ async function main() {
     if (sleepWatch.count > 0) {
       problems.push({
         kind: 'sleep',
-        text: `桥接运行期间休眠过 ${sleepWatch.count} 次：休眠会让 QQ 会话失效。彻底防休眠：sudo pmset -a disablesleep 1`
+        text: `过去 24 小时休眠过 ${sleepWatch.count} 次（最近 ${new Date(sleepWatch.lastAt).toLocaleTimeString('zh-CN', { hour12: false })}）：休眠会让 QQ 会话失效，合盖也算。彻底防休眠：sudo pmset -a disablesleep 1`
       });
     }
     const recentSlow = slowTurns.filter((x) => Date.now() - x.at < PROBLEM_WINDOW_MS);
@@ -14863,7 +14865,7 @@ async function main() {
   startSnowlumaWatch();
   // 休眠采样：启动先记基线，之后每 30 分钟看一眼有没有新的睡眠事件。
   sampleSleepEvents();
-  setInterval(sampleSleepEvents, 30 * 60_000).unref?.();
+  setInterval(sampleSleepEvents, 2 * 60 * 60_000).unref?.();
   startConsoleServer();
 
   /**
