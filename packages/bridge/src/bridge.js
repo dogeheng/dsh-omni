@@ -24,6 +24,7 @@ import { looksLikeUnfinished } from './v2-wait.js';
 import { compactModelMessage } from './qq-model-view.js';
 import { createReminder, normalizeRemindersConfig } from './reminders.js';
 import { shouldAutoRestartSnowluma } from './snowluma-recovery.js';
+import { countRecentSleeps } from './power.js';
 import { safeFetch, safeFetchBuffer, looksLikeImageBuffer } from './safe-fetch.js';
 import { AUDIO_EXTS, cleanupTemp, describeAudio, formatBytes, formatDuration, inspectAudio, listAudioFiles, parseTargetKey, processAudioVolume, resolveAudioProcessing, resolveAudioSource, safeJoinLibrary } from './send-voice-lib.js';
 import { discoverSnowLumaConnection, persistSnowLumaEndpoint, persistToken } from './snowluma-conn.js';
@@ -3307,18 +3308,20 @@ async function main() {
   // 休眠采样：pmset 日志里的真实睡眠事件（合盖/空闲/维护），只统计桥接启动之后的增量。
   // 为什么值得做：`caffeinate -s` 只拦"空闲休眠"，**拦不住合盖休眠**——用户以为已经禁睡了，
   // 实际上合盖照样睡，醒来 QQ 会话就失效了。
-  const sleepWatch = { base: null, count: 0, lastAt: 0 };
+  // 统计的是**过去 24 小时**的睡眠，不是"桥接启动之后"：桥接本身会因为 DSH 重启而重启，
+  // 按启动点算的话，休眠发生在重启前就永远看不见（用户遇到的正是这种：睡了，桥接跟着重启，
+  // 计数归零，一切看起来正常）。
+  const sleepWatch = { count: 0, lastAt: 0 };
   function sampleSleepEvents() {
     if (process.platform !== 'darwin' || typeof execFile !== 'function') return;
     execFile('pmset', ['-g', 'log'], { timeout: 20000, maxBuffer: 8 * 1024 * 1024 }, (error, stdout) => {
       if (error) return;
-      const total = (String(stdout).match(/Entering (?:DarkWake|Sleep) state due to '(?:Clamshell|Idle|Maintenance) Sleep'/g) || []).length;
-      if (sleepWatch.base == null) { sleepWatch.base = total; return; }
-      const delta = Math.max(0, total - sleepWatch.base);
-      if (delta > sleepWatch.count) {
-        sleepWatch.count = delta;
-        sleepWatch.lastAt = Date.now();
-        log(`[power] 检测到桥接运行期间休眠 ${sleepWatch.count} 次：合盖/空闲休眠会让 QQ 会话失效`);
+      const { count, lastAt } = countRecentSleeps(stdout, { now: Date.now(), windowMs: 24 * 60 * 60 * 1000 });
+      const before = sleepWatch.count;
+      sleepWatch.count = count;
+      sleepWatch.lastAt = lastAt;
+      if (count > before) {
+        log(`[power] 过去 24 小时检测到 ${count} 次休眠（最近 ${new Date(lastAt).toLocaleString('zh-CN', { hour12: false })}）：合盖/空闲休眠会让 QQ 会话失效`);
       }
     });
   }
@@ -3357,7 +3360,7 @@ async function main() {
       });
     }
     // 休眠：合盖会让 QQ 会话失效，且 caffeinate 拦不住合盖休眠。
-    if (sleepWatch.count > 0 && Date.now() - sleepWatch.lastAt < 24 * 60 * 60 * 1000) {
+    if (sleepWatch.count > 0) {
       problems.push({
         kind: 'sleep',
         text: `桥接运行期间休眠过 ${sleepWatch.count} 次：休眠会让 QQ 会话失效。彻底防休眠：sudo pmset -a disablesleep 1`

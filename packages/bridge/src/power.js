@@ -115,6 +115,30 @@ export function parsePmsetBattery(text) {
 }
 
 /** 解析 `pmset -g` 里的 lowpowermode（系统低电量模式）。读不到就当没开。 */
+/**
+ * 统计 `pmset -g log` 里**最近 windowMs 内**的真实睡眠次数。
+ *
+ * 为什么单独抽出来：桥接只在采样时用一次，但"合盖也睡"这件事直接决定 QQ 会不会掉线，
+ * 解析（时间戳带时区、只认 Clamshell/Idle/Maintenance 三种）必须有测试钉住。
+ * 返回 `{ count, lastAt }`；lastAt 是最近一次睡眠的时间戳（没有则为 0）。
+ */
+export function countRecentSleeps(logText, { now = Date.now(), windowMs = 24 * 60 * 60 * 1000 } = {}) {
+  const since = Number(now) - Math.max(0, Number(windowMs) || 0);
+  const pattern = /Entering (?:DarkWake|Sleep) state due to '(?:Clamshell|Idle|Maintenance) Sleep'/;
+  let count = 0;
+  let lastAt = 0;
+  for (const line of String(logText ?? '').split('\n')) {
+    if (!pattern.test(line)) continue;
+    const m = /^(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}) ([+-]\d{4})/.exec(line);
+    if (!m) continue;
+    const at = Date.parse(`${m[1]} ${m[2].slice(0, 3)}:${m[2].slice(3)}`);
+    if (!Number.isFinite(at) || at < since) continue;
+    count += 1;
+    lastAt = Math.max(lastAt, at);
+  }
+  return { count, lastAt };
+}
+
 export function parsePmsetLowPower(text) {
   const match = /lowpowermode\s+(\d+)/i.exec(String(text ?? ''));
   return match ? match[1] === '1' : false;

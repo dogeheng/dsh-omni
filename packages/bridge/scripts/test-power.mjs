@@ -8,6 +8,7 @@ import { test } from 'node:test';
 import {
   DEFAULT_BATTERY_ALLOW,
   POWER_CAPABILITY_IDS,
+  countRecentSleeps,
   createPowerMonitor,
   decidePowerPolicy,
   normalizePowerConfig,
@@ -174,4 +175,27 @@ test('监控状态机：首次立即生效、切换去抖、模拟绕过去抖',
   await monitor.simulate(null);
 
   monitor.stop();
+});
+
+test('countRecentSleeps 只数最近窗口内、且确实是睡眠的事件', () => {
+  // 时间戳带时区，必须按本地时区解析；杂项日志（Wake、Assertions）不能算进去。
+  const log = [
+    "2026-11-06 22:41:50 -0500 Sleep              	Entering DarkWake state due to 'Idle Sleep':TCPKeepAlive=active Using AC (Charge:100%)",
+    "2026-11-06 22:57:33 -0500 Sleep              	Entering DarkWake state due to 'Clamshell Sleep':TCPKeepAlive=active Using AC (Charge:100%)",
+    "2026-11-07 09:38:57 -0500 Sleep              	Entering DarkWake state due to 'Clamshell Sleep':TCPKeepAlive=active Using AC (Charge:100%)",
+    "2026-11-07 09:40:00 -0500 Wake               	DarkWake to FullWake from Deep Idle [CDNVA] due to UserActivity Assertion",
+    "2026-11-07 09:41:00 -0500 Assertions         	PID 402(runningboardd) Summary PreventUserIdleSystemSleep",
+    "2026-11-08 15:38:26 -0500 Sleep              	Entering DarkWake state due to 'Clamshell Sleep':TCPKeepAlive=active Using AC (Charge:100%)"
+  ].join('\n');
+  // 以 11-08 15:38:26 为"现在"，往前 24 小时 = 11-07 15:38:26 之后。
+  const now = Date.parse('2026-11-08 15:38:26 -0500');
+  const recent = countRecentSleeps(log, { now, windowMs: 24 * 60 * 60 * 1000 });
+  assert.equal(recent.count, 1, '窗口外的旧睡眠不算');
+  assert.equal(recent.lastAt, now, '最近一次睡眠的时间要对');
+
+  const all = countRecentSleeps(log, { now, windowMs: 72 * 60 * 60 * 1000 });
+  assert.equal(all.count, 4, '只数睡眠事件（3 次 Clamshell + 1 次 Idle），Wake/Assertions 不算');
+
+  assert.deepEqual(countRecentSleeps('', { now }), { count: 0, lastAt: 0 }, '空日志返回 0');
+  assert.equal(countRecentSleeps('garbage line', { now }).count, 0, '认不出的行直接跳过');
 });
