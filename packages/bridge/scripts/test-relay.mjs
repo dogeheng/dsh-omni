@@ -99,6 +99,11 @@ function makeRelay(fileSuffix = '') {
   ok(second.status === 'queued', '同一会话同时只发一条（其余排队）');
   ok(sent.length === 1, '排队的不会立刻发出去');
 
+  // 通知不等回答，不该被一个待答问题挡住。
+  const note = await relay.create({ app, kind: 'notify', text: '顺便说一句' });
+  ok(note.status === 'sent' && sent.length === 2, '待答问题挂着时，通知照样立刻发出');
+  ok(sent[1].text.startsWith('📨 resume-bot'), '通知也带应用名前缀');
+
   // 没有引用、没有短码 → 不消费
   ok(relay.onInbound({ conversation: 'private:123', text: '随便说点', isOwner: true }).consumed === false,
     '普通消息不会被中继吞掉');

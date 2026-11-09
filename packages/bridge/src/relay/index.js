@@ -269,7 +269,7 @@ export function createRelay({
   }
 
   function pickNext(conversation) {
-    const queued = requests.filter((r) => r.status === 'queued' && r.conversation === conversation);
+    const queued = requests.filter((r) => r.status === 'queued' && r.kind === 'ask' && r.conversation === conversation);
     if (!queued.length) return null;
     // urgent 优先，其次按创建时间。
     queued.sort((a, b) => (b.level === 'urgent') - (a.level === 'urgent') || a.createdAt - b.createdAt);
@@ -295,8 +295,38 @@ export function createRelay({
    * 把队列里下一条发出去。同一会话同时只发一条 ask。
    * 发送失败（网关掉线）就留在 queued，等 sweep 重试。
    */
+  /** 真正发一条：格式化 + 发送 + 落状态。pump 与"通知直发"共用。 */
+  async function deliver(request) {
+    const body = request.kind === 'ask'
+      ? formatRelayMessage({ appName: request.appName, code: request.code, text: request.text, choices: request.choices })
+      : formatNotifyMessage({ appName: request.appName, text: request.text, level: request.level });
+    try {
+      const messageId = await send(request.conversation, body);
+      if (!messageId) throw new Error('网关未返回 message_id');
+      request.status = 'sent';
+      request.messageId = String(messageId);
+      request.sentAt = now();
+      request.attempts = (request.attempts || 0) + 1;
+      request.lastError = '';
+      try { recordSelf(request.conversation, body); } catch {}
+      persist();
+      log(`[relay] ${request.kind} ${request.id}${request.code ? ` (#${request.code})` : ''} 已发往 ${request.conversation}`);
+      return request;
+    } catch (error) {
+      request.attempts = (request.attempts || 0) + 1;
+      request.lastError = String(error?.message ?? error).slice(0, 200);
+      persist();
+      log(`[relay] ${request.id} 发送失败（留在队列）：${request.lastError}`);
+      return null;
+    }
+  }
+
   async function pumpOnce(conversation) {
     if (!conversation) return null;
+    // 通知不排队：它不等回答，没有理由被一个待答问题挡住半小时。
+    // （旧写法里通知会排在 ask 后面，而 ask 可能要等到超时。）
+    const notes = requests.filter((r) => r.status === 'queued' && r.kind === 'notify' && r.conversation === conversation);
+    for (const note of notes) await deliver(note);
     if (requests.some((r) => r.status === 'sent' && r.conversation === conversation && r.kind === 'ask')) return null;
     const next = pickNext(conversation);
     if (!next) return null;
@@ -307,31 +337,10 @@ export function createRelay({
       notifyWaiters(next.id);
       return pumpOnce(conversation);
     }
-    const body = next.kind === 'ask'
-      ? formatRelayMessage({ appName: next.appName, code: next.code, text: next.text, choices: next.choices })
-      : formatNotifyMessage({ appName: next.appName, text: next.text, level: next.level });
-    try {
-      const messageId = await send(conversation, body);
-      if (!messageId) throw new Error('网关未返回 message_id');
-      next.status = 'sent';
-      next.messageId = String(messageId);
-      next.sentAt = now();
-      next.attempts = (next.attempts || 0) + 1;
-      next.lastError = '';
-      try { recordSelf(conversation, body); } catch {}
-      persist();
-      log(`[relay] ${next.kind} ${next.id} (#${next.code}) 已发往 ${conversation}`);
-      return next;
-    } catch (error) {
-      next.attempts = (next.attempts || 0) + 1;
-      next.lastError = String(error?.message ?? error).slice(0, 200);
-      persist();
-      log(`[relay] ${next.id} 发送失败（留在队列）：${next.lastError}`);
-      return null;
-    }
+    return deliver(next);
   }
 
-  async function create({ app, kind = 'ask', text, choices = [], level = 'warn', timeoutSec = defaultTimeoutSec, conversation, dedupeKey } = {}) {
+  async function create({ app, kind = 'ask', text, choices = [], level = null, timeoutSec = defaultTimeoutSec, conversation, dedupeKey } = {}) {
     if (!app) throw new Error('缺少应用身份');
     const body = String(text ?? '').trim();
     if (!body) throw new Error('text 不能为空');
@@ -350,7 +359,8 @@ export function createRelay({
       appId: app.id,
       appName: app.name,
       kind: kind === 'notify' ? 'notify' : 'ask',
-      level: ['info', 'warn', 'urgent'].includes(level) ? level : 'warn',
+      // 通知默认 info（📨），提问默认 warn（⚠️）：通知只是告诉你一声，不该看起来像告警。
+      level: ['info', 'warn', 'urgent'].includes(level) ? level : (kind === 'notify' ? 'info' : 'warn'),
       conversation: target,
       text: body,
       choices: Array.isArray(choices) ? choices.map((c) => String(c).slice(0, 40)).slice(0, 9) : [],
