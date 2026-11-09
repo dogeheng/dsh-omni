@@ -176,6 +176,7 @@ export async function bridgeHarness({ config = {}, savedState, files = {}, globa
     inbox, outbox, get relay() { return relay; },
     enqueueDelivery, restoreOutboxDeliveries,
     deliveryProblems, deliverySnapshot, noteDeliveryFailure, clearDeliveryFailure, noteLeaseTimeout, noteSlowTurn,
+    snowlumaHealth, sleepWatch,
     powerSnapshot,
     evaluateWakeTriggerV2,
     setReady(value) { dshReady = value; },
@@ -190,6 +191,8 @@ export async function bridgeHarness({ config = {}, savedState, files = {}, globa
     // 锁文件探测用（bridge.js 顶层的 consolePortInUse）；
     // 固定桩掉：测试不应该真去 netstat 宿主机。
     execFileSync: () => '',
+    // 休眠采样会跑 `pmset -g log`；测试里直接回调一个错误，走"采样失败就跳过"的分支。
+    execFile: (file, args, options, cb) => { const done = typeof options === 'function' ? options : cb; if (typeof done === 'function') done(new Error('stub'), ''); },
     // process 桩要带 env：voice-core / bridge 会读 process.env.FFMPEG_PATH、FFPROBE_PATH 等。
     // 之前只给 pid/platform/kill/exit，导致 `process.env.FFMPEG_PATH` 直接抛 TypeError。
     process: { pid: process.pid, platform: process.platform, kill: process.kill, env: {}, exit: (code) => { throw new Error('unexpected exit ' + code); } },

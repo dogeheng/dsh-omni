@@ -3304,6 +3304,25 @@ async function main() {
     log(`[slow-turn] ${key} 回合耗时 ${Math.round(ms / 1000)}s`);
   }
 
+  // 休眠采样：pmset 日志里的真实睡眠事件（合盖/空闲/维护），只统计桥接启动之后的增量。
+  // 为什么值得做：`caffeinate -s` 只拦"空闲休眠"，**拦不住合盖休眠**——用户以为已经禁睡了，
+  // 实际上合盖照样睡，醒来 QQ 会话就失效了。
+  const sleepWatch = { base: null, count: 0, lastAt: 0 };
+  function sampleSleepEvents() {
+    if (process.platform !== 'darwin' || typeof execFile !== 'function') return;
+    execFile('pmset', ['-g', 'log'], { timeout: 20000, maxBuffer: 8 * 1024 * 1024 }, (error, stdout) => {
+      if (error) return;
+      const total = (String(stdout).match(/Entering (?:DarkWake|Sleep) state due to '(?:Clamshell|Idle|Maintenance) Sleep'/g) || []).length;
+      if (sleepWatch.base == null) { sleepWatch.base = total; return; }
+      const delta = Math.max(0, total - sleepWatch.base);
+      if (delta > sleepWatch.count) {
+        sleepWatch.count = delta;
+        sleepWatch.lastAt = Date.now();
+        log(`[power] 检测到桥接运行期间休眠 ${sleepWatch.count} 次：合盖/空闲休眠会让 QQ 会话失效`);
+      }
+    });
+  }
+
   function deliverySnapshot() {
     return {
       pending: outbox.size(),
@@ -3328,6 +3347,21 @@ async function main() {
     const recentLease = leaseTimeouts.filter((x) => Date.now() - x.at < PROBLEM_WINDOW_MS);
     if (recentLease.length) {
       problems.push({ kind: 'lease', text: `唤醒租约超时 ${recentLease.length} 次（最近 ${recentLease[recentLease.length - 1].key}）` });
+    }
+    // 网关掉线：最容易被忽略、后果最重的故障——机器人还在，但一条消息都收不到。
+    const downMs = snowlumaHealth.connected ? 0 : (snowlumaHealth.downSince ? Date.now() - snowlumaHealth.downSince : 0);
+    if (downMs > 5 * 60_000) {
+      problems.push({
+        kind: 'gateway',
+        text: `QQ 网关掉线 ${Math.round(downMs / 60000)} 分钟：需要在 SnowLuma 里重新登录（http://127.0.0.1:6081）`
+      });
+    }
+    // 休眠：合盖会让 QQ 会话失效，且 caffeinate 拦不住合盖休眠。
+    if (sleepWatch.count > 0 && Date.now() - sleepWatch.lastAt < 24 * 60 * 60 * 1000) {
+      problems.push({
+        kind: 'sleep',
+        text: `桥接运行期间休眠过 ${sleepWatch.count} 次：休眠会让 QQ 会话失效。彻底防休眠：sudo pmset -a disablesleep 1`
+      });
     }
     const recentSlow = slowTurns.filter((x) => Date.now() - x.at < PROBLEM_WINDOW_MS);
     if (recentSlow.length >= 2 || recentSlow.some((x) => x.seconds >= SLOW_TURN_ALERT_MS / 1000)) {
@@ -3907,6 +3941,10 @@ async function main() {
   /** 供 /api/status 与控制台使用的只读快照。 */
   function snowlumaHealthSnapshot() {
     const now = Date.now();
+    // 断线起点。网关掉了但没人知道 = 机器人静默好几天；控制台的「待处理」靠它计时。
+    if (snowlumaHealth.connected) snowlumaHealth.downSince = 0;
+    else if (!snowlumaHealth.downSince) snowlumaHealth.downSince = now;
+    const downMs = snowlumaHealth.downSince ? now - snowlumaHealth.downSince : 0;
     const agoMs = snowlumaHealth.lastPacketAt ? now - snowlumaHealth.lastPacketAt : null;
     const silent = snowlumaHealth.lastPacketAt > 0 && agoMs > SNOWLUMA_SILENCE_WARN_MS;
     // 只有 SnowLuma **明确自报** good=false 才算"确认坏了"（接收链路）。
@@ -3927,6 +3965,8 @@ async function main() {
       // `bot`：它在本闭包里声明得晚得多（`const`，TDZ），一旦有人把本函数提前调用就会
       // 抛 "Cannot access 'bot' before initialization"。
       connected: snowlumaHealth.connected,
+      downSince: snowlumaHealth.downSince || 0,
+      downMs,
       accountOnline: snowlumaHealth.accountOnline,
       good: snowlumaHealth.good,
       goodSource: snowlumaHealth.goodSource || null,
@@ -3977,8 +4017,39 @@ async function main() {
   }
 
   /** 边沿触发地告警/恢复，避免每轮探测都刷一行日志。 */
+  let gatewayAlertAt = 0;
+
+  /**
+   * 网关掉线超过 5 分钟就喊一次。
+   *
+   * 为什么必须有：QQ 掉线后桥接只会默默重连，机器人看起来"活着"，实际一条消息都收不到。
+   * 上一次就是这么静默了两天多。提醒事项是此刻唯一还能把人叫过来的通道（QQ 本身已经断了）。
+   * 6 小时冷却，避免每分钟刷一条。
+   */
+  async function maybeAlertGatewayDown(snap) {
+    if (snap.connected) { gatewayAlertAt = 0; return; }
+    const downMs = Number(snap.downMs) || 0;
+    if (downMs < 5 * 60_000) return;
+    if (gatewayAlertAt && Date.now() - gatewayAlertAt < 6 * 60 * 60_000) return;
+    gatewayAlertAt = Date.now();
+    const minutes = Math.round(downMs / 60000);
+    log(`⚠️ QQ 网关已断线 ${minutes} 分钟：需要在 SnowLuma 里重新登录（http://127.0.0.1:6081）`);
+    const reminderCfg = normalizeRemindersConfig(cfg.socialV2?.reminders);
+    if (!reminderCfg.enabled) return;
+    try {
+      await createReminder({
+        title: 'QQ 网关掉线：大肥鱼收不到消息了',
+        notes: `桥接检测到 SnowLuma 断线 ${minutes} 分钟。\n打开 http://127.0.0.1:6081 点「确定」→「登录」，扫码后桥接会自动重连。`,
+        config: reminderCfg
+      });
+    } catch (error) {
+      log(`[snowluma] 掉线提醒写入失败：${error?.message ?? error}`);
+    }
+  }
+
   function reportSnowlumaHealth() {
     const snap = snowlumaHealthSnapshot();
+    void maybeAlertGatewayDown(snap);
     maybeAutoRestartSnowluma(snap);
     if (snap.degraded && !snowlumaHealth.degraded) {
       snowlumaHealth.degraded = true;
@@ -14787,6 +14858,9 @@ async function main() {
 
   startDshWatch();
   startSnowlumaWatch();
+  // 休眠采样：启动先记基线，之后每 30 分钟看一眼有没有新的睡眠事件。
+  sampleSleepEvents();
+  setInterval(sampleSleepEvents, 30 * 60_000).unref?.();
   startConsoleServer();
 
   /**

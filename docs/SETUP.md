@@ -122,6 +122,14 @@ node packages/bridge/scripts/install-nosleep.mjs
 ```
 
 - 只阻止**系统**睡眠，不保持屏幕常亮：屏幕可以正常熄灭；合盖仍会睡。
+- 合盖也睡是 macOS 的独立策略，`caffeinate` 拦不住。要彻底不让它睡（包括合盖）：
+
+  ```bash
+  sudo pmset -a disablesleep 1     # 恢复：sudo pmset -a disablesleep 0
+  ```
+
+  代价是电池会实打实地掉。只在插电、且确实要 7×24 在线时开。桥接会统计启动后的休眠次数，
+  出现在控制台「待处理」里，不会不声不响地掉线。
 - `caffeinate -s` 只在 AC 电源下生效；拔电后自动释放，不会拖累续航。
 - 脚本源在 `packages/bridge/scripts/nosleep-on-ac.sh`；安装时复制到 `~/Library/Application Support/dsh-omni/`，因为 launchd 的 `/bin/sh` 读不了 `~/Documents`（macOS TCC）。
 - 如果发现旧的 `ai.openclaw.nosleep-on-ac`，会先停用它并把 plist 改名为 `.disabled-by-dsh-omni`，避免两个 `caffeinate` 叠加。
@@ -205,6 +213,8 @@ node packages/bridge/scripts/cleanup-workspaces.mjs --delete-obsolete
 **DSH 重启后没有回复。** 先在控制台查看 DSH 和 SnowLuma 的连接状态。macOS 上重新运行 `start-mac.sh`，或者检查 watchdog 日志。也要确认测试会话在白名单中、当前模式允许回复。
 
 **控制台打不开或要求令牌。** 检查 `consolePort` 是否被占用，令牌位于 `packages/bridge/data/console-token`。
+
+**QQ 突然不回、控制台显示「网关掉线」。** 先看 `curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:3000/get_login_info`：返回 `000` 说明容器里 QQ 没登录（常见于合盖休眠后会话失效，或容器被重启）。打开 <http://127.0.0.1:6081>（容器桌面）点「确定」→「登录」，扫码后桥接几秒内自动重连。桥接断线超过 5 分钟会写一条 macOS 提醒，避免静默好几天。
 
 **QQ 工具返回「未授权：请提供控制台访问令牌」。** 检查 MCP 能否读取上述令牌文件；旧布局 `state/console-token` 也兼容。升级或修改路径后，重启 DSH，让 MCP 重新加载。
 

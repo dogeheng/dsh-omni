@@ -203,6 +203,25 @@ await test('relay: a script asks a question and gets the quoted answer back', as
   }
 });
 
+await test('a silent gateway and real sleep both surface as 待处理', async (h) => {
+  // 网关掉线超过 5 分钟：机器人还"活着"，但一条消息都收不到——这是最容易被忽略的故障。
+  h.snowlumaHealth.connected = false;
+  h.snowlumaHealth.downSince = Date.now() - 6 * 60_000;
+  const gateway = h.deliveryProblems().find((p) => p.kind === 'gateway');
+  assert.ok(gateway, '网关掉线要出现在待处理里');
+  assert.match(gateway.text, /6 分钟/);
+  h.snowlumaHealth.connected = true;
+  h.snowlumaHealth.downSince = 0;
+  assert.equal(h.deliveryProblems().filter((p) => p.kind === 'gateway').length, 0, '恢复后自动消失');
+
+  // 合盖/空闲休眠：caffeinate 拦不住，醒来 QQ 会话就失效。
+  h.sleepWatch.count = 2;
+  h.sleepWatch.lastAt = Date.now();
+  const sleep = h.deliveryProblems().find((p) => p.kind === 'sleep');
+  assert.ok(sleep, '休眠要出现在待处理里');
+  assert.match(sleep.text, /disablesleep 1/);
+});
+
 await test('closed-agent session is not reused after switching to chat', async (h) => {
   h.setMode('closed-agent');
   const privileged = await h.ensureSession('private:123');
