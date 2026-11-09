@@ -427,6 +427,12 @@ export function createRelay({
       }
     }
     if (expired.length) trim();
+    // 发送失败（网关掉线）的请求会留在 queued。旧写法只有 create/回答才触发 pump，
+    // 于是网关恢复后没人再叫醒它们 —— 消息一直躺到超时。每次扫描给一次机会。
+    const waiting = new Set(requests
+      .filter((r) => r.status === 'queued' && (r.kind === 'ask' || r.kind === 'notify'))
+      .map((r) => r.conversation));
+    for (const conversation of waiting) void pump(conversation);
     return expired;
   }
 

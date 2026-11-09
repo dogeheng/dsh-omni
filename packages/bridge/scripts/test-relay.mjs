@@ -151,6 +151,33 @@ function makeRelay(fileSuffix = '') {
 }
 
 {
+  // 网关掉线时留在 queued；恢复后 sweep 要能把它发出去（而不是躺到超时）
+  let fail = true;
+  const sent = [];
+  const relay = createRelay({
+    stateFile: path.join(temp, 'state-gw.json'),
+    appsFile: path.join(temp, 'apps-gw.json'),
+    send: async (conversation, text) => {
+      if (fail) throw new Error('SnowLuma WebSocket closed before opening');
+      sent.push(text);
+      return String(9000 + sent.length);
+    },
+    defaultConversation: () => 'private:123',
+    defaultTimeoutSec: 60
+  });
+  relay.load();
+  const { app } = relay.createApp('gw-down');
+  const queued = await relay.create({ app, text: '网关挂了' });
+  ok(queued.status === 'queued', '发不出去时留在 queued（不是直接失败）');
+  ok(!sent.length, '确实一条都没发出去');
+  fail = false;
+  relay.sweep();
+  await new Promise((resolve) => setTimeout(resolve, 20));
+  ok(relay.get(queued.id).status === 'sent', '网关恢复后由 sweep 补发');
+  ok(sent.length === 1, '补发只发一次');
+}
+
+{
   // 超时
   const { relay } = makeRelay('-timeout');
   const { app } = relay.createApp('slow');
