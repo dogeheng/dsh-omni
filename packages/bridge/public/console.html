@@ -2150,8 +2150,8 @@ button:active:not(:disabled) {
 <details class="settings-group" id="callGroup"><summary>通话（自动接听 · 只接指定的人）</summary><div class="settings-content">
       <div class="meta" style="margin-bottom:8px">
         让她在容器里的 QQ 上接起电话（机制见 <code>docs/CALL.md</code>）。
-        <b>认人靠来电窗口的标题</b>：标题里出现白名单里的昵称或备注才接，否则不接。
-        白名单填 QQ 号即可，运行时会用 OneBot 的 <code>get_friend_list</code> 把号码换成名字。
+        <b>认人靠头像比对</b>：来电浮层里的头像和 qlogo 上这个 QQ 号的头像做相关性比较，
+        超过阈值才接（实测同一人 1.000、陌生人 0.04）。窗口标题也顺带匹配一次昵称/备注。
         <b>留空 = 谁都不接</b>（fail-closed）。
       </div>
       <div class="row">
@@ -2171,7 +2171,7 @@ button:active:not(:disabled) {
         <button id="callSaveBtn" type="button" class="btn-secondary">保存通话设置</button>
         <span id="callMsg" class="meta"></span>
       </div>
-      <div class="meta">改完需要<b>重启 call-loop</b> 才生效（它启动时读一次配置）。接听坐标要先用 <code>--auto-answer learn</code> 标定，见文档。</div>
+      <div class="meta">改完需要<b>重启 call-loop</b> 才生效（它启动时读一次配置）。接听坐标<b>留空</b>就用实测的默认位置（窗口中心偏右下 68/186 像素）；只有窗口尺寸特殊时才需要填。截图与几何见 <code>docs/CALL.md</code>。</div>
     </div></details>
 <details class="settings-group" id="v2VoiceIoGroup"><summary>听懂语音 / 开口说话（ASR · TTS）</summary><div class="settings-content">
       <div class="meta" style="margin-bottom:8px">

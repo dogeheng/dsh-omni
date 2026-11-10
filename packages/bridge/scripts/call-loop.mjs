@@ -48,6 +48,8 @@ function parseArgs(argv) {
     acceptX: null,
     acceptY: null,
     simulateCall: false,
+    identifyShot: '',
+    identifySize: '800x600',
     asrPromptHint: ''
   };
   for (let i = 0; i < argv.length; i++) {
@@ -75,6 +77,8 @@ function parseArgs(argv) {
     else if (a === '--accept-x') out.acceptX = Number(val());
     else if (a === '--accept-y') out.acceptY = Number(val());
     else if (a === '--simulate-call') out.simulateCall = true;
+    else if (a === '--identify-shot') out.identifyShot = path.resolve(val());
+    else if (a === '--identify-size') out.identifySize = val();
     else if (a === '--hint') out.asrPromptHint = val();
     else if (a === '-h' || a === '--help') { out.help = true; }
     else throw new Error(`未知参数：${a}`);
@@ -468,6 +472,74 @@ class Mic {
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
+// 来电浮层的几何（800x600 窗口实测；全部相对窗口中心，窗口大小变了也不会错）
+const AVATAR_DIAMETER = 116;
+const AVATAR_DY = -129;          // 头像圆心 = 窗口中心 -(0,129)
+const ACCEPT_DX = -68;           // 接听按钮圆心 = 窗口中心 +(-68,+186)
+const ACCEPT_DY = 186;
+
+const AVATAR_CACHE = path.join(ROOT, 'data', 'call-avatars');
+
+/** 32x32 灰度向量里、半径为 14.5 的圆内像素（避开圆外角上的背景）。 */
+const AVATAR_MASK = (() => {
+  const pts = [];
+  for (let y = 0; y < 32; y++) {
+    for (let x = 0; x < 32; x++) {
+      if ((x - 15.5) ** 2 + (y - 15.5) ** 2 <= 14.5 ** 2) pts.push(y * 32 + x);
+    }
+  }
+  return pts;
+})();
+
+function correlation(a, b) {
+  if (!a || !b || a.length !== b.length) return 0;
+  let n = 0, sa = 0, sb = 0;
+  for (const i of AVATAR_MASK) { sa += a[i]; sb += b[i]; n++; }
+  const ma = sa / n, mb = sb / n;
+  let num = 0, da = 0, db = 0;
+  for (const i of AVATAR_MASK) {
+    const u = a[i] - ma, v = b[i] - mb;
+    num += u * v; da += u * u; db += v * v;
+  }
+  return (da && db) ? num / Math.sqrt(da * db) : 0;
+}
+
+async function ffmpegGray(input, filter) {
+  if (!input || !fs.existsSync(input)) return null;
+  return new Promise((resolve) => {
+    const args = ['-hide_banner', '-loglevel', 'error', '-i', input, '-vf', filter,
+      '-frames:v', '1', '-f', 'rawvideo', '-pix_fmt', 'gray', 'pipe:1'];
+    const ff = spawn('ffmpeg', args, { stdio: ['ignore', 'pipe', 'ignore'] });
+    const chunks = [];
+    ff.stdout.on('data', (c) => chunks.push(c));
+    ff.on('close', (code) => resolve(code === 0 ? Buffer.concat(chunks) : null));
+    ff.on('error', () => resolve(null));
+  });
+}
+
+/** 白名单某个 QQ 号的头像，缩成 32x32 灰度后缓存 7 天。 */
+async function referenceAvatar(qq) {
+  fs.mkdirSync(AVATAR_CACHE, { recursive: true });
+  const raw = path.join(AVATAR_CACHE, `${qq}.raw`);
+  const jpg = path.join(AVATAR_CACHE, `${qq}.jpg`);
+  try {
+    if (fs.existsSync(raw) && Date.now() - fs.statSync(raw).mtimeMs < 7 * 86400000) {
+      const buf = fs.readFileSync(raw);
+      if (buf.length === 1024) return buf;
+    }
+  } catch { /* 缓存坏了就重下 */ }
+  try {
+    const res = await fetch(`https://q1.qlogo.cn/g?b=qq&nk=${encodeURIComponent(qq)}&s=640`, {
+      signal: AbortSignal.timeout(8000)
+    });
+    if (!res.ok) return null;
+    fs.writeFileSync(jpg, Buffer.from(await res.arrayBuffer()));
+    const vec = await ffmpegGray(jpg, 'scale=32:32');
+    if (vec?.length === 1024) { fs.writeFileSync(raw, vec); return vec; }
+  } catch { /* 网络失败就当没有这个人的头像 */ }
+  return null;
+}
+
 function execP(cmd, args) {
   return new Promise((resolve, reject) => {
     execFile(cmd, args, { timeout: 15000, maxBuffer: 8 * 1024 * 1024 }, (err, stdout, stderr) => {
@@ -550,19 +622,45 @@ class CallWatcher {
     return [];
   }
 
-  async _checkCaller(win) {
+  /** 认人：先看窗口标题，再看头像。认不出来就返回 null（不接）。 */
+  async _identify(win, shotPath) {
     if (this.allowIds.length === 0 && this.allowNames.length === 0) {
       this.log('call', '白名单是空的——不接（先到控制台「通话」里加人）');
       return null;
     }
     const names = await this._allowedNames();
-    const hit = matchCaller(win.title, names);
-    if (!hit) {
-      this.log('call', `标题「${win.title}」里没有白名单里的人，不接`);
+    const byTitle = matchCaller(win.title, names);
+    if (byTitle) {
+      this.log('call', `认出来了（标题）：${byTitle}`);
+      return { who: byTitle, via: 'title' };
+    }
+    if (!shotPath) {
+      this.log('call', '没截到图，认不出是谁，不接');
       return null;
     }
-    this.log('call', `认出来了：${hit}`);
-    return hit;
+    // 头像：浮层里固定居中，116px 圆，圆心在窗口中心上方 129px
+    const crop = `crop=${AVATAR_DIAMETER}:${AVATAR_DIAMETER}:`
+      + `${Math.round(win.width / 2 - AVATAR_DIAMETER / 2)}:`
+      + `${Math.round(win.height / 2 + AVATAR_DY - AVATAR_DIAMETER / 2)},scale=32:32`;
+    const vec = await ffmpegGray(shotPath, crop);
+    if (!vec || vec.length !== 1024) {
+      this.log('call', '裁剪头像失败，不接');
+      return null;
+    }
+    let best = { score: -2, qq: '' };
+    for (const qq of this.allowIds) {
+      const ref = await referenceAvatar(qq);
+      if (!ref) { this.log('call', `QQ ${qq} 的头像取不到`); continue; }
+      const score = correlation(vec, ref);
+      this.log('call', `头像比对 QQ ${qq}: ${score.toFixed(3)}`);
+      if (score > best.score) best = { score, qq };
+    }
+    if (best.qq && best.score >= 0.6) {
+      this.log('call', `认出来了（头像）：QQ ${best.qq}，相关 ${best.score.toFixed(3)}`);
+      return { who: `QQ ${best.qq}`, via: 'avatar' };
+    }
+    this.log('call', `头像没对上（最高 ${best.score.toFixed(3)}），不接`);
+    return null;
   }
 
   async _tick() {
@@ -583,28 +681,31 @@ class CallWatcher {
   async _onNewWindow(win) {
     this.log('call', `新窗口 ${win.id} ${win.width}x${win.height}@${win.x},${win.y}「${win.title}」`);
     await sleep(900); // 等它渲染出来
-    if (this.mode === 'on') {
-      const who = await this._checkCaller(win);
-      if (!who) { await this._capture(win, 1); this.cooldownUntil = Date.now() + 15000; return; }
+    const shot = await this._capture(win, this.mode === 'learn' ? 3 : 1);
+    if (this.mode !== 'on') return;
+
+    const who = await this._identify(win, shot);
+    if (!who) {
+      this.cooldownUntil = Date.now() + 15000; // 别对着同一个窗口反复认
+      return;
     }
-    if (this.mode === 'on' && this.accept) {
-      const x = win.x + this.accept.x;
-      const y = win.y + this.accept.y;
-      try {
-        await execP('docker', ['exec', this.container, 'sh', '-c',
-          `DISPLAY=:1 xdotool mousemove ${x} ${y} click 1`]);
-        this.log('call', `已点击接听 (${x},${y})`);
-        this.cooldownUntil = Date.now() + 20000; // 别再连点
-      } catch (error) {
-        this.log('call', `点击失败：${String(error?.message ?? error).slice(0, 80)}`);
-      }
-    } else if (this.mode === 'on') {
-      this.log('call', '没给 --accept-x/--accept-y，只截图不点');
+
+    const ax = this.accept ? this.accept.x : Math.round(win.width / 2 + ACCEPT_DX);
+    const ay = this.accept ? this.accept.y : Math.round(win.height / 2 + ACCEPT_DY);
+    const x = win.x + ax;
+    const y = win.y + ay;
+    try {
+      await execP('docker', ['exec', this.container, 'sh', '-c',
+        `DISPLAY=:1 xdotool mousemove ${x} ${y} click 1`]);
+      this.log('call', `已点击接听 (${x},${y}) ← ${who.who}`);
+      this.cooldownUntil = Date.now() + 20000;
+    } catch (error) {
+      this.log('call', `点击失败：${String(error?.message ?? error).slice(0, 80)}`);
     }
-    await this._capture(win, this.mode === 'learn' ? 3 : 1);
   }
 
   async _capture(win, frames = 1) {
+    let firstHost = null;
     const inner = `/tmp/call-window-${Date.now()}.png`;
     const x = Math.max(0, win.x);
     const y = Math.max(0, win.y);
@@ -618,10 +719,12 @@ class CallWatcher {
         const host = path.join(os.tmpdir(), path.basename(file));
         await execP('docker', ['cp', `${this.container}:${file}`, host]);
         this.log('call', `截图 ${host}`);
+        if (!firstHost) firstHost = host;
       } catch (error) {
         this.log('call', `截图失败：${String(error?.message ?? error).slice(0, 80)}`);
       }
     }
+    return firstHost;
   }
 
   close() {
@@ -751,6 +854,21 @@ async function main() {
   })();
 
   log('boot', `容器=${opts.container} 设备=${opts.device} preset=${opts.preset || '无'}`);
+
+  // 诊断用：拿一张已经截好的图跑一遍认人（不需要来电）
+  if (opts.identifyShot) {
+    const callCfg = normalizeCallConfig(cfg.call);
+    const [w, h] = String(opts.identifySize).split('x').map(Number);
+    const watcher = new CallWatcher({
+      container: opts.container, mode: 'on', accept: callCfg.accept, log,
+      allowIds: callCfg.allow, allowNames: callCfg.allowNames,
+      oneBotUrl: cfg.snowluma?.httpUrl || '', oneBotToken: cfg.snowluma?.accessToken || ''
+    });
+    log('call', `诊断：${opts.identifyShot}（${w}x${h}）`);
+    const who = await watcher._identify({ id: 'diag', title: 'QQ', width: w, height: h, x: 0, y: 0 }, opts.identifyShot);
+    log('call', who ? `结论：${who.who}（${who.via}）` : '结论：认不出来');
+    process.exit(who ? 0 : 2);
+  }
 
   const brain = new Brain({ cfg, preset: opts.preset, cwd: opts.cwd, log });
   await brain.open();
