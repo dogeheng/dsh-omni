@@ -9,6 +9,7 @@
 export const CALL_DEFAULTS = Object.freeze({
   autoAnswer: false,
   allow: [],
+  allowGroups: [],
   allowNames: [],
   acceptX: null,
   acceptY: null
@@ -50,6 +51,7 @@ export function normalizeCallConfig(raw) {
   return {
     autoAnswer: r.autoAnswer === true,
     allow: toIdList(r.allow),
+    allowGroups: toIdList(r.allowGroups),
     allowNames: toNameList(r.allowNames),
     acceptX,
     acceptY,

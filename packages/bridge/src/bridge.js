@@ -6119,6 +6119,7 @@ async function main() {
             file.call = {
               autoAnswer: nextCall.autoAnswer,
               allow: nextCall.allow,
+              allowGroups: nextCall.allowGroups,
               allowNames: nextCall.allowNames,
               acceptX: nextCall.acceptX,
               acceptY: nextCall.acceptY

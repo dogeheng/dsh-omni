@@ -2163,6 +2163,10 @@ button:active:not(:disabled) {
         <label style="flex:1">只接这些人（QQ 号，逗号或换行分隔）</label>
         <textarea id="callAllow" rows="2" style="flex:2" placeholder="例如 10001, 10002"></textarea>
       </div>
+      <div class="row" style="align-items:flex-start">
+        <label style="flex:1">只接这些群（群号，逗号或换行分隔）</label>
+        <textarea id="callAllowGroups" rows="2" style="flex:2" placeholder="群语音：群号，例如 123456789"></textarea>
+      </div>
       <div class="row">
         <label style="flex:1">额外匹配的名字（可选）</label>
         <input type="text" id="callAllowNames" style="flex:2" placeholder="例如 大肥鱼">
@@ -3966,6 +3970,7 @@ async function loadCallConfig() {
     const c = r?.config?.call ?? {};
     callEl('callAutoAnswer').checked = c.autoAnswer === true;
     callEl('callAllow').value = (c.allow ?? []).join(', ');
+    callEl('callAllowGroups').value = (c.allowGroups ?? []).join(', ');
     callEl('callAllowNames').value = (c.allowNames ?? []).join(', ');
     callEl('callAcceptX').value = c.acceptX ?? '';
     callEl('callAcceptY').value = c.acceptY ?? '';
@@ -3982,6 +3987,7 @@ async function saveCallConfig() {
     call: {
       autoAnswer: callEl('callAutoAnswer').checked,
       allow: callEl('callAllow').value,
+      allowGroups: callEl('callAllowGroups').value,
       allowNames: callEl('callAllowNames').value,
       acceptX: num('callAcceptX'),
       acceptY: num('callAcceptY')

@@ -268,13 +268,30 @@ class Vad {
 // ── 识别 ────────────────────────────────────────────────────────────────────
 
 class Asr {
-  constructor({ modelDir, numThreads = 2, language = 'zh' }) {
+  constructor({ modelDir, numThreads = 2, language = 'zh', log = () => {} }) {
+    this.log = log;
     this.modelDir = modelDir;
     this.numThreads = numThreads;
     this.language = language;
     this.child = null;
     this.seq = 0;
     this.pending = new Map();
+  }
+
+  async ensure() {
+    if (!this.child) await this.open();
+  }
+
+  /** 挂断后把识别进程结束掉，855MB 立刻还回去；下次通话再懒加载。 */
+  unload(reason = '') {
+    if (!this.child) return;
+    try { this.child.kill('SIGTERM'); } catch {}
+    this.child = null;
+    for (const [, waiter] of this.pending) {
+      try { waiter.reject(new Error('识别进程已卸载')); } catch {}
+    }
+    this.pending.clear();
+    this.log(reason ? `识别进程已释放（${reason}）` : '识别进程已释放');
   }
 
   async open() {
@@ -306,7 +323,8 @@ class Asr {
     });
   }
 
-  decode(samples) {
+  async decode(samples) {
+    await this.ensure();
     const id = ++this.seq;
     return new Promise((resolve, reject) => {
       this.pending.set(id, { resolve, reject });
@@ -333,7 +351,8 @@ const MIC_FRAME = 1920; // 20ms，单声道 s16le
  * 所以这里做成一个真正的麦克风：每 20ms 恒定写一帧，没话说就写本底噪声。
  */
 class Mic {
-  constructor({ container, fifo, outWav, noiseLevel = 40 }) {
+  constructor({ container, fifo, outWav, noiseLevel = 40, onRecorderChange = () => {} }) {
+    this.onRecorderChange = onRecorderChange;
     this.container = container;
     this.fifo = fifo;
     this.outWav = outWav;
@@ -394,6 +413,7 @@ class Mic {
     const recording = outputs.split('\n').some((l) => l.trim() && l.trim().split(/\s+/)[1] === idx);
     if (recording === this.recorder) return;
     this.recorder = recording;
+    try { this.onRecorderChange(recording); } catch {}
     if (recording) {
       log('mic', '检测到 QQ 在录音，麦克风开泵');
       this.pumping = true;
@@ -518,10 +538,10 @@ async function ffmpegGray(input, filter) {
 }
 
 /** 白名单某个 QQ 号的头像，缩成 32x32 灰度后缓存 7 天。 */
-async function referenceAvatar(qq) {
+async function referenceAvatar(id, kind = 'friend') {
   fs.mkdirSync(AVATAR_CACHE, { recursive: true });
-  const raw = path.join(AVATAR_CACHE, `${qq}.raw`);
-  const jpg = path.join(AVATAR_CACHE, `${qq}.jpg`);
+  const raw = path.join(AVATAR_CACHE, `${kind}-${id}.raw`);
+  const jpg = path.join(AVATAR_CACHE, `${kind}-${id}.jpg`);
   try {
     if (fs.existsSync(raw) && Date.now() - fs.statSync(raw).mtimeMs < 7 * 86400000) {
       const buf = fs.readFileSync(raw);
@@ -529,15 +549,25 @@ async function referenceAvatar(qq) {
     }
   } catch { /* 缓存坏了就重下 */ }
   try {
-    const res = await fetch(`https://q1.qlogo.cn/g?b=qq&nk=${encodeURIComponent(qq)}&s=640`, {
-      signal: AbortSignal.timeout(8000)
-    });
+    const url = kind === 'group'
+      ? `https://p.qlogo.cn/gh/${encodeURIComponent(id)}/${encodeURIComponent(id)}/640`
+      : `https://q1.qlogo.cn/g?b=qq&nk=${encodeURIComponent(id)}&s=640`;
+    const res = await fetch(url, { signal: AbortSignal.timeout(8000) });
     if (!res.ok) return null;
     fs.writeFileSync(jpg, Buffer.from(await res.arrayBuffer()));
     const vec = await ffmpegGray(jpg, 'scale=32:32');
     if (vec?.length === 1024) { fs.writeFileSync(raw, vec); return vec; }
   } catch { /* 网络失败就当没有这个人的头像 */ }
   return null;
+}
+
+/** 上一轮被强杀时容器里可能留着 parec / cat，启动先扫一遍。 */
+async function sweepStale() {
+  try {
+    await execP('docker', ['exec', 'snowluma', 'sh', '-c',
+      'for f in /tmp/call-capture.pid /tmp/call-mic.pid; do '
+      + '[ -f "$f" ] && kill "$(cat "$f")" 2>/dev/null; rm -f "$f"; done; true']);
+  } catch { /* 容器没起来就算了 */ }
 }
 
 function execP(cmd, args) {
@@ -557,12 +587,13 @@ function execP(cmd, args) {
  * 所以只在显式开 `--auto-answer` 时才启用，而且答完有 20 秒冷却。
  */
 class CallWatcher {
-  constructor({ container, mode, accept, log, allowIds = [], allowNames = [], oneBotUrl = '', oneBotToken = '' }) {
+  constructor({ container, mode, accept, log, allowIds = [], allowGroups = [], allowNames = [], oneBotUrl = '', oneBotToken = '' }) {
     this.container = container;
     this.mode = mode;
     this.accept = accept;
     this.log = log;
     this.allowIds = allowIds;
+    this.allowGroups = allowGroups;
     this.allowNames = allowNames;
     this.oneBotUrl = oneBotUrl;
     this.oneBotToken = oneBotToken;
@@ -624,8 +655,8 @@ class CallWatcher {
 
   /** 认人：先看窗口标题，再看头像。认不出来就返回 null（不接）。 */
   async _identify(win, shotPath) {
-    if (this.allowIds.length === 0 && this.allowNames.length === 0) {
-      this.log('call', '白名单是空的——不接（先到控制台「通话」里加人）');
+    if (this.allowIds.length === 0 && this.allowGroups.length === 0 && this.allowNames.length === 0) {
+      this.log('call', '白名单是空的——不接（先到控制台「通话」里加人或加群）');
       return null;
     }
     const names = await this._allowedNames();
@@ -647,19 +678,26 @@ class CallWatcher {
       this.log('call', '裁剪头像失败，不接');
       return null;
     }
-    let best = { score: -2, qq: '' };
+    let best = { score: -2, label: '' };
     for (const qq of this.allowIds) {
-      const ref = await referenceAvatar(qq);
+      const ref = await referenceAvatar(qq, 'friend');
       if (!ref) { this.log('call', `QQ ${qq} 的头像取不到`); continue; }
       const score = correlation(vec, ref);
-      this.log('call', `头像比对 QQ ${qq}: ${score.toFixed(3)}`);
-      if (score > best.score) best = { score, qq };
+      this.log('call', `头像比对 好友 ${qq}: ${score.toFixed(3)}`);
+      if (score > best.score) best = { score, label: `QQ ${qq}` };
     }
-    if (best.qq && best.score >= 0.6) {
-      this.log('call', `认出来了（头像）：QQ ${best.qq}，相关 ${best.score.toFixed(3)}`);
-      return { who: `QQ ${best.qq}`, via: 'avatar' };
+    for (const gid of this.allowGroups) {
+      const ref = await referenceAvatar(gid, 'group');
+      if (!ref) { this.log('call', `群 ${gid} 的头像取不到`); continue; }
+      const score = correlation(vec, ref);
+      this.log('call', `头像比对 群 ${gid}: ${score.toFixed(3)}`);
+      if (score > best.score) best = { score, label: `群 ${gid}` };
     }
-    this.log('call', `头像没对上（最高 ${best.score.toFixed(3)}），不接`);
+    if (best.label && best.score >= 0.6) {
+      this.log('call', `认出来了（头像）：${best.label}，相关 ${best.score.toFixed(3)}`);
+      return { who: best.label, via: 'avatar' };
+    }
+    this.log('call', `头像没对上（最高 ${best.score.toFixed(3)} ${best.label || '无候选'}），不接`);
     return null;
   }
 
@@ -861,7 +899,7 @@ async function main() {
     const [w, h] = String(opts.identifySize).split('x').map(Number);
     const watcher = new CallWatcher({
       container: opts.container, mode: 'on', accept: callCfg.accept, log,
-      allowIds: callCfg.allow, allowNames: callCfg.allowNames,
+      allowIds: callCfg.allow, allowGroups: callCfg.allowGroups, allowNames: callCfg.allowNames,
       oneBotUrl: cfg.snowluma?.httpUrl || '', oneBotToken: cfg.snowluma?.accessToken || ''
     });
     log('call', `诊断：${opts.identifyShot}（${w}x${h}）`);
@@ -873,13 +911,33 @@ async function main() {
   const brain = new Brain({ cfg, preset: opts.preset, cwd: opts.cwd, log });
   await brain.open();
 
-  const asr = new Asr({ modelDir: asrDir, numThreads: cfg.socialV2?.asr?.numThreads ?? 2 });
+  const asr = new Asr({
+    modelDir: asrDir,
+    numThreads: cfg.socialV2?.asr?.numThreads ?? 2,
+    log: (m) => log('asr', m)
+  });
   await asr.open();
 
   const tts = opts.tts
     ? createTtsService({ getConfig: () => cfg.socialV2?.speak ?? {}, root: ROOT, log: (m) => log('tts', m) })
     : null;
-  const mic = new Mic({ container: opts.container, fifo: opts.fifo, outWav: opts.outWav, noiseLevel: opts.micNoise });
+  await sweepStale();
+  const mic = new Mic({
+    container: opts.container,
+    fifo: opts.fifo,
+    outWav: opts.outWav,
+    noiseLevel: opts.micNoise,
+    onRecorderChange: (recording) => {
+      if (recording) {
+        log('call', '通话接通：提前把识别进程拉起来');
+        asr.ensure().catch((e) => log('asr', `预加载失败：${String(e?.message ?? e).slice(0, 60)}`));
+      } else {
+        log('call', '通话结束：回收');
+        try { mic.flush(); } catch {}
+        asr.unload('通话结束');
+      }
+    }
+  });
   mic.start();
 
   let watcher = null;
@@ -890,6 +948,7 @@ async function main() {
       ? { x: opts.acceptX, y: opts.acceptY }
       : callCfg.accept;
     log('call', `自动接听：${autoMode}｜白名单 ${callCfg.allow.length} 人 ${callCfg.allow.join(',') || '（空）'}`
+      + `｜群 ${callCfg.allowGroups.length} 个 ${callCfg.allowGroups.join(',') || '（空）'}`
       + `｜接听坐标 ${accept ? `${accept.x},${accept.y}` : '未设置'}`);
     watcher = new CallWatcher({
       container: opts.container,
@@ -897,6 +956,7 @@ async function main() {
       accept,
       log,
       allowIds: callCfg.allow,
+      allowGroups: callCfg.allowGroups,
       allowNames: callCfg.allowNames,
       oneBotUrl: cfg.snowluma?.httpUrl || '',
       oneBotToken: cfg.snowluma?.accessToken || ''

@@ -14,12 +14,21 @@ const empty = normalizeCallConfig(undefined);
   ? ok('缺省配置是关闭且不接任何人')
   : bad('缺省配置是关闭且不接任何人', JSON.stringify(empty));
 
-const c = normalizeCallConfig({ autoAnswer: true, allow: ['123456', 234567, 'abc', '12'], allowNames: '小明, 小红', acceptX: '300', acceptY: 340 });
+const c = normalizeCallConfig({ autoAnswer: true, allow: ['123456', 234567, 'abc', '12'], allowGroups: ['987654321'], allowNames: '小明, 小红', acceptX: '300', acceptY: 340 });
 c.autoAnswer === true && c.allow.length === 2 && c.accept.x === 300 && c.accept.y === 340
   ? ok('号码与坐标归一化', `${c.allow.join('/')} @${c.accept.x},${c.accept.y}`)
   : bad('号码与坐标归一化', JSON.stringify(c));
 
 c.allowNames.length === 2 ? ok('名字列表', c.allowNames.join('、')) : bad('名字列表', JSON.stringify(c.allowNames));
+
+const g = normalizeCallConfig({ allowGroups: '123456789, 987654321' });
+g.allowGroups.length === 2 && g.allowGroups[0] === '123456789'
+  ? ok('群号归一化', g.allowGroups.join('/'))
+  : bad('群号归一化', JSON.stringify(g.allowGroups));
+
+normalizeCallConfig({ allowGroups: ['abc', '12'] }).allowGroups.length === 0
+  ? ok('非法群号被丢掉')
+  : bad('非法群号被丢掉');
 
 normalizeCallConfig({ acceptX: 300 }).accept === null
   ? ok('只给一个坐标不算数')
