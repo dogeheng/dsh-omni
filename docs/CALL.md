@@ -54,18 +54,51 @@ node scripts/call-loop.mjs
 | `--container snowluma` | 容器名 |
 | `--device qq_out.monitor` | 抓哪个设备 |
 | `--preset qq-chat-v2` | 挂她的 QQ preset（会带来 QQ 工具，通话中她可能想发消息） |
+| `--mic-noise 40` | 麦克风在没人说话时的本底噪声幅度（见下文） |
 | `--no-tts` | 只识别和思考，不说话 |
 | `--from-wav a.wav --out-wav out.raw --once` | 离线自测，不碰容器 |
 | `--max-seconds 60` | 到点自动收尾 |
+
+## 为什么早先每句开头会听不清
+
+第一版跑真电话时，对方反馈「她回话的前几个字听不清，后面才逐渐清楚」。查下来是两个 bug，都不是"缺功能"：
+
+**① 麦克风是断续的。** 旧实现只在要说话时写一段，两段话之间管道是空的。QQ 的采集链
+（`rnnoise.so` 降噪 + AEC + AGC）在长时间没数据后要重新热身，每句开头半秒就被吃掉。
+现在改成**常开的 20ms 帧泵**：没话说就写本底噪声，声音一直连续，采集链不用热身。
+
+**② 管道会在没人听的时候囤数据。** PulseAudio 的 `pipe-source` 在没有录音者时会把
+写进去的东西攒着。实测攒到 **5.5 秒**——等于她的话整体晚 5.5 秒才到。现在麦克风
+只在检测到 QQ 真的在录 `qq_in` 时才开泵（每 3 秒查一次 `pactl list short source-outputs`），
+并口从来没有积压。
+
+如果重测后开头还是丢，那是 QQ 侧的 AGC/降噪在压轻声起头，可以试试换本底噪声：
+
+```bash
+node scripts/call-loop.mjs --mic-noise 0      # 纯数字静音
+node scripts/call-loop.mjs --mic-noise 150    # 更明显的房间噪声
+```
+
+（幅度 0 会让降噪/AGC 把它当"完全安静"；太大又会盖住轻声。默认 40 是折中。）
+
+## 进程清理
+
+`docker exec` 的客户端被杀，**容器里的 `parec` 不会跟着退**。所以两个子进程都写了 pid 文件
+（`/tmp/call-capture.pid`、`/tmp/call-mic.pid`），退出时按 pid 补一刀。
+早先测试留下的 3 个孤儿 `parec` 就是这么来的，如果发现残留：
+
+```bash
+docker exec snowluma pkill -f '[p]arec --device=qq_out.monitor'
+```
 
 ## 实测延迟（Apple M5，本机 CosyVoice）
 
 | 阶段 | 耗时 |
 | --- | --- |
-| SenseVoice 识别（已加载） | 85–115 ms |
-| DSH 一轮回复 | 1.4–2.6 s |
-| CosyVoice 合成 | 2.2–4.0 s |
-| **说完到听见她开口** | **4.0–6.3 s** |
+| SenseVoice 识别（已加载） | 85–120 ms |
+| DSH 一轮回复 | 1.2–2.6 s |
+| CosyVoice 合成 | 2.2–5.6 s |
+| **说完到听见她开口** | **4.0–7.0 s** |
 
 合成占了小一半。下一步把 TTS 按句流式化能压到 2 s 上下——现在是一整段合成完才发。
 

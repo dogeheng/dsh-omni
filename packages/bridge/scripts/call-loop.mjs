@@ -17,7 +17,7 @@
  */
 import fs from 'node:fs';
 import path from 'node:path';
-import { spawn, fork } from 'node:child_process';
+import { spawn, fork, execFile } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { NodeApiClient, unwrap, createTurnCollector } from '../src/dsh-client.js';
 import { pcm16ToFloat32, resampleLinear, parseWav } from '../src/voice-asr.js';
@@ -40,6 +40,7 @@ function parseArgs(argv) {
     once: false,
     tts: true,
     maxSeconds: 0,
+    micNoise: 40,
     asrPromptHint: ''
   };
   for (let i = 0; i < argv.length; i++) {
@@ -59,6 +60,7 @@ function parseArgs(argv) {
     else if (a === '--once') out.once = true;
     else if (a === '--no-tts') out.tts = false;
     else if (a === '--max-seconds') out.maxSeconds = Number(val()) || 0;
+    else if (a === '--mic-noise') out.micNoise = Number(val()) || 0;
     else if (a === '--hint') out.asrPromptHint = val();
     else if (a === '-h' || a === '--help') { out.help = true; }
     else throw new Error(`未知参数：${a}`);
@@ -99,13 +101,10 @@ class Capture {
 
   start() {
     if (this.opts.fromWav) return this._startFromWav();
-    const args = [
-      'exec', this.opts.container,
-      'parec', `--device=${this.opts.device}`,
-      '--format=s16le', `--rate=${SR}`, '--channels=1', '--raw'
-    ];
-    log('capture', `docker ${args.join(' ')}`);
-    this.child = spawn('docker', args, { stdio: ['ignore', 'pipe', 'pipe'] });
+    const inner = `echo $$ > /tmp/call-capture.pid; exec parec --device=${this.opts.device} `
+      + `--format=s16le --rate=${SR} --channels=1 --raw`;
+    log('capture', `docker exec ${this.opts.container} sh -c '${inner}'`);
+    this.child = spawn('docker', ['exec', this.opts.container, 'sh', '-c', inner], { stdio: ['ignore', 'pipe', 'pipe'] });
     this.child.stderr.on('data', (b) => log('capture', `stderr: ${String(b).trim()}`));
     this.child.on('exit', (code) => {
       if (!this.closed) log('capture', `parec 退出（code=${code}）`);
@@ -150,6 +149,11 @@ class Capture {
   close() {
     this.closed = true;
     try { this.child?.kill('SIGTERM'); } catch {}
+    // docker exec 的客户端被杀，容器里的 parec 不会跟着退 —— 按 pid 补一刀
+    try {
+      spawn('docker', ['exec', this.opts.container, 'sh', '-c',
+        'kill $(cat /tmp/call-capture.pid) 2>/dev/null; rm -f /tmp/call-capture.pid'], { stdio: 'ignore' });
+    } catch {}
   }
 }
 
@@ -297,13 +301,36 @@ class Asr {
 
 // ── 麦克风（注入） ──────────────────────────────────────────────────────────
 
+const MIC_RATE = 48000;
+const MIC_FRAME = 1920; // 20ms，单声道 s16le
+
+/**
+ * 虚拟麦克风。
+ *
+ * 关键点：**必须一直有数据在流**。
+ * 早先的做法是「说话时写一段，其余时间空着」，结果 QQ 的采集链在每段话之间被饿死，
+ * 重新出声时要热身，每句开头半秒都被吃掉（实测：对方只听到「就好」）。
+ * 所以这里做成一个真正的麦克风：每 20ms 恒定写一帧，没话说就写本底噪声。
+ */
 class Mic {
-  constructor({ container, fifo, outWav }) {
+  constructor({ container, fifo, outWav, noiseLevel = 40 }) {
     this.container = container;
     this.fifo = fifo;
     this.outWav = outWav;
     this.child = null;
     this.file = null;
+    this.buf = Buffer.alloc(0);
+    this.timer = null;
+    this.noise = Buffer.alloc(MIC_FRAME);
+    for (let i = 0; i < MIC_FRAME / 2; i++) {
+      // 本底噪声：像一支真麦克风，而不是数字零（零会让降噪/AGC 判断失准）
+      this.noise.writeInt16LE(Math.round((Math.random() * 2 - 1) * noiseLevel), i * 2);
+    }
+    this.droppedFrames = 0;
+    this.pumping = false;
+    this.watchTimer = null;
+    this.recorder = false;
+    this.sourceIdx = null;
   }
 
   start() {
@@ -312,28 +339,107 @@ class Mic {
       log('mic', `输出到文件 ${this.outWav}`);
       return;
     }
-    this.child = spawn('docker', ['exec', '-i', this.container, 'sh', '-c', `cat > ${this.fifo}`], {
+    const inner = `echo $$ > /tmp/call-mic.pid; exec cat > ${this.fifo}`;
+    this.child = spawn('docker', ['exec', '-i', this.container, 'sh', '-c', inner], {
       stdio: ['pipe', 'ignore', 'pipe']
     });
     this.child.stderr.on('data', (b) => log('mic', `stderr: ${String(b).trim()}`));
     this.child.on('exit', (code) => log('mic', `注入进程退出（code=${code}）`));
     log('mic', `注入到 ${this.container}:${this.fifo}`);
+    // 关键：管道在没人录的时候会把数据囤起来（实测能攒到 5 秒），
+    // 而 QQ 是接听后才有录音流 —— 那段积压会让她的第一句话整体延后。
+    // 所以只在检测到 QQ 在录 qq_in 时才开泵。
+    this._watchTimer = setInterval(() => { this._checkRecorder(); }, 3000);
+    this._checkRecorder();
   }
 
-  async write(pcm) {
-    if (this.file) {
-      await new Promise((r) => this.file.write(pcm, r));
-      return;
-    }
-    if (!this.child?.stdin?.writable) return;
-    await new Promise((resolve) => {
-      const ok = this.child.stdin.write(pcm, () => resolve());
-      if (!ok) this.child.stdin.once('drain', resolve);
+  _pactl(args) {
+    return new Promise((resolve) => {
+      execFile('docker', ['exec', this.container, 'pactl', ...args], { timeout: 4000 }, (err, stdout) => {
+        resolve(err ? '' : String(stdout));
+      });
     });
   }
 
+  async _checkRecorder() {
+    if (this.file) return;
+    if (!this.sourceIdx) {
+      const sources = await this._pactl(['list', 'short', 'sources']);
+      const line = sources.split('\n').find((l) => l.includes('qq_in'));
+      if (!line) return;
+      this.sourceIdx = line.trim().split(/\s+/)[0];
+    }
+    const idx = this.sourceIdx;
+    const outputs = await this._pactl(['list', 'short', 'source-outputs']);
+    const recording = outputs.split('\n').some((l) => l.trim() && l.trim().split(/\s+/)[1] === idx);
+    if (recording === this.recorder) return;
+    this.recorder = recording;
+    if (recording) {
+      log('mic', '检测到 QQ 在录音，麦克风开泵');
+      this.pumping = true;
+      this._loop();
+    } else {
+      log('mic', 'QQ 停止录音，麦克风待机（不再囤积数据）');
+      this.pumping = false;
+      this.buf = Buffer.alloc(0);
+      clearInterval(this.timer);
+      this.timer = null;
+    }
+  }
+
+  /** 把一段 48k 单声道 PCM 排进麦克风（不阻塞，按真实时间播出去）。 */
+  async speak(pcm) {
+    if (this.file) { await this._writeFile(pcm); return; }
+    // 补齐到整帧，避免半帧尾巴被截掉
+    const pad = (MIC_FRAME - (pcm.length % MIC_FRAME)) % MIC_FRAME;
+    this.buf = Buffer.concat([this.buf, pcm, Buffer.alloc(pad)]);
+    log('mic', `排队 ${(pcm.length / 2 / MIC_RATE).toFixed(2)}s（待播 ${(this.buf.length / 2 / MIC_RATE).toFixed(2)}s）`);
+  }
+
+  _writeFile(pcm) {
+    return new Promise((r) => this.file.write(pcm, r));
+  }
+
+  _loop() {
+    clearInterval(this.timer);
+    const t0 = Date.now();
+    let sent = 0;
+    this.timer = setInterval(() => {
+      if (!this.pumping) return;
+      const due = Math.floor((Date.now() - t0) / 20);
+      let n = Math.min(due - sent, 4); // 落后了就补，最多补 4 帧
+      while (n-- > 0) {
+        if (!this._emit()) { this.droppedFrames++; break; } // 下游堵住：不推进时钟，等它缓过来
+        sent++;
+      }
+      if (due - sent > 1500) sent = due; // 落后 30s 以上，放弃追赶
+    }, 10);
+  }
+
+  _emit() {
+    if (!this.child?.stdin?.writable) return false;
+    // 下游没在消费（没来电时没人录 qq_in）：别往缓冲里堆，否则来电后要先把积压放完
+    if (this.child.stdin.writableLength > MIC_FRAME * 25) return false;
+    let frame;
+    if (this.buf.length >= MIC_FRAME) {
+      frame = Buffer.from(this.buf.subarray(0, MIC_FRAME));
+      this.buf = this.buf.subarray(MIC_FRAME);
+    } else {
+      frame = this.noise;
+    }
+    this.child.stdin.write(frame);
+    return true;
+  }
+
   close() {
+    try { clearInterval(this.timer); } catch {}
+    try { clearInterval(this._watchTimer); } catch {}
+    if (this.droppedFrames > 0) log('mic', `本次共跳过 ${this.droppedFrames} 帧（下游堵住过）`);
     try { this.child?.stdin?.end(); } catch {}
+    try {
+      spawn('docker', ['exec', this.container, 'sh', '-c',
+        'kill $(cat /tmp/call-mic.pid) 2>/dev/null; rm -f /tmp/call-mic.pid'], { stdio: 'ignore' });
+    } catch {}
     try { this.file?.end(); } catch {}
   }
 }
@@ -470,7 +576,7 @@ async function main() {
   const tts = opts.tts
     ? createTtsService({ getConfig: () => cfg.socialV2?.speak ?? {}, root: ROOT, log: (m) => log('tts', m) })
     : null;
-  const mic = new Mic({ container: opts.container, fifo: opts.fifo, outWav: opts.outWav });
+  const mic = new Mic({ container: opts.container, fifo: opts.fifo, outWav: opts.outWav, noiseLevel: opts.micNoise });
   mic.start();
 
   const queue = [];
@@ -494,8 +600,7 @@ async function main() {
       ff.on('close', (code) => (code === 0 ? resolve(Buffer.concat(chunks)) : reject(new Error(`ffmpeg 转码失败：${err.slice(0, 160)}`))));
       ff.stdin.end(buffer);
     });
-    await mic.write(pcm);
-    log('mic', `已送入 ${(pcm.length / 2 / 48000).toFixed(2)}s 音频`);
+    await mic.speak(pcm);
   }
 
   async function handleUtterance(pcm, seconds, index) {
