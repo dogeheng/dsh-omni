@@ -2147,6 +2147,32 @@ button:active:not(:disabled) {
       </div>
 
       </div></details>
+<details class="settings-group" id="callGroup"><summary>通话（自动接听 · 只接指定的人）</summary><div class="settings-content">
+      <div class="meta" style="margin-bottom:8px">
+        让她在容器里的 QQ 上接起电话（机制见 <code>docs/CALL.md</code>）。
+        <b>认人靠来电窗口的标题</b>：标题里出现白名单里的昵称或备注才接，否则不接。
+        白名单填 QQ 号即可，运行时会用 OneBot 的 <code>get_friend_list</code> 把号码换成名字。
+        <b>留空 = 谁都不接</b>（fail-closed）。
+      </div>
+      <div class="row">
+        <label style="flex:1">自动接听来电</label><input type="checkbox" id="callAutoAnswer" style="width:auto">
+        <label style="flex:1">接听按钮 X（窗口内坐标）</label><input type="number" id="callAcceptX" style="width:100px" placeholder="未标定">
+        <label style="flex:1">接听按钮 Y（窗口内坐标）</label><input type="number" id="callAcceptY" style="width:100px" placeholder="未标定">
+      </div>
+      <div class="row" style="align-items:flex-start">
+        <label style="flex:1">只接这些人（QQ 号，逗号或换行分隔）</label>
+        <textarea id="callAllow" rows="2" style="flex:2" placeholder="例如 10001, 10002"></textarea>
+      </div>
+      <div class="row">
+        <label style="flex:1">额外匹配的名字（可选）</label>
+        <input type="text" id="callAllowNames" style="flex:2" placeholder="例如 大肥鱼">
+      </div>
+      <div class="row" style="gap:8px;align-items:center">
+        <button id="callSaveBtn" type="button" class="btn-secondary">保存通话设置</button>
+        <span id="callMsg" class="meta"></span>
+      </div>
+      <div class="meta">改完需要<b>重启 call-loop</b> 才生效（它启动时读一次配置）。接听坐标要先用 <code>--auto-answer learn</code> 标定，见文档。</div>
+    </div></details>
 <details class="settings-group" id="v2VoiceIoGroup"><summary>听懂语音 / 开口说话（ASR · TTS）</summary><div class="settings-content">
       <div class="meta" style="margin-bottom:8px">
         <b>听懂语音</b>：群友发来的 QQ 语音会先转成「[语音 6秒·语气开心] 原话」再交给 AI。默认用本地 SenseVoice-Small（免费）。模型<b>按需加载</b>：第一条语音到来时才启动识别进程，闲置一段时间后自动结束，约 850MB 内存归还系统。<br>
@@ -3932,6 +3958,40 @@ async function saveV2Config() {
   if (r.ok) { loadV2Config(); loadFeatures(); }
 }
 
+// ── 通话（call：自动接听 / 白名单 / 接听坐标）────────────────────────────────────
+function callEl(id) { return document.getElementById(id); }
+async function loadCallConfig() {
+  try {
+    const r = await api('/api/socialV2/config');
+    const c = r?.config?.call ?? {};
+    callEl('callAutoAnswer').checked = c.autoAnswer === true;
+    callEl('callAllow').value = (c.allow ?? []).join(', ');
+    callEl('callAllowNames').value = (c.allowNames ?? []).join(', ');
+    callEl('callAcceptX').value = c.acceptX ?? '';
+    callEl('callAcceptY').value = c.acceptY ?? '';
+  } catch (error) {
+    callEl('callMsg').textContent = '读取失败：' + (error?.message ?? error);
+  }
+}
+async function saveCallConfig() {
+  const msg = callEl('callMsg');
+  msg.textContent = '保存中…';
+  msg.className = 'meta';
+  const num = (id) => (callEl(id).value === '' ? null : Number(callEl(id).value));
+  const r = await api('/api/socialV2/config', 'POST', {
+    call: {
+      autoAnswer: callEl('callAutoAnswer').checked,
+      allow: callEl('callAllow').value,
+      allowNames: callEl('callAllowNames').value,
+      acceptX: num('callAcceptX'),
+      acceptY: num('callAcceptY')
+    }
+  });
+  msg.textContent = r.ok ? '✅ 已保存（重启 call-loop 后生效）' : ('❌ ' + (r.error || '失败'));
+  msg.className = r.ok ? 'meta ok' : 'meta err';
+  if (r.ok) loadCallConfig();
+}
+
 // ── 听懂语音 / 开口说话（socialV2.asr / socialV2.speak）──────────────────────────
 // GET /api/socialV2/config 返回「补全默认值 + 脱敏」后的配置：API Key 只回 '********' 与 apiKeySet。
 // Key 输入框留空保存时回传 '********'，后端据此保留原值（bridge.js 中 socialV2/config 的合并逻辑）。
@@ -3959,6 +4019,8 @@ function syncVoiceIoBoxes() {
   document.querySelectorAll('[data-speak-provider]').forEach(el => { el.style.display = el.dataset.speakProvider === p ? '' : 'none'; });
 }
 const round1 = (x) => Math.round(x * 10) / 10;
+
+callEl('callSaveBtn').onclick = saveCallConfig;
 
 function fillVoiceIoForm(a, s) {
   vioEl('v2AsrEnabled').checked = a.enabled !== false;
@@ -6387,7 +6449,7 @@ document.getElementById('memRollback').addEventListener('click', () => memoryAdv
 
 setConsolePage(location.hash.slice(1), { updateHash:false });
 
-refresh(); refreshRoles(); refreshWhitelist(); refreshSessions(); refreshPending(); refreshPresets(); loadFeatures(); loadPower(); loadSocialForm(); loadV2Config(); refreshV2Activity(); loadV2ToolLog(); loadV2SessionOptions(); refreshSocialStatus(); refreshSlang(); loadSlangConfig(); loadSecurity(); refreshSimPrompt(); refreshDshModel(); refreshUsage(); refreshUsageChart(); refreshUsageRecent();
+refresh(); refreshRoles(); refreshWhitelist(); refreshSessions(); refreshPending(); refreshPresets(); loadFeatures(); loadPower(); loadSocialForm(); loadV2Config(); refreshV2Activity(); loadV2ToolLog(); loadV2SessionOptions(); loadCallConfig(); refreshSocialStatus(); refreshSlang(); loadSlangConfig(); loadSecurity(); refreshSimPrompt(); refreshDshModel(); refreshUsage(); refreshUsageChart(); refreshUsageRecent();
 setInterval(() => { refresh(); refreshSessions(); refreshPending(); refreshSocialStatus(); refreshSlang(); }, 3000);
 // 用量看板只在本页可见时轮询：既保证「实时」，又不让其它页白白多打两份接口。
 setInterval(() => { if (currentConsolePage !== 'usage') return; refreshUsage(); refreshUsageChart(); refreshUsageRecent(); }, 3000);

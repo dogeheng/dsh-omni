@@ -24,6 +24,7 @@ import { NodeApiClient, unwrap, createTurnCollector } from '../src/dsh-client.js
 import { pcm16ToFloat32, resampleLinear, parseWav } from '../src/voice-asr.js';
 import { createTtsService } from '../src/voice-tts.js';
 import { parseWindows, pickNewWindow } from '../src/x11-windows.js';
+import { normalizeCallConfig, matchCaller, friendNameIndex } from '../src/call-config.js';
 
 const ROOT = path.resolve(fileURLToPath(new URL('..', import.meta.url)));
 const T0 = Date.now();
@@ -484,11 +485,16 @@ function execP(cmd, args) {
  * 所以只在显式开 `--auto-answer` 时才启用，而且答完有 20 秒冷却。
  */
 class CallWatcher {
-  constructor({ container, mode, accept, log }) {
+  constructor({ container, mode, accept, log, allowIds = [], allowNames = [], oneBotUrl = '', oneBotToken = '' }) {
     this.container = container;
     this.mode = mode;
     this.accept = accept;
     this.log = log;
+    this.allowIds = allowIds;
+    this.allowNames = allowNames;
+    this.oneBotUrl = oneBotUrl;
+    this.oneBotToken = oneBotToken;
+    this.nameCache = { at: 0, names: [] };
     this.known = new Set();
     this.timer = null;
     this.busy = false;
@@ -504,6 +510,59 @@ class CallWatcher {
 
   _tree() {
     return execP('docker', ['exec', this.container, 'sh', '-c', 'DISPLAY=:1 xwininfo -root -tree']);
+  }
+
+  /** 白名单里的 QQ 号 → 昵称/备注。缓存 5 分钟，别每次来电都去问 OneBot。 */
+  async _allowedNames() {
+    const names = [...this.allowNames];
+    if (this.allowIds.length === 0) return [...new Set(names)];
+    if (Date.now() - this.nameCache.at < 300000) return [...new Set([...names, ...this.nameCache.names])];
+    const list = await this._friendList();
+    const index = friendNameIndex(list);
+    for (const id of this.allowIds) {
+      for (const n of index.get(String(id)) ?? []) names.push(n);
+    }
+    this.nameCache = { at: Date.now(), names: [...new Set(names)] };
+    this.log('call', `白名单 ${this.allowIds.length} 人有 ${this.nameCache.names.length} 个可用名字：${this.nameCache.names.join('、') || '（查不到）'}`);
+    return this.nameCache.names;
+  }
+
+  async _friendList() {
+    if (!this.oneBotUrl) return [];
+    const base = this.oneBotUrl.replace(/\/+$/, '');
+    const auth = this.oneBotToken ? { authorization: `Bearer ${this.oneBotToken}` } : {};
+    for (const [url, body] of [
+      [`${base}/get_friend_list`, {}],
+      [`${base}/`, { action: 'get_friend_list', params: {} }]
+    ]) {
+      try {
+        const res = await fetch(url, {
+          method: 'POST',
+          headers: { 'content-type': 'application/json', ...auth },
+          body: JSON.stringify(body),
+          signal: AbortSignal.timeout(5000)
+        });
+        const json = await res.json();
+        const data = json?.data;
+        if (Array.isArray(data)) return data;
+      } catch { /* 换下一种写法 */ }
+    }
+    return [];
+  }
+
+  async _checkCaller(win) {
+    if (this.allowIds.length === 0 && this.allowNames.length === 0) {
+      this.log('call', '白名单是空的——不接（先到控制台「通话」里加人）');
+      return null;
+    }
+    const names = await this._allowedNames();
+    const hit = matchCaller(win.title, names);
+    if (!hit) {
+      this.log('call', `标题「${win.title}」里没有白名单里的人，不接`);
+      return null;
+    }
+    this.log('call', `认出来了：${hit}`);
+    return hit;
   }
 
   async _tick() {
@@ -524,6 +583,10 @@ class CallWatcher {
   async _onNewWindow(win) {
     this.log('call', `新窗口 ${win.id} ${win.width}x${win.height}@${win.x},${win.y}「${win.title}」`);
     await sleep(900); // 等它渲染出来
+    if (this.mode === 'on') {
+      const who = await this._checkCaller(win);
+      if (!who) { await this._capture(win, 1); this.cooldownUntil = Date.now() + 15000; return; }
+    }
     if (this.mode === 'on' && this.accept) {
       const x = win.x + this.accept.x;
       const y = win.y + this.accept.y;
@@ -702,11 +765,24 @@ async function main() {
   mic.start();
 
   let watcher = null;
-  if (opts.autoAnswer) {
+  const callCfg = normalizeCallConfig(cfg.call);
+  const autoMode = opts.autoAnswer || (callCfg.autoAnswer ? 'on' : '');
+  if (autoMode) {
     const accept = (opts.acceptX !== null && opts.acceptY !== null)
       ? { x: opts.acceptX, y: opts.acceptY }
-      : null;
-    watcher = new CallWatcher({ container: opts.container, mode: opts.autoAnswer, accept, log });
+      : callCfg.accept;
+    log('call', `自动接听：${autoMode}｜白名单 ${callCfg.allow.length} 人 ${callCfg.allow.join(',') || '（空）'}`
+      + `｜接听坐标 ${accept ? `${accept.x},${accept.y}` : '未设置'}`);
+    watcher = new CallWatcher({
+      container: opts.container,
+      mode: autoMode,
+      accept,
+      log,
+      allowIds: callCfg.allow,
+      allowNames: callCfg.allowNames,
+      oneBotUrl: cfg.snowluma?.httpUrl || '',
+      oneBotToken: cfg.snowluma?.accessToken || ''
+    });
     if (opts.simulateCall) {
       // 自测：不真打电话，直接走一遍"发现新窗口 → 截图"的路径
       await watcher._onNewWindow({ id: '0xsim', title: 'QQ', width: 360, height: 420, x: 460, y: 190 });

@@ -30,6 +30,7 @@ import { AUDIO_EXTS, cleanupTemp, describeAudio, formatBytes, formatDuration, in
 import { discoverSnowLumaConnection, persistSnowLumaEndpoint, persistToken } from './snowluma-conn.js';
 // 听懂语音（ASR）与开口说话（TTS）。策略与出处见 docs/VOICE_IO.md。
 import { createAsrService, formatVoiceText, normalizeAsrConfig } from './voice-asr.js';
+import { normalizeCallConfig } from './call-config.js';
 import { autoSpeakable, createTtsService, normalizeSpeakConfig, redactSpeakConfig, SPEAK_EMOTIONS } from './voice-tts.js';
 import { createSingingService, normalizeSingingConfig, redactSingingConfig } from './singing.js';
 import { createShortCoverService } from './short-cover/manager-v2.js';
@@ -742,6 +743,8 @@ function loadConfig() {
     agentPreset: file.agentPreset ?? 'qq-chat',
     workspaceTitle: file.workspaceTitle ?? 'QQ 聊天',
     ownerQQ: normalizeOwnerQQ(file.ownerQQ),
+    // 通话：自动接听、只接谁、接听按钮坐标（控制台「通话」分组可改）
+    call: normalizeCallConfig(file.call),
     allow: {
       private: normalizeIdList(file.allow?.private ?? file.allow?.privates ?? []),
       groups: normalizeIdList(file.allow?.groups ?? file.allow?.group ?? [])
@@ -5922,6 +5925,7 @@ async function main() {
             config: {
               ...v2,
               asr: normalizeAsrConfig(v2.asr),
+              call: normalizeCallConfig(cfg.call),
               speak: redactSpeakConfig(normalizeSpeakConfig(v2.speak)),
               singing: redactSingingConfig(v2.singing, ROOT)
             }
@@ -6109,6 +6113,18 @@ async function main() {
           if (merged.provideRecommendations !== undefined) merged.provideRecommendations = merged.provideRecommendations === true;
           if (merged.agentPreset !== undefined) merged.agentPreset = String(merged.agentPreset ?? '');
           file.socialV2 = merged;
+          // 通话配置是顶层键，跟 socialV2 不是一回事：单独收敛再落盘。
+          if (body.call && typeof body.call === 'object' && !Array.isArray(body.call)) {
+            const nextCall = normalizeCallConfig({ ...(file.call ?? cfg.call ?? {}), ...body.call });
+            file.call = {
+              autoAnswer: nextCall.autoAnswer,
+              allow: nextCall.allow,
+              allowNames: nextCall.allowNames,
+              acceptX: nextCall.acceptX,
+              acceptY: nextCall.acceptY
+            };
+            cfg.call = nextCall;
+          }
           atomicWriteJson(configFile, file);
           cfg.socialV2 = { ...(cfg.socialV2 ?? {}), ...merged };
           // 仅当“会影响默认唤醒配置”的字段变化时，才同步到仍使用默认配置的现有会话。
