@@ -16,12 +16,14 @@
  *     想带上她的人格，加 --preset qq-chat-v2，但那样会话里会有 QQ 工具，通话中她可能想发消息。
  */
 import fs from 'node:fs';
+import os from 'node:os';
 import path from 'node:path';
 import { spawn, fork, execFile } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { NodeApiClient, unwrap, createTurnCollector } from '../src/dsh-client.js';
 import { pcm16ToFloat32, resampleLinear, parseWav } from '../src/voice-asr.js';
 import { createTtsService } from '../src/voice-tts.js';
+import { parseWindows, pickNewWindow } from '../src/x11-windows.js';
 
 const ROOT = path.resolve(fileURLToPath(new URL('..', import.meta.url)));
 const T0 = Date.now();
@@ -41,6 +43,10 @@ function parseArgs(argv) {
     tts: true,
     maxSeconds: 0,
     micNoise: 40,
+    autoAnswer: '',
+    acceptX: null,
+    acceptY: null,
+    simulateCall: false,
     asrPromptHint: ''
   };
   for (let i = 0; i < argv.length; i++) {
@@ -61,6 +67,13 @@ function parseArgs(argv) {
     else if (a === '--no-tts') out.tts = false;
     else if (a === '--max-seconds') out.maxSeconds = Number(val()) || 0;
     else if (a === '--mic-noise') out.micNoise = Number(val()) || 0;
+    else if (a === '--auto-answer') {
+      const v = (argv[i + 1] ?? '').toLowerCase();
+      if (v === 'on' || v === 'learn') { out.autoAnswer = v; i++; } else out.autoAnswer = 'learn';
+    }
+    else if (a === '--accept-x') out.acceptX = Number(val());
+    else if (a === '--accept-y') out.acceptY = Number(val());
+    else if (a === '--simulate-call') out.simulateCall = true;
     else if (a === '--hint') out.asrPromptHint = val();
     else if (a === '-h' || a === '--help') { out.help = true; }
     else throw new Error(`未知参数：${a}`);
@@ -450,6 +463,109 @@ class Mic {
   }
 }
 
+// ── 来电观察 / 自动接听 ─────────────────────────────────────────────────────
+
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+
+function execP(cmd, args) {
+  return new Promise((resolve, reject) => {
+    execFile(cmd, args, { timeout: 15000, maxBuffer: 8 * 1024 * 1024 }, (err, stdout, stderr) => {
+      if (err) reject(new Error(String(stderr || err.message).trim().slice(0, 200)));
+      else resolve(String(stdout));
+    });
+  });
+}
+
+/**
+ * 盯 X11 窗口树，来电时按 `接听`。
+ *
+ * 认不出"这是来电窗口"——QQ 是 Electron，所有窗口标题都是 "QQ"。所以判据是
+ * **出现了一个从没见过的大窗口**。代价：任何新弹出的 QQ 窗口都会被当成来电，
+ * 所以只在显式开 `--auto-answer` 时才启用，而且答完有 20 秒冷却。
+ */
+class CallWatcher {
+  constructor({ container, mode, accept, log }) {
+    this.container = container;
+    this.mode = mode;
+    this.accept = accept;
+    this.log = log;
+    this.known = new Set();
+    this.timer = null;
+    this.busy = false;
+    this.cooldownUntil = 0;
+  }
+
+  async start() {
+    const tree = await this._tree();
+    this.known = new Set(parseWindows(tree).map((w) => w.id));
+    this.log('call', `看着 ${this.known.size} 个已有窗口，等新窗口（模式 ${this.mode}）`);
+    this.timer = setInterval(() => { this._tick(); }, 1500);
+  }
+
+  _tree() {
+    return execP('docker', ['exec', this.container, 'sh', '-c', 'DISPLAY=:1 xwininfo -root -tree']);
+  }
+
+  async _tick() {
+    if (this.busy || Date.now() < this.cooldownUntil) return;
+    this.busy = true;
+    try {
+      const windows = parseWindows(await this._tree());
+      const candidate = pickNewWindow(windows, this.known);
+      for (const w of windows) this.known.add(w.id);
+      if (candidate) await this._onNewWindow(candidate);
+    } catch (error) {
+      this.log('call', `轮询失败：${String(error?.message ?? error).slice(0, 80)}`);
+    } finally {
+      this.busy = false;
+    }
+  }
+
+  async _onNewWindow(win) {
+    this.log('call', `新窗口 ${win.id} ${win.width}x${win.height}@${win.x},${win.y}「${win.title}」`);
+    await sleep(900); // 等它渲染出来
+    if (this.mode === 'on' && this.accept) {
+      const x = win.x + this.accept.x;
+      const y = win.y + this.accept.y;
+      try {
+        await execP('docker', ['exec', this.container, 'sh', '-c',
+          `DISPLAY=:1 xdotool mousemove ${x} ${y} click 1`]);
+        this.log('call', `已点击接听 (${x},${y})`);
+        this.cooldownUntil = Date.now() + 20000; // 别再连点
+      } catch (error) {
+        this.log('call', `点击失败：${String(error?.message ?? error).slice(0, 80)}`);
+      }
+    } else if (this.mode === 'on') {
+      this.log('call', '没给 --accept-x/--accept-y，只截图不点');
+    }
+    await this._capture(win, this.mode === 'learn' ? 3 : 1);
+  }
+
+  async _capture(win, frames = 1) {
+    const inner = `/tmp/call-window-${Date.now()}.png`;
+    const x = Math.max(0, win.x);
+    const y = Math.max(0, win.y);
+    for (let i = 0; i < frames; i++) {
+      if (i > 0) await sleep(800);
+      const file = frames > 1 ? inner.replace(/\.png$/, `-${i + 1}.png`) : inner;
+      try {
+        await execP('docker', ['exec', this.container, 'sh', '-c',
+          `DISPLAY=:1 ffmpeg -hide_banner -loglevel error -y -f x11grab `
+          + `-video_size ${win.width}x${win.height} -i :1+${x},${y} -frames:v 1 ${file}`]);
+        const host = path.join(os.tmpdir(), path.basename(file));
+        await execP('docker', ['cp', `${this.container}:${file}`, host]);
+        this.log('call', `截图 ${host}`);
+      } catch (error) {
+        this.log('call', `截图失败：${String(error?.message ?? error).slice(0, 80)}`);
+      }
+    }
+  }
+
+  close() {
+    clearInterval(this.timer);
+  }
+}
+
 // ── 大脑：DSH 会话 ──────────────────────────────────────────────────────────
 
 const CALL_HINT = '（正在打电话。用口语回答，一到两句，不要列表、不要 markdown、不要提"工具"或"会话"。）';
@@ -584,7 +700,24 @@ async function main() {
     : null;
   const mic = new Mic({ container: opts.container, fifo: opts.fifo, outWav: opts.outWav, noiseLevel: opts.micNoise });
   mic.start();
-  setTimeout(warmTts, 200); // 等下面那些声明都求值完再预热（TDZ）
+
+  let watcher = null;
+  if (opts.autoAnswer) {
+    const accept = (opts.acceptX !== null && opts.acceptY !== null)
+      ? { x: opts.acceptX, y: opts.acceptY }
+      : null;
+    watcher = new CallWatcher({ container: opts.container, mode: opts.autoAnswer, accept, log });
+    if (opts.simulateCall) {
+      // 自测：不真打电话，直接走一遍"发现新窗口 → 截图"的路径
+      await watcher._onNewWindow({ id: '0xsim', title: 'QQ', width: 360, height: 420, x: 460, y: 190 });
+      watcher.close();
+      mic.close();
+      asr.close();
+      brain.close();
+      process.exit(0);
+    }
+    await watcher.start();
+  }
 
   const queue = [];
   let busy = false;
@@ -730,6 +863,7 @@ async function main() {
     try { vad.flush(); } catch {}
     capture.close();
     mic.close();
+    watcher?.close();
     asr.close();
     brain.close();
     setTimeout(() => process.exit(code), 300);
@@ -740,6 +874,7 @@ async function main() {
   if (opts.maxSeconds > 0) setTimeout(() => shutdown(0), opts.maxSeconds * 1000);
   if (opts.fromWav) setTimeout(() => shutdown(0), 120000);
 
+  setTimeout(warmTts, 200); // 放到最后：warmTts 依赖的声明都在上面（TDZ）
   log('boot', '就绪，等声音…');
 }
 

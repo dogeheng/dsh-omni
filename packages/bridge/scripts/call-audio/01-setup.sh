@@ -6,7 +6,7 @@ set -eu
 echo "== 1/4 安装 pulseaudio =="
 apt-get update -qq
 DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
-  pulseaudio pulseaudio-utils libpulse-mainloop-glib0
+  pulseaudio pulseaudio-utils libpulse-mainloop-glib0 xdotool
 
 echo "== 2/4 给 QQ 的用户 node 准备运行时目录 =="
 install -d -o node -g node -m 700 /tmp/pulse-node
