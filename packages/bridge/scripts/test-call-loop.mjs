@@ -63,8 +63,8 @@ async function main() {
   const brain = out.match(/brain\s+\d+ms → 「(.+?)」/);
   brain && brain[1].trim() ? ok('DSH 回复', brain[1].slice(0, 40)) : bad('DSH 回复');
 
-  const tts = out.match(/tts\s+(\w+) (\d+)KB ([\d.]+)s/);
-  tts ? ok('TTS 合成', `${tts[1]} ${tts[2]}KB ${tts[3]}s`) : bad('TTS 合成');
+  const tts = out.match(/tts\s+首句开口 (\d+)ms（共 (\d+) 句）/);
+  tts ? ok('TTS 首句开口', `${tts[1]}ms，共 ${tts[2]} 句`) : bad('TTS 首句开口');
 
   let bytes = 0;
   try { bytes = fs.statSync(OUT).size; } catch {}

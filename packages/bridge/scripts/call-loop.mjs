@@ -171,8 +171,9 @@ function rms(frame) {
 
 /** 能量 VAD：自适应噪声底 + 起始/收尾滞回。够用来切人声，不追求抗噪。 */
 class Vad {
-  constructor({ onUtterance, log }) {
+  constructor({ onUtterance, onSpeechStart, log }) {
     this.onUtterance = onUtterance;
+    this.onSpeechStart = onSpeechStart || (() => {});
     this.log = log;
     this.state = 'idle';
     this.noise = 0.002;
@@ -203,6 +204,7 @@ class Vad {
       this.preroll.push(frame);
       if (this.preroll.length > 10) this.preroll.shift();
       if (this.speechRun >= 3) {
+        this.onSpeechStart();
         this.state = 'active';
         this.frames = [...this.preroll];
         this.preroll = [];
@@ -216,8 +218,8 @@ class Vad {
     if (isSpeech) this.silenceRun = 0;
     else this.silenceRun++;
 
-    if (this.silenceRun >= 12 || this.frames.length >= this.maxFrames) {
-      this._finish(this.silenceRun >= 12 ? 'silence' : 'maxlen');
+    if (this.silenceRun >= 10 || this.frames.length >= this.maxFrames) {
+      this._finish(this.silenceRun >= 10 ? 'silence' : 'maxlen');
     }
   }
 
@@ -388,6 +390,10 @@ class Mic {
   }
 
   /** 把一段 48k 单声道 PCM 排进麦克风（不阻塞，按真实时间播出去）。 */
+  isSpeaking() { return this.buf.length > MIC_FRAME * 2; }
+
+  flush() { this.buf = Buffer.alloc(0); }
+
   async speak(pcm) {
     if (this.file) { await this._writeFile(pcm); return; }
     // 补齐到整帧，避免半帧尾巴被截掉
@@ -578,20 +584,28 @@ async function main() {
     : null;
   const mic = new Mic({ container: opts.container, fifo: opts.fifo, outWav: opts.outWav, noiseLevel: opts.micNoise });
   mic.start();
+  setTimeout(warmTts, 200); // 等下面那些声明都求值完再预热（TDZ）
 
   const queue = [];
   let busy = false;
   let stopped = false;
 
-  async function speak(text) {
-    if (!tts) return;
-    const clean = toSpeechText(text);
-    if (!clean) { log('tts', '没有可念的内容'); return; }
-    const t = Date.now();
-    const { buffer, ext, seconds } = await tts.synthesize(clean);
-    log('tts', `${ext} ${(buffer.length / 1024).toFixed(0)}KB ${seconds ?? '?'}s 合成${Date.now() - t}ms：「${clean}」`);
-    // 任意格式 → 48k 单声道 s16le
-    const pcm = await new Promise((resolve, reject) => {
+  /** 把回复切成短句：短句先合成、先开口，长句并行合成。 */
+  function splitForSpeech(text, max = 24) {
+    const parts = String(text).split(/(?<=[。！？!?~～，,])/).filter((x) => x.trim());
+    const chunks = [];
+    let cur = '';
+    for (const p of parts) {
+      if (cur && cur.length + p.length > max) { chunks.push(cur); cur = p; }
+      else cur += p;
+    }
+    if (cur) chunks.push(cur);
+    return chunks.length ? chunks : [String(text)];
+  }
+
+  /** 任意格式 → 48k 单声道 s16le */
+  function toPcm48(buffer) {
+    return new Promise((resolve, reject) => {
       const ff = spawn('ffmpeg', ['-hide_banner', '-loglevel', 'error', '-i', 'pipe:0', '-ar', '48000', '-ac', '1', '-f', 's16le', 'pipe:1'], { stdio: ['pipe', 'pipe', 'pipe'] });
       const chunks = [];
       let err = '';
@@ -600,11 +614,58 @@ async function main() {
       ff.on('close', (code) => (code === 0 ? resolve(Buffer.concat(chunks)) : reject(new Error(`ffmpeg 转码失败：${err.slice(0, 160)}`))));
       ff.stdin.end(buffer);
     });
-    await mic.speak(pcm);
+  }
+
+  /**
+   * 说话。
+   *
+   * 首字延迟全在 CosyVoice 那边（实测首包 0.8–2.5s，跟文本长度关系不大），所以把回复
+   * 切成短句**并行**合成：第一句好了就开口，后面的在她说第一句时已经合成完了。
+   * 一串句子里任意一句失败就跳过，不拖着整轮变哑。
+   */
+  // CosyVoice 的第一次请求要多花 ~2s（建连/服务端冷启动）。通话前先打一发，
+  // 把连接焐热，第一句回复就不用再付这笔钱。60 秒最多一次，别把配额刷爆。
+  let lastWarm = 0;
+  function warmTts() {
+    if (!tts || Date.now() - lastWarm < 60000) return;
+    lastWarm = Date.now();
+    const t = Date.now();
+    tts.synthesize('嗯').then(
+      () => log('tts', `预热完成 ${Date.now() - t}ms`),
+      (e) => log('tts', `预热失败：${String(e?.message ?? e).slice(0, 60)}`)
+    );
+  }
+
+  async function speak(text) {
+    if (!tts) return;
+    const clean = toSpeechText(text);
+    if (!clean) { log('tts', '没有可念的内容'); return; }
+    const epoch = speechEpoch;
+    const parts = splitForSpeech(clean);
+    const t0 = Date.now();
+    let first = true;
+    // 流水线而不是并行：并行请求会在服务端排队，实测第一个包反而更晚
+    // （并行 2.2–3.1s vs 串行 1.8–2.0s）。串行的同时 mic 已经在放上一句，
+    // 所以第二句的合成和第一句的播放是重叠的。
+    for (const part of parts) {
+      if (epoch !== speechEpoch) { log('tts', '被打断，剩下的不念了'); return; }
+      let synth;
+      try {
+        synth = await tts.synthesize(part);
+      } catch (error) {
+        log('tts', `「${part}」合成失败：${String(error?.message ?? error).slice(0, 80)}`);
+        continue;
+      }
+      const pcm = await toPcm48(synth.buffer);
+      if (epoch !== speechEpoch) return;
+      await mic.speak(pcm);
+      if (first) { log('tts', `首句开口 ${Date.now() - t0}ms（共 ${parts.length} 句）：「${part}」`); first = false; }
+    }
   }
 
   async function handleUtterance(pcm, seconds, index) {
     const t0 = Date.now();
+    const epoch = speechEpoch;
     const samples = pcm16ToFloat32(pcm);
     const asrResult = await asr.decode(samples);
     const heard = String(asrResult?.text ?? '').trim();
@@ -617,6 +678,7 @@ async function main() {
     const reply = await brain.ask(heard);
     log('brain', `${Date.now() - t1}ms → 「${String(reply).slice(0, 120)}」`);
     if (!reply?.trim()) return;
+    if (epoch !== speechEpoch) { log('turn', '这轮已经被打断，不念了'); return; }
     await speak(reply);
     log('turn', `整轮 ${Date.now() - t0}ms（说话 ${seconds.toFixed(1)}s）`);
   }
@@ -640,8 +702,17 @@ async function main() {
   }
 
   let utteranceIndex = 0;
+  let speechEpoch = 0;
   const vad = new Vad({
     log,
+    // 打断：她还在说的时候你开口，立刻把她剩下的话丢掉
+    onSpeechStart: () => {
+      warmTts();
+      speechEpoch++; // 作废在途的那一轮：它回来也不念了
+      if (!mic.isSpeaking()) return;
+      mic.flush();
+      log('turn', '被打断，停止播放');
+    },
     onUtterance: (pcm, seconds) => {
       queue.push({ pcm, seconds, index: ++utteranceIndex });
       drain();
