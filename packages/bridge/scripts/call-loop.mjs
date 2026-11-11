@@ -236,8 +236,8 @@ class Vad {
     if (isSpeech) this.silenceRun = 0;
     else this.silenceRun++;
 
-    if (this.silenceRun >= 10 || this.frames.length >= this.maxFrames) {
-      this._finish(this.silenceRun >= 10 ? 'silence' : 'maxlen');
+    if (this.silenceRun >= 15 || this.frames.length >= this.maxFrames) {
+      this._finish(this.silenceRun >= 15 ? 'silence' : 'maxlen');
     }
   }
 
@@ -262,6 +262,15 @@ class Vad {
 
   flush() {
     if (this.state === 'active') this._finish('flush');
+  }
+
+  /** 丢掉当前正在攒的那一句和预卷（挂断/未接通时用）。 */
+  reset() {
+    this.state = 'idle';
+    this.frames = [];
+    this.preroll = [];
+    this.speechRun = 0;
+    this.silenceRun = 0;
   }
 }
 
@@ -561,6 +570,25 @@ async function referenceAvatar(id, kind = 'friend') {
   return null;
 }
 
+/** 单实例锁：两个 call-loop 同时跑会互相抢 FIFO 和 pid 文件。 */
+const LOCK = path.join(ROOT, 'data', 'call-loop.lock');
+function acquireLock() {
+  try {
+    const pid = Number(String(fs.readFileSync(LOCK, 'utf8')).trim());
+    if (pid && pid !== process.pid) {
+      try { process.kill(pid, 0); return pid; } catch { /* 进程没了，锁是陈的 */ }
+    }
+  } catch { /* 没有锁文件 */ }
+  fs.mkdirSync(path.dirname(LOCK), { recursive: true });
+  fs.writeFileSync(LOCK, String(process.pid));
+  return 0;
+}
+function releaseLock() {
+  try {
+    if (Number(String(fs.readFileSync(LOCK, 'utf8')).trim()) === process.pid) fs.unlinkSync(LOCK);
+  } catch { /* 无所谓 */ }
+}
+
 /** 上一轮被强杀时容器里可能留着 parec / cat，启动先扫一遍。 */
 async function sweepStale() {
   try {
@@ -587,11 +615,12 @@ function execP(cmd, args) {
  * 所以只在显式开 `--auto-answer` 时才启用，而且答完有 20 秒冷却。
  */
 class CallWatcher {
-  constructor({ container, mode, accept, log, allowIds = [], allowGroups = [], allowNames = [], oneBotUrl = '', oneBotToken = '' }) {
+  constructor({ container, mode, accept, log, geometry = null, allowIds = [], allowGroups = [], allowNames = [], oneBotUrl = '', oneBotToken = '' }) {
     this.container = container;
     this.mode = mode;
     this.accept = accept;
     this.log = log;
+    this.geometry = geometry || { avatarSize: AVATAR_DIAMETER, avatarOffsetY: AVATAR_DY, acceptOffsetX: ACCEPT_DX, acceptOffsetY: ACCEPT_DY };
     this.allowIds = allowIds;
     this.allowGroups = allowGroups;
     this.allowNames = allowNames;
@@ -670,9 +699,10 @@ class CallWatcher {
       return null;
     }
     // 头像：浮层里固定居中，116px 圆，圆心在窗口中心上方 129px
-    const crop = `crop=${AVATAR_DIAMETER}:${AVATAR_DIAMETER}:`
-      + `${Math.round(win.width / 2 - AVATAR_DIAMETER / 2)}:`
-      + `${Math.round(win.height / 2 + AVATAR_DY - AVATAR_DIAMETER / 2)},scale=32:32`;
+    const g = this.geometry;
+    const crop = `crop=${g.avatarSize}:${g.avatarSize}:`
+      + `${Math.round(win.width / 2 - g.avatarSize / 2)}:`
+      + `${Math.round(win.height / 2 + g.avatarOffsetY - g.avatarSize / 2)},scale=32:32`;
     const vec = await ffmpegGray(shotPath, crop);
     if (!vec || vec.length !== 1024) {
       this.log('call', '裁剪头像失败，不接');
@@ -728,8 +758,9 @@ class CallWatcher {
       return;
     }
 
-    const ax = this.accept ? this.accept.x : Math.round(win.width / 2 + ACCEPT_DX);
-    const ay = this.accept ? this.accept.y : Math.round(win.height / 2 + ACCEPT_DY);
+    const g = this.geometry;
+    const ax = this.accept ? this.accept.x : Math.round(win.width / 2 + g.acceptOffsetX);
+    const ay = this.accept ? this.accept.y : Math.round(win.height / 2 + g.acceptOffsetY);
     const x = win.x + ax;
     const y = win.y + ay;
     try {
@@ -885,6 +916,16 @@ async function main() {
     console.log('用法：node scripts/call-loop.mjs [--container snowluma] [--preset qq-chat-v2] [--from-wav a.wav] [--out-wav out.raw] [--once] [--no-tts]');
     return;
   }
+  // 离线自测 / 诊断模式不占容器的设备，不需要跟守护进程抢锁
+  const needsLock = !opts.outWav && !opts.identifyShot && !opts.simulateCall;
+  const other = needsLock ? acquireLock() : 0;
+  if (other) {
+    console.error(`已经有一个 call-loop 在跑（pid ${other}），本实例退出。`);
+    console.error('要起第二个，先停掉守护进程：npm run uninstall:call');
+    process.exit(0);
+  }
+  process.on('exit', releaseLock);
+
   const cfg = loadConfig();
   const asrDir = (() => {
     const rel = cfg.socialV2?.asr?.modelDir || 'data/models/sherpa-onnx-sense-voice-zh-en-ja-ko-yue-int8-2024-07-17';
@@ -899,7 +940,7 @@ async function main() {
     const [w, h] = String(opts.identifySize).split('x').map(Number);
     const watcher = new CallWatcher({
       container: opts.container, mode: 'on', accept: callCfg.accept, log,
-      allowIds: callCfg.allow, allowGroups: callCfg.allowGroups, allowNames: callCfg.allowNames,
+      geometry: callCfg.geometry, allowIds: callCfg.allow, allowGroups: callCfg.allowGroups, allowNames: callCfg.allowNames,
       oneBotUrl: cfg.snowluma?.httpUrl || '', oneBotToken: cfg.snowluma?.accessToken || ''
     });
     log('call', `诊断：${opts.identifyShot}（${w}x${h}）`);
@@ -922,6 +963,19 @@ async function main() {
     ? createTtsService({ getConfig: () => cfg.socialV2?.speak ?? {}, root: ROOT, log: (m) => log('tts', m) })
     : null;
   await sweepStale();
+
+  // 通话状态：mic 的回调可能在我们还没执行到下面那些声明时就被调用（中间有 await），
+  // 所以这些必须提前声明。
+  const queue = [];
+  let busy = false;
+  let stopped = false;
+  let utteranceIndex = 0;
+  let speechEpoch = 0;
+  let idleDropped = 0;
+  let vad = null;
+  // 离线自测（--from-wav）没有真实通话，通话闸不生效
+  const gateOnCall = !opts.outWav;
+
   const mic = new Mic({
     container: opts.container,
     fifo: opts.fifo,
@@ -933,7 +987,11 @@ async function main() {
         asr.ensure().catch((e) => log('asr', `预加载失败：${String(e?.message ?? e).slice(0, 60)}`));
       } else {
         log('call', '通话结束：回收');
+        speechEpoch++;                 // 作废在途的那一轮，回来也不念
+        queue.length = 0;              // 没处理的那几句直接丢掉
+        try { vad?.reset(); } catch {}   // 不保留半句
         try { mic.flush(); } catch {}
+        if (idleDropped) { log('call', `未通话期间丢弃了 ${idleDropped} 帧`); idleDropped = 0; }
         asr.unload('通话结束');
       }
     }
@@ -955,6 +1013,7 @@ async function main() {
       mode: autoMode,
       accept,
       log,
+      geometry: callCfg.geometry,
       allowIds: callCfg.allow,
       allowGroups: callCfg.allowGroups,
       allowNames: callCfg.allowNames,
@@ -972,10 +1031,6 @@ async function main() {
     }
     await watcher.start();
   }
-
-  const queue = [];
-  let busy = false;
-  let stopped = false;
 
   /** 把回复切成短句：短句先合成、先开口，长句并行合成。 */
   function splitForSpeech(text, max = 24) {
@@ -1051,6 +1106,7 @@ async function main() {
   }
 
   async function handleUtterance(pcm, seconds, index) {
+    if (gateOnCall && !mic.recorder) { log('turn', '不在通话中，跳过这一句'); return; }
     const t0 = Date.now();
     const epoch = speechEpoch;
     const samples = pcm16ToFloat32(pcm);
@@ -1079,7 +1135,14 @@ async function main() {
         try {
           await handleUtterance(item.pcm, item.seconds, item.index);
         } catch (error) {
-          log('turn', `处理失败：${String(error?.message ?? error)}`);
+          const msg = String(error?.message ?? error);
+          log('turn', `处理失败：${msg}`);
+          // DSH 每次重启会换随机端口；桥接会把新端口写回 config.json，但我们只在启动时读一次。
+          // 连不上就退出，让 LaunchAgent 拿新配置重起（比在这里热更简单可靠）。
+          if (/fetch failed|ECONNREFUSED|ENOTFOUND|socket hang up|401|unauthorized/i.test(msg)) {
+            log('boot', 'DSH 连不上（可能重启换了端口），退出等守护进程重起');
+            setTimeout(() => shutdown(3), 100);
+          }
         }
       }
     } finally {
@@ -1088,15 +1151,15 @@ async function main() {
     }
   }
 
-  let utteranceIndex = 0;
-  let speechEpoch = 0;
-  const vad = new Vad({
+  vad = new Vad({
     log,
     // 打断：她还在说的时候你开口，立刻把她剩下的话丢掉
     onSpeechStart: () => {
       warmTts();
-      speechEpoch++; // 作废在途的那一轮：它回来也不念了
+      // 只有她真的在出声才算打断；她没说话时你接着说，新的一句排队等上一轮说完，
+      // 不该把上一轮的回复作废（那等于白烧一次 DSH）。
       if (!mic.isSpeaking()) return;
+      speechEpoch++;
       mic.flush();
       log('turn', '被打断，停止播放');
     },
@@ -1107,7 +1170,12 @@ async function main() {
   });
 
   const capture = new Capture(opts);
-  capture.onFrame = (f) => vad.push(f);
+  // 只有通话接通后（QQ 真的在录 qq_in）才把声音喂给 VAD。
+  // 不然铃声、挂断提示音、房间底噪都会被当成一句话：白跑 ASR、白烧一轮 DSH。
+  capture.onFrame = (f) => {
+    if (gateOnCall && !mic.recorder) { idleDropped++; return; }
+    vad.push(f);
+  };
   capture.start();
 
   function shutdown(code = 0) {

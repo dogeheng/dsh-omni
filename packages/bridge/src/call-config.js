@@ -6,6 +6,14 @@
  * （fail-closed）。白名单可以写 QQ 号，运行时用 OneBot 的 get_friend_list 把号码换成昵称/备注。
  */
 
+/** 来电浮层的几何。默认值是 800x600 窗口实测量的；QQ 换界面才需要改。 */
+export const CALL_GEOMETRY_DEFAULTS = Object.freeze({
+  avatarSize: 116,      // 头像直径
+  avatarOffsetY: -129,  // 头像圆心相对窗口中心
+  acceptOffsetX: -68,   // 接听按钮圆心相对窗口中心
+  acceptOffsetY: 186
+});
+
 export const CALL_DEFAULTS = Object.freeze({
   autoAnswer: false,
   allow: [],
@@ -37,6 +45,21 @@ function toNameList(value) {
   return out;
 }
 
+function toGeometry(raw) {
+  const r = (raw && typeof raw === 'object' && !Array.isArray(raw)) ? raw : {};
+  const pick = (key) => {
+    const n = Number(r[key]);
+    return Number.isFinite(n) ? Math.round(n) : CALL_GEOMETRY_DEFAULTS[key];
+  };
+  const size = Math.min(400, Math.max(40, pick('avatarSize')));
+  return {
+    avatarSize: size,
+    avatarOffsetY: Math.min(600, Math.max(-600, pick('avatarOffsetY'))),
+    acceptOffsetX: Math.min(600, Math.max(-600, pick('acceptOffsetX'))),
+    acceptOffsetY: Math.min(600, Math.max(-600, pick('acceptOffsetY')))
+  };
+}
+
 function toCoord(value) {
   if (value === null || value === undefined || value === '') return null;
   const n = Number(value);
@@ -49,6 +72,7 @@ export function normalizeCallConfig(raw) {
   const acceptX = toCoord(r.acceptX);
   const acceptY = toCoord(r.acceptY);
   return {
+    geometry: toGeometry(r.geometry),
     autoAnswer: r.autoAnswer === true,
     allow: toIdList(r.allow),
     allowGroups: toIdList(r.allowGroups),

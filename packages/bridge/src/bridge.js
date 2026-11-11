@@ -6122,7 +6122,8 @@ async function main() {
               allowGroups: nextCall.allowGroups,
               allowNames: nextCall.allowNames,
               acceptX: nextCall.acceptX,
-              acceptY: nextCall.acceptY
+              acceptY: nextCall.acceptY,
+              geometry: nextCall.geometry
             };
             cfg.call = nextCall;
           }

@@ -202,6 +202,47 @@ node scripts/call-loop.mjs --auto-answer learn --simulate-call
 | 屏幕共享没有 | 见 `docs` 里的 B-4 |
 | 容器重建要重做 | 包和 PA 都在容器里；重建后重跑 01/02 |
 
+## 常驻（不用手动开脚本）
+
+```bash
+npm run install:call     # 装成 LaunchAgent：登录自启、挂了自起
+npm run uninstall:call   # 卸载
+tail -f data/call-loop.log
+```
+
+常驻的只是那个几十 MB 的看门进程；识别、TTS、麦克风泵仍然是**按需拉起、挂断回收**。
+同一时刻只允许一个实例（`data/call-loop.lock`），手动再起一个会被拒绝并提示先停守护进程。
+DSH 重启换了端口会连不上——loop 会自己退出，LaunchAgent 15 秒后带着新配置重起。
+
+## 迁移到另一台机器
+
+**能迁，但不是复制粘贴就完事。** 分成「代码」和「环境」两块：
+
+| 部分 | 怎么迁 |
+| --- | --- |
+| 代码 | `git clone` + `npm --prefix packages/bridge install` |
+| 容器音频 | `scripts/call-audio/` 三个脚本在新容器里跑一遍（装 PulseAudio + 虚拟设备 + 自检） |
+| QQ 登录 | **不能迁**：容器里的登录态跟设备绑定，新机器要重新扫码 |
+| 配置 | `config.json` 里的 `dsh.baseUrl`、`snowluma`、`speak`（TTS 密钥）、`call`（白名单） |
+| 宿主依赖 | `docker` CLI、`ffmpeg`、Node ≥ 22；容器里 `xdotool`、`ffmpeg` |
+
+**写死的只有这些，而且都给了出口：**
+
+| 项 | 出口 |
+| --- | --- |
+| 容器名 `snowluma` | `--container` |
+| 设备名 `qq_out.monitor`、FIFO `/tmp/qqin.pcm` | `--device` / `--fifo` |
+| 浮层几何（头像 116px、接听按钮偏移） | `config.json` 的 `call.geometry`，QQ 换界面时改这里，不用改代码 |
+| 采样率 48k / 16k | 跟 PulseAudio 设备一致，换设备时改 `02-start-pa.sh` 与 `--device` |
+
+**做不到「换机零改动」的地方，说清楚：**
+
+1. 浮层几何是对着**这一个 QQ 版本**量的（3.2.32）。QQ 换 UI 就要重新标定一次。
+2. 认人靠头像；换号、换头像要清 `data/call-avatars/` 缓存。
+3. 群语音的浮层**还没用真群通话验证过**，如果它显示的是发起人而不是群头像，需要再截一次图。
+4. 宿主的环境变量在 LaunchAgent 里是干净的，`PATH` 由安装脚本按当前机器的
+   `docker` / `ffmpeg` 位置写进 plist；换机器要重跑 `npm run install:call`。
+
 ## 排障
 
 - `parec 退出`：容器里没有 PA，或者设备名不对 → `docker exec snowluma pactl list short sources`
