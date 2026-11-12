@@ -9,6 +9,7 @@
 - **真正难的不是模型，是“标签 → QQ 昵称”。** 不认名字只要 1–2 天；要认张三/李四，得加 Phase 2 声纹注册（群友语音消息/1:1 通话），这是产品决策，也是隐私边界。
 - **只有重叠说话/多人同时开口严重影响体验时，才上 Phase 3B 的 NVIDIA Nemotron 3 流式 diarization**（8 人、0.32–1.04s，Apple Silicon 有 CoreML/MLX）。
 - 推荐顺序：Phase 0 录 5–10 段真实群语音做基线 → Phase 1 按句聚类 → Phase 2 声纹认人 → 看指标决定是否 Phase 3。
+- **如果 zero-shot 指“不注册声纹”**：匿名 diarization 可以（`anonymous` 模式）；但“直接叫出张三”不能凭空，除非借 QQ 群通话 UI 高亮、本人自报姓名，或补一条 3–5s 的 one-shot 声纹。
 
 ## 1. 先分清两件事
 
@@ -18,6 +19,31 @@
 | **声源分离 / source separation** | 把重叠的几个人拆成独立音轨 | 多人同时说话时分别送 ASR | 高，且会有音质损伤 |
 
 群语音现在拿到的是 **QQ 混音后的一条 16k 单声道流**，没有每个人的独立音轨。所以第一步应该做 **diarization**；只有“多人同时说话且必须分别识别”时，才需要再上 source separation（Demucs / SepFormer / MossFormer2 这类）。
+
+### Zero-shot 能做到什么
+
+先把“zero-shot”拆开，不然容易混：
+
+| 问题 | 能不能 zero-shot | 说明 |
+| --- | --- | --- |
+| 不注册声纹，直接分出“谁在什么时候说话” | ✅ **能** | diarization 模型本身就是对未见说话人 zero-shot：Nemotron 3 / pyannote / sherpa-onnx 都不需要为某个人训练，输出 `SPEAKER_00/01`。 |
+| 不注册声纹，直接说出“张三是谁” | ❌ **不能凭空** | 模型只给匿名 cluster；名字必须来自某个身份线索。 |
+| 只给一条 3–5s 语音就认人 | ✅ **能（one-shot）** | CAM++ / WeSpeaker embedding + cosine，不需要训练；这是最实用的“准 zero-shot 认人”。 |
+| 靠 QQ 群语音界面高亮当前说话人 | ⚠️ **可能** | 如果群通话界面稳定高亮当前说话人（头像/绿圈/名字），截屏 + 头像/OCR 可以把 cluster 映射到名字；zero enrollment，但要实测 QQ 的群通话 UI。 |
+| 靠对话内容自报姓名/被点名 | ⚠️ **弱线索** | “我是张三”“老张你说”可以让 LLM 在本次通话内绑定 cluster→名字；不能保证准确，也不该写进长期声纹。 |
+
+所以：
+
+- **只要“这段是谁说的”，不要名字** → 纯 zero-shot diarization，`anonymous` 模式即可；
+- **要叫出张三/李四** → 至少需要一条身份线索：one-shot 声纹注册（推荐），或者 UI/语境映射（zero enrollment，但脆弱）；
+- **没有任何声纹、没有任何 UI/语境线索，还要 100% 认人** → 做不到，任何模型都做不到。
+
+如果目标是“先不搞声纹库，先把群语音拆开”，推荐组合是：
+
+1. zero-shot diarization（优先 Nemotron 3 流式；轻量版用 sherpa-onnx 滚动窗口）；
+2. 给 ASR 文本加 `[SPEAKER_00]`；
+3. 名字先留空/用“说话人1”；等有人自报姓名、被点名，或在 UI 里能稳定看到当前说话人，再在本次通话内绑定；
+4. 如果之后想稳定叫名字，再补一人 3–5s 的 one-shot 声纹，不用训练。
 
 ## 2. 现在的链路与缺口
 
@@ -160,7 +186,7 @@ diarization 只给匿名 cluster，要变成“张三”需要声纹注册：
 ```jsonc
 "call": {
   "diarization": {
-    "mode": "embedding",          // off | embedding | streaming
+    "mode": "anonymous",          // off | anonymous | embedding | streaming
     "embeddingModel": "data/models/speaker/3dspeaker_speech_campplus_sv_zh_en_16k-common_advanced.onnx",
     "threshold": 0.70,
     "maxSpeakers": 8,
@@ -172,7 +198,8 @@ diarization 只给匿名 cluster，要变成“张三”需要声纹注册：
 ```
 
 - `off`：完全回到现在的单说话人行为；
-- `embedding`：Phase 1/2，推荐默认；
+- `anonymous`：纯 zero-shot diarization，只输出 `SPEAKER_n`，不注册声纹；
+- `embedding`：Phase 1/2，按句聚类 + 可选 one-shot 声纹，推荐默认；
 - `streaming`：Phase 3B（Nemotron）。
 - 所有模式 fail-open：模型缺失/失败时退回无标签，不影响通话。
 
