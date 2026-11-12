@@ -1346,6 +1346,8 @@ async function main() {
       if (recording) {
         log('call', '通话接通：提前把识别进程拉起来');
         asr.ensure().catch((e) => log('asr', `预加载失败：${String(e?.message ?? e).slice(0, 60)}`));
+        // Smart Turn 的 Python worker 启动约 0.8s，趁用户还在说第一句先拉起来。
+        getTurnDetector()?.ensure().catch((e) => log('turn', `Smart Turn 预加载失败：${String(e?.message ?? e).slice(0, 60)}`));
       } else {
         log('call', '通话结束：回收');
         speechEpoch++;                 // 作废在途的那一轮，回来也不念

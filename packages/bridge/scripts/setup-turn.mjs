@@ -70,7 +70,7 @@ function install({ force = false } = {}) {
   }
   console.log('[turn] 安装依赖：onnxruntime numpy transformers');
   run(PYTHON, ['-m', 'pip', 'install', '--quiet', '--upgrade', 'pip']);
-  run(PYTHON, ['-m', 'pip', 'install', '--quiet', 'onnxruntime', 'numpy', 'transformers']);
+  run(PYTHON, ['-m', 'pip', 'install', '--quiet', 'onnxruntime>=1.20,<2', 'numpy>=1.26,<3', 'transformers>=4.46,<6']);
 }
 
 const args = new Set(process.argv.slice(2));
