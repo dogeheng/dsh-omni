@@ -554,6 +554,13 @@
       "avatarOffsetY": -83,
       "acceptOffsetX": -65,
       "acceptOffsetY": 238
+    },
+    "diarization": {
+      "mode": "anonymous",
+      "threshold": 0.65,
+      "maxSpeakers": 8,
+      "minSegmentMs": 600,
+      "minNewClusterMs": 1500
     }
   }
 }

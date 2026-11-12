@@ -25,6 +25,14 @@ export const CALL_GROUP_GEOMETRY_DEFAULTS = Object.freeze({
 export const CALL_DEFAULTS = Object.freeze({
   autoAnswer: false,
   preset: '',
+  diarization: {
+    mode: 'off',
+    modelPath: '',
+    threshold: 0.65,
+    maxSpeakers: 8,
+    minSegmentMs: 600,
+    minNewClusterMs: 1500
+  },
   turnDetection: {
     mode: 'smart',
     threshold: 0.5,
@@ -83,6 +91,24 @@ function toCoord(value) {
   return Number.isFinite(n) ? Math.round(n) : null;
 }
 
+function toDiarization(raw) {
+  const r = (raw && typeof raw === 'object' && !Array.isArray(raw)) ? raw : {};
+  const mode = r.mode === 'anonymous' ? 'anonymous' : 'off';
+  const clamp = (value, min, max, fallback) => {
+    const n = Number(value);
+    return Number.isFinite(n) ? Math.min(max, Math.max(min, Math.round(n))) : fallback;
+  };
+  const thresholdRaw = Number(r.threshold);
+  return {
+    mode,
+    modelPath: typeof r.modelPath === 'string' ? r.modelPath.trim() : '',
+    threshold: Number.isFinite(thresholdRaw) ? Math.min(0.9, Math.max(0.45, thresholdRaw)) : 0.65,
+    maxSpeakers: clamp(r.maxSpeakers, 2, 8, 8),
+    minSegmentMs: clamp(r.minSegmentMs, 300, 2000, 600),
+    minNewClusterMs: clamp(r.minNewClusterMs, 600, 4000, 1500)
+  };
+}
+
 function toTurnDetection(raw) {
   const r = (raw && typeof raw === 'object' && !Array.isArray(raw)) ? raw : {};
   const mode = ['smart', 'punctuation', 'vad'].includes(r.mode) ? r.mode : 'smart';
@@ -114,6 +140,7 @@ export function normalizeCallConfig(raw) {
     groupGeometry: toGeometry(r.groupGeometry, CALL_GROUP_GEOMETRY_DEFAULTS),
     autoAnswer: r.autoAnswer === true,
     preset: typeof r.preset === 'string' ? r.preset.trim().slice(0, 64) : '',
+    diarization: toDiarization(r.diarization),
     turnDetection: toTurnDetection(r.turnDetection),
     allow: toIdList(r.allow),
     allowGroups: toIdList(r.allowGroups),

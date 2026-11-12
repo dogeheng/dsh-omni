@@ -156,6 +156,8 @@ OCR helper 是 `scripts/ocr.swift`：首次使用 `swiftc -O` 编译到 `data/bi
 
 > 按人分离（谁说了什么、怎么映射到 QQ 昵称）的选型与分阶段计划见 [DIARIZATION.md](DIARIZATION.md)。
 
+群语音现在已接入**零样本匿名说话人标签**（`call.diarization.mode=anonymous`）：第 2 个人说话后，日志会出现 `本轮标签 说话人2`，prompt 里带 `[说话人2]`；同一段混了两个人标 `[多人]`。标签不猜真实姓名，一对一通话不会出现标签。安装模型：`npm run setup:speaker`。
+
 
 顺带也会用窗口标题匹配一次昵称/备注，但**别指望它**：QQ 的昵称里繁简用字、特殊符号、长度都会飘（实测备注写的是「doge.恆」，来电浮层里显示「doge.恒」）。
 

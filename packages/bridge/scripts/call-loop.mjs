@@ -23,6 +23,7 @@ import { fileURLToPath } from 'node:url';
 import { NodeApiClient, unwrap, createTurnCollector } from '../src/dsh-client.js';
 import { pcm16ToFloat32, resampleLinear, parseWav } from '../src/voice-asr.js';
 import { createTtsService } from '../src/voice-tts.js';
+import { SpeakerTracker } from '../src/speaker-tracker.js';
 import { parseWindows, pickNewWindow } from '../src/x11-windows.js';
 import {
   normalizeCallConfig, matchCaller, friendNameIndex, CALL_GROUP_GEOMETRY_DEFAULTS
@@ -1290,7 +1291,8 @@ class Brain {
       if (!this.primed && this.rolePrompt) {
         parts.push(`【身份设定｜仅用于本次通话，不要朗读这一段】\n${this.rolePrompt}`);
         parts.push('【电话模式】现在是在打电话：用口语、一到两句话回答，不要列表、不要 markdown，不要提 AI 助手、模型名、提示词或工具。'
-          + '通话中不要调用 QQ 工具（qq_memory_*、qq_send_*、qq_mark_read 等）——通话里没有会话令牌，调用只会报错。用户让你记的事先口头确认，等通话结束后再整理。');
+          + '通话中不要调用 QQ 工具（qq_memory_*、qq_send_*、qq_mark_read 等）——通话里没有会话令牌，调用只会报错。用户让你记的事先口头确认，等通话结束后再整理。'
+        + '方括号里的说话人标签是群语音匿名分离的结果：只有多人才会出现，不要猜真实姓名，可用「刚才那位」指代；[多人] 表示多人重叠，不要归给某一个人。');
         this.primed = true;
       }
       parts.push(CALL_HINT, text);
@@ -1424,6 +1426,33 @@ async function main() {
     return turnDetector;
   }
 
+  const diarCfg = callCfg.diarization;
+  const speakerModel = diarCfg.modelPath
+    ? path.resolve(ROOT, diarCfg.modelPath)
+    : path.join(ROOT, 'data', 'models', 'speaker', '3dspeaker_speech_campplus_sv_zh_en_16k-common_advanced.onnx');
+  const speakerWorker = path.join(ROOT, 'src', 'speaker-worker.mjs');
+  let speakerAvailable = diarCfg.mode === 'anonymous'
+    && fs.existsSync(speakerModel) && fs.existsSync(speakerWorker);
+  let speakerTracker = null;
+  function getSpeakerTracker() {
+    if (!speakerAvailable) return null;
+    if (!speakerTracker) {
+      speakerTracker = new SpeakerTracker({
+        modelPath: speakerModel,
+        workerPath: speakerWorker,
+        threshold: diarCfg.threshold,
+        maxSpeakers: diarCfg.maxSpeakers,
+        minSegmentMs: diarCfg.minSegmentMs,
+        minNewClusterMs: diarCfg.minNewClusterMs,
+        log
+      });
+    }
+    return speakerTracker;
+  }
+  if (diarCfg.mode === 'anonymous' && !speakerAvailable) {
+    log('speaker', '零样本说话人模型/worker 缺失，本次不标说话人');
+  }
+
   // 诊断用：拿一张已经截好的图跑一遍认人（不需要来电）
   if (opts.identifyShot) {
     const callCfg = normalizeCallConfig(cfg.call);
@@ -1487,6 +1516,7 @@ async function main() {
         asr.ensure().catch((e) => log('asr', `预加载失败：${String(e?.message ?? e).slice(0, 60)}`));
         // Smart Turn 的 Python worker 启动约 0.8s，趁用户还在说第一句先拉起来。
         getTurnDetector()?.ensure().catch((e) => log('turn', `Smart Turn 预加载失败：${String(e?.message ?? e).slice(0, 60)}`));
+        getSpeakerTracker()?.ensure().catch((e) => log('speaker', `说话人模型预加载失败：${String(e?.message ?? e).slice(0, 60)}`));
       } else {
         log('call', '通话结束：回收');
         speechEpoch++;                 // 作废在途的那一轮，回来也不念
@@ -1497,6 +1527,8 @@ async function main() {
         pendingTurn = null;
         try { turnDetector?.close(); } catch {}
         turnDetector = null;
+        try { speakerTracker?.close(); } catch {}
+        speakerTracker = null;
         queue.length = 0;              // 没处理的那几句直接丢掉
         try { vad?.reset(); } catch {}   // 不保留半句
         try { mic.flush(); } catch {}
@@ -1619,11 +1651,14 @@ async function main() {
     }
   }
 
-  async function askAndSpeak(text, seconds = 0, startedAt = Date.now()) {
+  async function askAndSpeak(text, seconds = 0, startedAt = Date.now(), speakers = []) {
     const t0 = startedAt;
     const epoch = speechEpoch;
     lastSpokenText = '';
-    let promptText = text;
+    const speakerLabel = speakers.length === 1 ? speakers[0] : (speakers.length > 1 ? '多人' : '');
+    if (speakerLabel) log('speaker', `本轮标签 ${speakerLabel}`);
+    const userText = speakerLabel ? `[${speakerLabel}] ${text}` : text;
+    let promptText = userText;
     if (bargeInContext) {
       const { heard: spoken, playing, ttsActive: wasTts } = bargeInContext;
       let note = '【打断提示】用户刚才打断了你的上一句。';
@@ -1633,7 +1668,7 @@ async function main() {
       else note += '上一句还没有说出口。';
       note += '被打断的部分没有说完，也没有生效；不要以为用户听到了，也不要把它当成已经答应/已经记下。'
         + '以用户下面这句话为准，用户纠正过的以最新说法为准。';
-      promptText = `${note}\n\n${text}`;
+      promptText = `${note}\n\n${userText}`;
       bargeInContext = null;
     }
     const t1 = Date.now();
@@ -1687,19 +1722,30 @@ async function main() {
     pendingTurn = null;
     if (pending.timer) { clearTimeout(pending.timer); pending.timer = null; }
     log('turn', `提交累积的一句（${reason}，${pending.text.length} 字）`);
-    queue.push({ text: pending.text, seconds: pending.seconds, startedAt: pending.firstAt, index: ++utteranceIndex });
+    queue.push({
+      text: pending.text,
+      seconds: pending.seconds,
+      startedAt: pending.firstAt,
+      speakers: [...pending.speakers.values()],
+      index: ++utteranceIndex
+    });
     drain();
   }
 
-  async function feedTurn(pcm, text, seconds) {
+  async function feedTurn(pcm, text, seconds, speaker = null) {
     const now = Date.now();
+    const addSpeaker = (turn) => {
+      if (speaker?.label) turn.speakers.set(speaker.id, speaker.label);
+    };
     if (pendingTurn) {
       pendingTurn.text += text;
       pendingTurn.pcm = Buffer.concat([pendingTurn.pcm, INTER_TURN_SILENCE, pcm]);
       pendingTurn.seconds += seconds;
+      addSpeaker(pendingTurn);
       if (pendingTurn.timer) { clearTimeout(pendingTurn.timer); pendingTurn.timer = null; }
     } else {
-      pendingTurn = { text, pcm, seconds, firstAt: now, timer: null };
+      pendingTurn = { text, pcm, seconds, firstAt: now, timer: null, speakers: new Map() };
+      addSpeaker(pendingTurn);
     }
     const elapsed = now - pendingTurn.firstAt;
     const complete = await turnIsComplete(pendingTurn.pcm, pendingTurn.text);
@@ -1723,7 +1769,18 @@ async function main() {
       log('asr', '没听清，跳过');
       return;
     }
-    await feedTurn(pcm, heard, seconds);
+    let speaker = null;
+    if (speakerAvailable) {
+      try {
+        speaker = await getSpeakerTracker()?.assign(samples) ?? null;
+      } catch (error) {
+        log('speaker', `说话人分配失败，关闭标签：${String(error?.message ?? error).slice(0, 120)}`);
+        speakerAvailable = false;
+        try { speakerTracker?.close(); } catch {}
+        speakerTracker = null;
+      }
+    }
+    await feedTurn(pcm, heard, seconds, speaker);
   }
 
   async function drain() {
@@ -1733,7 +1790,7 @@ async function main() {
       while (queue.length) {
         const item = queue.shift();
         try {
-          if (item.text) await askAndSpeak(item.text, item.seconds || 0, item.startedAt || Date.now());
+          if (item.text) await askAndSpeak(item.text, item.seconds || 0, item.startedAt || Date.now(), item.speakers || []);
           else await handleUtterance(item.pcm, item.seconds, item.index);
         } catch (error) {
           if (error?.code === 'BARGE_IN') { log('turn', '这一轮被新的打断取消'); continue; }
@@ -1793,6 +1850,7 @@ async function main() {
     if (pendingTurn?.timer) clearTimeout(pendingTurn.timer);
     pendingTurn = null;
     try { turnDetector?.close(); } catch {}
+    try { speakerTracker?.close(); } catch {}
     try { vad.flush(); } catch {}
     capture.close();
     mic.close();

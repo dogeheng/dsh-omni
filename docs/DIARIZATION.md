@@ -1,7 +1,7 @@
 # 群语音按人分离（Speaker Diarization）方案
 
 > 目标：在 QQ 群语音里回答“谁说了什么”，让 Yuki 能按人接话，而不是把整段混音当成一个人。
-> 状态：方案调研 + 分阶段计划；尚未改代码。
+> 状态：Phase 1 的**零样本匿名说话人聚类**已实现（`call.diarization.mode=anonymous`）；声纹认名（Phase 2）和流式 diarization（Phase 3）还没做。
 
 ## 结论（先看这里）
 
@@ -192,7 +192,8 @@ diarization 只给匿名 cluster，要变成“张三”需要声纹注册：
     "maxSpeakers": 8,
     "enrollDir": "data/voiceprints",
     "windowMs": 10000,            // streaming/rolling 模式
-    "minSegmentMs": 600
+    "minSegmentMs": 600,
+    "minNewClusterMs": 1500
   }
 }
 ```
@@ -215,6 +216,53 @@ diarization 只给匿名 cluster，要变成“张三”需要声纹注册：
 
 `sherpa-onnx-node` 是原生 addon，建议把 embedding/diarization 放在**独立子进程**（像 `asr-worker.mjs` 一样）：
 模型不大，但 ONNX Runtime 的内存池不一定会还给系统；子进程退出/挂断即可回收。
+
+### 已实现：Phase 1 anonymous 模式
+
+| 文件 | 作用 |
+| --- | --- |
+| `src/speaker-tracker.js` | 加载 CAM++、按句 embedding、在线 cosine 聚类；只有出现第 2 个 cluster 后才输出 `说话人N` |
+| `src/speaker-worker.mjs` | 独立子进程跑 `sherpa-onnx-node` 的 `SpeakerEmbeddingExtractor`，挂断即退出，内存可回收 |
+| `scripts/setup-speaker.mjs` | 下载 3D-Speaker CAM++ 模型（27MB），`--status` 检查 |
+| `src/call-loop.mjs` | 通话接通预加载；每句 ASR 后 `assign()`；`[说话人N]` 写进 DSH prompt |
+
+行为：
+
+- **一对一通话**：只有 1 个 cluster，永远不输出标签，prompt 与以前完全一样；
+- **群语音**：第 2 个人说话后开始有 `说话人1/2`；同一段 pending 里混了两个人 → `[多人]`；
+- 短于 `minNewClusterMs`（默认 1.5s）的片段只认领已有 cluster，不新建，避免“嗯/对”造人；
+- 标签是**匿名**的，不猜真实姓名；Yuki 的 prompt 会被告知用“刚才那位”指代；
+- 模型/worker 缺失或失败 → 自动关闭标签，不影响通话。
+
+实测：
+
+- CAM++ 27MB，加载约 115ms，单段 embedding 约 10–30ms；
+- `0-four-speakers-zh.wav` 的 4 个说话人段：精确段输入得到 4 个 cluster，同一说话人 cosine 0.69–0.83，不同人 0.04–0.30；
+- 两说话人拼接片段：正确产生 2 个 cluster，日志出现 `本轮标签 说话人2/说话人1`；
+- 单说话人 `test:call`：不产生标签，链路 PASS；
+- 真实群语音还没跑过——这正是下一步要测的。
+
+安装：
+
+```bash
+cd packages/bridge
+npm run setup:speaker
+node scripts/setup-speaker.mjs --status
+```
+
+配置：
+
+```jsonc
+"call": {
+  "diarization": {
+    "mode": "anonymous",
+    "threshold": 0.65,
+    "maxSpeakers": 8,
+    "minSegmentMs": 600,
+    "minNewClusterMs": 1500
+  }
+}
+```
 
 ## 5. 需要先确认的产品问题
 
