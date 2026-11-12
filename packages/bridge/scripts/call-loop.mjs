@@ -843,7 +843,13 @@ class CallWatcher {
 
 // ── 大脑：DSH 会话 ──────────────────────────────────────────────────────────
 
-const CALL_HINT = '（正在打电话。用口语回答，一到两句，不要列表、不要 markdown、不要提"工具"或"会话"。）';
+const CALL_HINT = '（正在打电话。用口语回答，一到两句，不要列表、不要 markdown，不要提"工具"或"会话"。）';
+
+function bargeInError() {
+  const error = new Error('barge-in');
+  error.code = 'BARGE_IN';
+  return error;
+}
 
 class Brain {
   constructor({ cfg, preset, cwd, log, rolePrompt = '' }) {
@@ -859,7 +865,13 @@ class Brain {
     this.pending = null;
     this.closed = false;
     this.pumpStarted = false;
+    this.busy = false;
+    this.preparing = false;
+    this.cancelPromise = null;
+    this.turnEpoch = 0;
   }
+
+  isBusy() { return this.busy || this.preparing || Boolean(this.pending) || Boolean(this.cancelPromise); }
 
   setRolePrompt(text) { this.rolePrompt = String(text || ''); }
 
@@ -893,6 +905,7 @@ class Brain {
 
   /** 挂断后归档本通会话：下次来电是干净的上下文，不会继承上一通的自我介绍。 */
   async closeSession() {
+    if (this.isBusy()) await this.cancelCurrentTurn('hangup');
     const sid = this.sessionId;
     this.sessionId = null;
     this.primed = false;
@@ -903,6 +916,40 @@ class Brain {
     } catch (error) {
       this.log('brain', `会话归档失败：${String(error?.message ?? error).slice(0, 120)}`);
     }
+  }
+
+  /**
+   * 用户开口打断：取消 DSH 在途回合，并让当前 ask 立刻返回。
+   *
+   * 只掐本地音频是不够的：模型会继续生成（烧 token），部分工具调用也可能已经
+   * 落地。DSH 的 session/cancel 会把这一轮标成 aborted；实测被取消的半截
+   * assistant 文本不会进入下一轮上下文。
+   */
+  async cancelCurrentTurn(reason = 'barge-in') {
+    // epoch 先加：哪怕此刻还在建会话/组 prompt，ask 也会在下一个检查点放弃。
+    this.turnEpoch += 1;
+    if (!this.sessionId) return;
+    if (!this.busy && !this.pending && !this.cancelPromise) return;
+    if (!this.cancelPromise) {
+      const sid = this.sessionId;
+      this.cancelPromise = (async () => {
+        try {
+          await this.api.stopSessionWork(sid);
+          this.log('brain', `已取消在途回合（${reason}）`);
+        } catch (error) {
+          this.log('brain', `取消在途回合失败：${String(error?.message ?? error).slice(0, 120)}`);
+        } finally {
+          this.cancelPromise = null;
+        }
+      })();
+    }
+    if (this.pending) {
+      const { reject, timer } = this.pending;
+      this.pending = null;
+      clearTimeout(timer);
+      reject(bargeInError());
+    }
+    return this.cancelPromise;
   }
 
   async _pump() {
@@ -931,30 +978,55 @@ class Brain {
   }
 
   async ask(text, { timeoutMs = 90000 } = {}) {
-    await this.ensure();
-    this.collector = createTurnCollector();
-    const reply = new Promise((resolve, reject) => {
-      const timer = setTimeout(() => {
-        if (this.pending) this.pending = null;
-        reject(new Error(`等回复超时（${timeoutMs}ms）`));
-      }, timeoutMs);
-      this.pending = { resolve, timer };
-    });
-    // 角色卡只在每通电话的第一句注入一次；后面靠会话上下文延续。
-    // qq-chat-v2 的提示词里写明「角色由桥接注入」，通话没有桥接那条注入，所以这里补。
-    const parts = [];
-    if (!this.primed && this.rolePrompt) {
-      parts.push(`【身份设定｜仅用于本次通话，不要朗读这一段】\n${this.rolePrompt}`);
-      parts.push('【电话模式】现在是在打电话：用口语、一到两句话回答，不要列表、不要 markdown，不要提 AI 助手、模型名、提示词或工具。');
-      this.primed = true;
+    this.preparing = true;
+    const myEpoch = this.turnEpoch;
+    try {
+      await this.ensure();
+      // 上一轮还没取消完就发新 prompt，会被 stopSessionWork 一起取消。
+      if (this.cancelPromise) {
+        this.log('brain', '等上一轮取消完成…');
+        await this.cancelPromise;
+      }
+      if (this.turnEpoch !== myEpoch || !this.sessionId) throw bargeInError();
+      this.collector = createTurnCollector();
+      this.busy = true;
+      const reply = new Promise((resolve, reject) => {
+        const timer = setTimeout(() => {
+          if (this.pending) this.pending = null;
+          reject(new Error(`等回复超时（${timeoutMs}ms）`));
+        }, timeoutMs);
+        this.pending = { resolve, timer };
+      });
+      // 角色卡只在每通电话的第一句注入一次；后面靠会话上下文延续。
+      // qq-chat-v2 的提示词里写明「角色由桥接注入」，通话没有桥接那条注入，所以这里补。
+      const parts = [];
+      if (!this.primed && this.rolePrompt) {
+        parts.push(`【身份设定｜仅用于本次通话，不要朗读这一段】\n${this.rolePrompt}`);
+        parts.push('【电话模式】现在是在打电话：用口语、一到两句话回答，不要列表、不要 markdown，不要提 AI 助手、模型名、提示词或工具。'
+          + '通话中不要调用 QQ 工具（qq_memory_*、qq_send_*、qq_mark_read 等）——通话里没有会话令牌，调用只会报错。用户让你记的事先口头确认，等通话结束后再整理。');
+        this.primed = true;
+      }
+      parts.push(CALL_HINT, text);
+      const content = [{ type: 'text', text: parts.join('\n\n') }];
+      const accepted = await this.api.sessions.prompt({ sessionId: this.sessionId, mode: 'queue', content });
+      if (!accepted?.result?.ok) {
+        throw new Error(`prompt 被拒：${accepted?.result?.error?.code}: ${accepted?.result?.error?.message}`);
+      }
+      if (this.turnEpoch !== myEpoch) {
+        await this.cancelCurrentTurn('late-barge-in');
+        throw bargeInError();
+      }
+      return await reply;
+    } catch (error) {
+      if (this.pending) {
+        clearTimeout(this.pending.timer);
+        this.pending = null;
+      }
+      throw error;
+    } finally {
+      this.preparing = false;
+      this.busy = false;
     }
-    parts.push(CALL_HINT, text);
-    const content = [{ type: 'text', text: parts.join('\n\n') }];
-    const accepted = await this.api.sessions.prompt({ sessionId: this.sessionId, mode: 'queue', content });
-    if (!accepted?.result?.ok) {
-      throw new Error(`prompt 被拒：${accepted?.result?.error?.code}: ${accepted?.result?.error?.message}`);
-    }
-    return reply;
   }
 
   close() {
@@ -1065,6 +1137,10 @@ async function main() {
   let stopped = false;
   let utteranceIndex = 0;
   let speechEpoch = 0;
+  // 被打断时记下「用户到底听到了多少」，下一轮告诉模型，避免它以为整段都说过。
+  let bargeInContext = null;
+  let lastSpokenText = '';
+  let ttsActive = false;
   let idleDropped = 0;
   let vad = null;
   // 离线自测（--from-wav）没有真实通话，通话闸不生效
@@ -1082,6 +1158,9 @@ async function main() {
       } else {
         log('call', '通话结束：回收');
         speechEpoch++;                 // 作废在途的那一轮，回来也不念
+        bargeInContext = null;
+        lastSpokenText = '';
+        ttsActive = false;
         queue.length = 0;              // 没处理的那几句直接丢掉
         try { vad?.reset(); } catch {}   // 不保留半句
         try { mic.flush(); } catch {}
@@ -1178,6 +1257,7 @@ async function main() {
     if (!clean) { log('tts', '没有可念的内容'); return; }
     const epoch = speechEpoch;
     const parts = splitForSpeech(clean);
+    lastSpokenText = '';
     const t0 = Date.now();
     let first = true;
     // 流水线而不是并行：并行请求会在服务端排队，实测第一个包反而更晚
@@ -1195,6 +1275,7 @@ async function main() {
       const pcm = await toPcm48(synth.buffer);
       if (epoch !== speechEpoch) return;
       await mic.speak(pcm);
+      lastSpokenText += part;
       if (first) { log('tts', `首句开口 ${Date.now() - t0}ms（共 ${parts.length} 句）：「${part}」`); first = false; }
     }
   }
@@ -1212,11 +1293,30 @@ async function main() {
       return;
     }
     const t1 = Date.now();
-    const reply = await brain.ask(heard);
+    lastSpokenText = '';
+    let promptText = heard;
+    if (bargeInContext) {
+      const { heard: spoken, playing, ttsActive: wasTts } = bargeInContext;
+      let note = '【打断提示】用户刚才打断了你的上一句。';
+      if (spoken) note += `你已经说出口的只有：「${spoken}」；后面的内容用户没有听到。`;
+      else if (playing) note += '你刚开始出声就被打断了，用户基本没听到内容。';
+      else if (wasTts) note += '你还没来得及说出口就被打断了。';
+      else note += '上一句还没有说出口。';
+      note += '被打断的部分没有说完，也没有生效；不要以为用户听到了，也不要把它当成已经答应/已经记下。'
+        + '以用户下面这句话为准，用户纠正过的以最新说法为准。';
+      promptText = `${note}\n\n${heard}`;
+      bargeInContext = null;
+    }
+    const reply = await brain.ask(promptText);
     log('brain', `${Date.now() - t1}ms → 「${String(reply).slice(0, 120)}」`);
     if (!reply?.trim()) return;
     if (epoch !== speechEpoch) { log('turn', '这轮已经被打断，不念了'); return; }
-    await speak(reply);
+    ttsActive = true;
+    try {
+      await speak(reply);
+    } finally {
+      ttsActive = false;
+    }
     log('turn', `整轮 ${Date.now() - t0}ms（说话 ${seconds.toFixed(1)}s）`);
   }
 
@@ -1229,6 +1329,7 @@ async function main() {
         try {
           await handleUtterance(item.pcm, item.seconds, item.index);
         } catch (error) {
+          if (error?.code === 'BARGE_IN') { log('turn', '这一轮被新的打断取消'); continue; }
           const msg = String(error?.message ?? error);
           log('turn', `处理失败：${msg}`);
           // DSH 每次重启会换随机端口；桥接会把新端口写回 config.json，但我们只在启动时读一次。
@@ -1250,12 +1351,17 @@ async function main() {
     // 打断：她还在说的时候你开口，立刻把她剩下的话丢掉
     onSpeechStart: () => {
       warmTts();
-      // 只有她真的在出声才算打断；她没说话时你接着说，新的一句排队等上一轮说完，
-      // 不该把上一轮的回复作废（那等于白烧一次 DSH）。
-      if (!mic.isSpeaking()) return;
+      // 出声和「正在想」都算打断：她没说话时你接着说，不该把上一轮作废；
+      // 但只要还有在途回合，用户开口就意味着要换话题/纠正，必须取消。
+      const playing = mic.isSpeaking();
+      const speaking = playing || ttsActive;
+      const thinking = brain.isBusy();
+      if (!speaking && !thinking) return;
       speechEpoch++;
-      mic.flush();
-      log('turn', '被打断，停止播放');
+      try { mic.flush(); } catch {}
+      bargeInContext = { heard: lastSpokenText, playing, ttsActive, thinking };
+      log('turn', speaking ? '被打断：停止播放并取消推理' : '打断思考：取消推理');
+      brain.cancelCurrentTurn(speaking ? 'speaking' : 'thinking').catch(() => {});
     },
     onUtterance: (pcm, seconds) => {
       queue.push({ pcm, seconds, index: ++utteranceIndex });

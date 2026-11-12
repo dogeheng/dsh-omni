@@ -1,6 +1,6 @@
 # 打电话（通话回路）
 
-> 状态：**能听、能想、能说**。打断、屏幕共享、人格 preset、自动接听都还没接。
+> 状态：**能听、能想、能说**，支持打断（取消在途推理）和自动接听；屏幕共享还没接。
 > 这就是 `docs` 里说的方案 B 的 B-2 阶段。
 
 QQ 的通话走的是 NTRTC（AVSDK），OneBot 没有实时媒体通道，所以这条路不是"扩展协议"，
@@ -180,27 +180,33 @@ node scripts/call-loop.mjs --auto-answer learn --simulate-call
 - 头像换成新图后，缓存要 7 天才刷新；想立刻生效，删掉 `data/call-avatars/<qq>.raw`。
 - 别配合 `--preset` 用：那等于把工具给来电的人。
 
-## 打断
+## 打断（barge-in）
 
-她说话时你只要开口，就：
+她说话或思考时你开口，现在按这个顺序处理：
 
-1. 立刻清空还没播完的音频（`mic.flush()`）
-2. 作废正在跑的那一轮——它算完也不念了（`speechEpoch` 不匹配）
-3. 把你这句话当成新的一轮
+1. `speechEpoch++`，`mic.flush()` 丢掉还没播出去的音频；
+2. `brain.cancelCurrentTurn()` → DSH `session/cancel`，把在途回合标成 `aborted`，不再等它生成完；
+3. 记录已经说出口的文本（`lastSpokenText`），下一轮 prompt 里告诉模型「你只说到……，后面的没有生效」；
+4. 如果打断发生在「还在生成、还没开口」阶段，下一轮提示「上一句没有说出口」。
 
-判断依据是 VAD 的语音起点，所以**必须戴耳机或者让对方开免提时的回声别太强**，
-否则你自己的扬声器里她的声音会被 VAD 当成"你开口了"，自己打断自己。
+实测：取消后 DSH 不会把半截 assistant 文本写进下一轮上下文（数数被打断后问「刚才数到几」，回答「不知道」）。这比只掐本地音频少烧一次完整 turn，也不会让模型误以为说过没说过的话。
+
+**限制**：如果回复已经生成完、正在播放时被打断，DSH 历史里仍是完整回复（append-only）。我们只能用「你说出口的只有……」在 prompt 里校正，没法像 OpenAI Realtime 的 `conversation.item.truncate` 那样直接改历史。要做到逐字精确，需要 DSH 提供历史截断，或者在打断时用「实际听到的 transcript」重建会话。
+
+通话会话没有 QQ 的会话令牌，`qq_memory_*`、`qq_send_*` 这类工具本来就会失败；电话模式的 prompt 也明确要求不要调用它们，避免把半截话写成长期记忆。
+
+**还没做的调优**：目前 VAD 一检测到开口就打断，允许「嗯/对」这类 backchannel 误触发。LiveKit 的 `interruption.min_duration` / `min_words`、Pipecat 的 `MinWordsUserTurnStartStrategy` 和 Vocode 的 `interrupt_sensitivity` 都是可借鉴的做法；需要先加一个短语音分类，避免 200ms 的「嗯」也把她掐掉。
 
 ## 已知限制
 
 | 限制 | 说明 |
 | --- | --- |
-| 打断是"粗暴"的 | 你一开口就立刻停止播放并作废在途那一轮；她不会说"好，你讲"再停 |
+| 打断是"粗暴"的 | 一开口就停止播放并取消在途回合；回复若已生成完、正在播放，DSH 历史仍是完整回复，只能用 prompt 校正（append-only） |
 | 没有回声消除 | 你外放时她的话会被你的麦克风收进去，QQ 侧有 AEC 但不一定够；戴耳机 |
-| 默认不挂 preset | 会话是空的 DSH agent，没有 QQ 工具、没有长期记忆；`--preset` 可开 |
-| 自动接听没有 | 来电要人工在 VNC 里点接听 |
+| 默认挂 preset | `config.call.preset` 默认 `qq-chat-v2`；人格由 `roles/<当前角色>.md` 首句注入。通话里没有会话令牌，QQ 工具会失败，prompt 要求不要调用 |
+| 自动接听 | 已支持：白名单 + 头像比对，接听坐标在 `config.call.accept`；对不上就 fail-closed |
 | 屏幕共享没有 | 见 `docs` 里的 B-4 |
-| 容器重建要重做 | 包和 PA 都在容器里；重建后重跑 01/02 |
+| 容器重建 | PA/虚拟设备由 `call-loop` 自动补；`/b0` 的包丢了要重跑 01 |
 
 ## 常驻（不用手动开脚本）
 
