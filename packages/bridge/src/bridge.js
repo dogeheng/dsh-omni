@@ -33,6 +33,7 @@ import { createAsrService, formatVoiceText, normalizeAsrConfig } from './voice-a
 import { normalizeCallConfig } from './call-config.js';
 import { CallPresence } from './call-presence.js';
 import { recordCallTurn } from './call-memory.js';
+import { VoiceprintStore } from './voiceprints.js';
 import { autoSpeakable, createTtsService, normalizeSpeakConfig, redactSpeakConfig, SPEAK_EMOTIONS } from './voice-tts.js';
 import { createSingingService, normalizeSingingConfig, redactSingingConfig } from './singing.js';
 import { createShortCoverService } from './short-cover/manager-v2.js';
@@ -9450,6 +9451,49 @@ async function main() {
           } catch (error) {
             log(`通话记忆失败 ${key}：${error?.message ?? error}`);
             sendJson({ ok: false, error: String(error?.message ?? error) }, 500);
+          }
+          return;
+        }
+        // ── 通话内 one-shot 声纹注册（call-loop 把当前 cluster 的 centroid + 5s 样本发来） ──
+        if (req.method === 'POST' && url.pathname === '/api/call/voiceprint/enroll') {
+          const body = await readBody();
+          const voiceCfg = normalizeCallConfig(cfg.call).voiceprints;
+          if (!voiceCfg.enabled) { sendJson({ ok: false, error: '声纹功能未启用' }, 409); return; }
+          const name = String(body.name ?? '').trim();
+          const qq = String(body.qq ?? '').trim();
+          const centroid = Array.isArray(body.centroid) ? body.centroid : [];
+          if (!name || centroid.length < 32) { sendJson({ ok: false, error: 'name/centroid 无效' }, 400); return; }
+          let samplePcm = null;
+          if (typeof body.samplePcmBase64 === 'string' && body.samplePcmBase64) {
+            try { samplePcm = Buffer.from(body.samplePcmBase64, 'base64'); } catch { samplePcm = null; }
+            if (samplePcm && (samplePcm.length < 3200 || samplePcm.length > 16000 * 2 * 10)) {
+              sendJson({ ok: false, error: '试听样本需在 0.1–10 秒之间' }, 400);
+              return;
+            }
+          }
+          try {
+            const store = new VoiceprintStore({ root: ROOT, log });
+            const record = store.enroll({
+              name,
+              qq,
+              centroid,
+              samples: 1,
+              source: 'call',
+              samplePcm
+            });
+            log(`通话声纹：注册 ${record.name}（${record.id}）`);
+            sendJson({
+              ok: true,
+              voiceprint: {
+                id: record.id,
+                name: record.name,
+                qq: record.qq || '',
+                samples: record.samples,
+                updatedAt: record.updatedAt
+              }
+            });
+          } catch (error) {
+            sendJson({ ok: false, error: String(error?.message ?? error) }, 400);
           }
           return;
         }

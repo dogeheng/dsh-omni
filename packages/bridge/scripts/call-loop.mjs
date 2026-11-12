@@ -28,6 +28,7 @@ import { VoiceprintStore } from '../src/voiceprints.js';
 import { readConsoleToken } from '../src/call-presence.js';
 import { startSayServer } from '../src/call-say-server.js';
 import { buildCrossChannelNote } from '../src/call-context.js';
+import { parseSpeakerBinding } from '../src/call-voice-binding.js';
 import { parseWindows, pickNewWindow } from '../src/x11-windows.js';
 import {
   normalizeCallConfig, matchCaller, friendNameIndex, CALL_GROUP_GEOMETRY_DEFAULTS
@@ -1517,10 +1518,89 @@ async function main() {
     }
   }
 
+  function floatToPcm16(samples) {
+    const buf = Buffer.alloc(samples.length * 2);
+    for (let i = 0; i < samples.length; i++) {
+      const v = Math.max(-1, Math.min(1, samples[i]));
+      buf.writeInt16LE(Math.round(v * 32767), i * 2);
+    }
+    return buf;
+  }
+
+  function pushRecentSpeaker(speaker, samples) {
+    if (!speaker || !samples || samples.length === 0) return;
+    const max = 16000 * 5;
+    const audio = samples.length > max ? samples.slice(samples.length - max) : samples.slice();
+    recentSpeakerSegments.push({
+      speakerId: speaker.id,
+      label: speaker.label,
+      name: speaker.name || null,
+      qq: speaker.qq || '',
+      samples: audio,
+      at: Date.now()
+    });
+    if (recentSpeakerSegments.length > 8) recentSpeakerSegments.shift();
+  }
+
+  async function handleSpeakerBinding(binding) {
+    if (!speakerAvailable || !speakerTracker) {
+      enqueueExternalSpeech('现在没有开说话人分离，绑不了声纹。');
+      return true;
+    }
+    const target = binding.speakerIndex
+      ? [...recentSpeakerSegments].reverse().find((s) => s.speakerId === `S${binding.speakerIndex}`
+        || s.label === `说话人${binding.speakerIndex}` || s.name === binding.name)
+      : recentSpeakerSegments.at(-1);
+    if (!target) {
+      enqueueExternalSpeech('我没听出刚才谁在说话，等有人再说一句，你再告诉我。');
+      return true;
+    }
+    const centroid = speakerTracker.getCentroid(target.speakerId);
+    if (!centroid) {
+      enqueueExternalSpeech('刚才那段声音不够清楚，没存上声纹。');
+      return true;
+    }
+    const isGroupCall = watcher?.lastCallInfo?.via === 'ocr-group';
+    const qq = target.qq || (isGroupCall ? '' : callOwnerQQ);
+    const token = readConsoleToken(ROOT);
+    if (!token) {
+      enqueueExternalSpeech('声纹没存上，控制台令牌不可用。');
+      return true;
+    }
+    const samplePcm = floatToPcm16(target.samples);
+    try {
+      const response = await fetch(`${bridgeBase}/api/call/voiceprint/enroll`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json', 'x-console-token': token },
+        body: JSON.stringify({
+          name: binding.name,
+          qq,
+          centroid,
+          samplePcmBase64: samplePcm.toString('base64'),
+          source: 'call'
+        }),
+        signal: AbortSignal.timeout(10000)
+      });
+      const body = await response.json().catch(() => null);
+      if (!response.ok || body?.ok === false) throw new Error(body?.error || `HTTP ${response.status}`);
+      const record = body.voiceprint;
+      speakerTracker.setName(target.speakerId, record.name, record.qq || '');
+      callBindings.push({ name: record.name, qq: record.qq || '', speakerId: target.speakerId, at: Date.now() });
+      log('speaker', `通话绑定：${target.speakerId} → ${record.name}${record.qq ? `（${record.qq}）` : ''}`);
+      enqueueExternalSpeech(`记住了，刚才说话的是${record.name}。`);
+    } catch (error) {
+      log('speaker', `通话声纹注册失败：${String(error?.message ?? error).slice(0, 120)}`);
+      enqueueExternalSpeech('声纹没存上，你再说一次试试。');
+    }
+    return true;
+  }
+
   let sayServer = null;
   let presenceTimer = null;
   let externalQueue = [];
   let externalContextNotes = [];
+  let recentSpeakerSegments = [];
+  const callBindings = [];
   let externalBusy = false;
   let presenceWarned = false;
 
@@ -1933,8 +2013,6 @@ async function main() {
       log('asr', '没听清，跳过');
       return;
     }
-    // 通话里的用户原话按文字聊天的规则进记忆（候选/显式），不写 AI 自己的话。
-    postCallMemory(heard);
     let speaker = null;
     if (speakerAvailable) {
       try {
@@ -1946,6 +2024,16 @@ async function main() {
         speakerTracker = null;
       }
     }
+    // “刚才说话的是 X”：绑定上一个 speaker cluster，并用那段音频做 one-shot 注册。
+    // 这句话本身不进 brain、不写记忆；Yuki 会用语音确认。
+    const binding = parseSpeakerBinding(heard);
+    if (binding) {
+      await handleSpeakerBinding(binding);
+      return;
+    }
+    // 通话里的用户原话按文字聊天的规则进记忆（候选/显式），不写 AI 自己的话。
+    postCallMemory(heard);
+    if (speaker) pushRecentSpeaker(speaker, samples);
     await feedTurn(pcm, heard, seconds, speaker);
   }
 

@@ -88,6 +88,47 @@ node scripts/voiceprints.mjs remove --id qq_12345678
 
 阈值/间隔在 `src/voiceprints.js` 的 `VOICEPRINT_MATCH_DEFAULTS`，后续会暴露到控制台。
 
+## 3.5 通话内 one-shot 注册
+
+在通话里说明确句式，Yuki 会把**上一个说话人**的 cluster 和那段音频绑定：
+
+```text
+刚才说话的是张三
+说话人2是李四
+S3是王五
+记一下，说话人2是李四
+```
+
+流程：
+
+1. call-loop 保留最近 8 段说话人音频（每段最多 5s）；
+2. ASR 命中控制句 → 取上一个 speaker cluster（或指定 `说话人N`）；
+3. 用该 cluster 的 centroid + 那段音频 POST `/api/call/voiceprint/enroll`；
+4. 写入 `data/voiceprints/` 并立即 `setName`，本次通话后续标 `[张三]`；
+5. Yuki 用语音确认“记住了，刚才说话的是张三”；
+6. 这句话本身不进 brain、不写长期记忆。
+
+注意：
+
+- 只在明确句式下触发；疑问句（“刚才说话的是不是张三”“是谁”）不触发；
+- 群通话没有 QQ 身份时，qq 留空，ID 用 `name_<hash>`；
+- 一对一通话里绑定会用主人 QQ（只有对方一个人）；
+- 失败会语音提示，不会静默写错。
+
+### API
+
+`POST /api/call/voiceprint/enroll`（console token；call-loop 专用）：
+
+```json
+{
+  "name": "张三",
+  "qq": "12345678",
+  "centroid": [192 维],
+  "samplePcmBase64": "16k 单声道 s16le 的 base64（0.1–10s）",
+  "source": "call"
+}
+```
+
 ## 4. 迁移与隐私
 
 - 代码在 git；声纹 JSON/WAV 在 `data/`（被 gitignore），迁移时连同 `data/voiceprints/` 一起复制；
