@@ -31,6 +31,7 @@ import { discoverSnowLumaConnection, persistSnowLumaEndpoint, persistToken } fro
 // 听懂语音（ASR）与开口说话（TTS）。策略与出处见 docs/VOICE_IO.md。
 import { createAsrService, formatVoiceText, normalizeAsrConfig } from './voice-asr.js';
 import { normalizeCallConfig } from './call-config.js';
+import { CallPresence } from './call-presence.js';
 import { autoSpeakable, createTtsService, normalizeSpeakConfig, redactSpeakConfig, SPEAK_EMOTIONS } from './voice-tts.js';
 import { createSingingService, normalizeSingingConfig, redactSingingConfig } from './singing.js';
 import { createShortCoverService } from './short-cover/manager-v2.js';
@@ -4273,6 +4274,9 @@ async function main() {
     }
   }
 
+  // 通话 presence：call-loop 接通时注册，发送工具据此把主人的 QQ 回复改走语音。
+  const callPresence = new CallPresence({ log });
+
   function startConsoleServer() {
     const port = cfg.consolePort ?? 3100;
     // 控制台鉴权：优先用 config.consoleToken，未配置则自动生成并持久化，不再默认无鉴权。
@@ -6126,6 +6130,7 @@ async function main() {
               geometry: nextCall.geometry,
               groupGeometry: nextCall.groupGeometry,
               preset: nextCall.preset,
+              textBridge: nextCall.textBridge,
               turnDetection: nextCall.turnDetection,
               diarization: nextCall.diarization
             };
@@ -9225,6 +9230,20 @@ async function main() {
           const maxChars = Math.max(1, Number(sendCfg.maxMessageChars) || 500);
           if (message.length > maxChars) { sendJson({ ok: false, error: `单条消息不能超过 ${maxChars} 字` }, 400); return; }
           if (SENSITIVE_RE.test(message)) { sendJson({ ok: false, error: '消息含敏感信息，已阻止发送' }, 403); return; }
+          // 通话路由：模型照常决定“回不回”，这里只把输出终点从 QQ 换成通话 TTS。
+          // 不改变 reserved2 的唤醒/概率/节奏，也不计入群发送额度（群里没收到）。
+          const textBridgeCfg = normalizeCallConfig(cfg.call).textBridge;
+          if (textBridgeCfg.enabled && callPresence.shouldRoute(key, kind, id)) {
+            try {
+              await callPresence.say(message, { token: consoleToken, key, kind, messageId: replyToMessageId });
+              log(`通话路由：${key} → 语音「${message.slice(0, 60)}」`);
+              sendJson({ ok: true, spoken: true, key, message: '已通过通话语音说出' });
+            } catch (error) {
+              log(`通话路由失败 ${key}：${error?.message ?? error}`);
+              sendJson({ ok: false, error: `通话语音投递失败：${error?.message ?? error}` }, 502);
+            }
+            return;
+          }
           // st/now 必须声明在 try **之外**：下面的 catch 要用它们回滚预占的发送额度。
           // 写在 try 里时 catch 拿到的是块作用域外的名字 ⇒ ReferenceError（send-burst
           // 曾整段踩过同型问题，见体检报告 #1 / R2）。后果不是"少一行日志"，而是
@@ -9392,6 +9411,29 @@ async function main() {
           try { fs.writeFileSync(ACTIVITY_LOG, ''); } catch {}
           log(`控制台：已清空 QQ 聊天工作区（停止 ${stoppedCount} 个、归档 ${archivedCount} 个会话，映射与活动日志已清空）`);
           sendJson({ ok: true, archivedCount, stoppedCount });
+          return;
+        }
+        // ── 通话 presence（call-loop 注册；发送工具据此切换输出通道） ──────────
+        if (req.method === 'POST' && url.pathname === '/api/call/presence') {
+          const body = await readBody();
+          try {
+            const presence = callPresence.update({
+              active: body.active === true,
+              withQQ: body.withQQ,
+              sayUrl: body.sayUrl,
+              ttlMs: body.ttlMs
+            });
+            log(presence.active
+              ? `通话 presence：接通 ${presence.withQQ || '?'}（${presence.routeKeys.length} 个路由会话）`
+              : '通话 presence：断开');
+            sendJson({ ok: true, presence });
+          } catch (error) {
+            sendJson({ ok: false, error: String(error?.message ?? error) }, 400);
+          }
+          return;
+        }
+        if (req.method === 'GET' && url.pathname === '/api/call/presence') {
+          sendJson({ ok: true, presence: callPresence.status() });
           return;
         }
         // ── 重启 call-loop（控制台保存通话/说话人参数后立即生效） ───────────────
@@ -13546,6 +13588,14 @@ async function main() {
     if (!isSessionAllowedInCurrentMode(key)) return;
     if (!plainContent && !quoteTargetIsSelf) return;
     const isOwner = String(event.user_id) === String(cfg.ownerQQ ?? '');
+    // 通话期间主人发来的消息：把这个会话标记为“回复改走语音”的候选。
+    // 只标记，不改变唤醒判定；真正发送时由 /api/send/* 决定走 QQ 还是 TTS。
+    if (callPresence.isActive()) {
+      const textBridgeCfg = normalizeCallConfig(cfg.call).textBridge;
+      if (textBridgeCfg.enabled && (isOwner || !textBridgeCfg.routeOwnerOnly)) {
+        callPresence.markRoute(key, textBridgeCfg.routeTtlMs);
+      }
+    }
     // ── 外部应用中继的回答 ──────────────────────────────────────────────────
     // 放在所有模式分支之前：中继是桥接层能力，跟 chat / reserved2 无关。
     // 只认两种：引用那条消息，或正文带 #短码（**不做隐式匹配**）。命中就消费掉——

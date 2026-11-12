@@ -2171,6 +2171,17 @@ button:active:not(:disabled) {
         <input type="text" id="callAllowNames" style="flex:2" placeholder="例如 大肥鱼">
       </div>
       <div class="meta" style="margin:14px 0 8px;border-top:1px solid var(--dsw-alias-border-l1,#e5e7eb);padding-top:12px">
+        <b>通话与文字打通</b>：通话期间，你在群里发文字/图片/视频，她会在电话里说，不再往群里发文字。
+        回不回、随机程度仍按正常聊天的设置走；这里只切换“输出走 QQ 还是走语音”。
+      </div>
+      <div class="row">
+        <label style="flex:1">通话时把主人的 QQ 回复改成语音</label>
+        <input type="checkbox" id="callTextBridge" style="width:auto">
+        <label style="flex:1">只处理主人的消息（推荐）</label>
+        <input type="checkbox" id="callTextBridgeOwnerOnly" style="width:auto">
+      </div>
+      <div class="meta" id="callPresenceMsg">通话路由：未连接</div>
+      <div class="meta" style="margin:14px 0 8px;border-top:1px solid var(--dsw-alias-border-l1,#e5e7eb);padding-top:12px">
         <b>群语音按人分离（零样本匿名）</b>：给群语音里的不同说话人打「说话人1/2」标签，不注册声纹、不认识真实姓名。
         第 2 个人说话后才开始有标签；一对一通话不会加标签。模型 27MB，<b>只在通话接通时加载、挂断即释放</b>，不打电话不占内存。
       </div>
@@ -3996,6 +4007,10 @@ async function loadCallConfig() {
     callEl('callAllowNames').value = (c.allowNames ?? []).join(', ');
     callEl('callAcceptX').value = c.acceptX ?? '';
     callEl('callAcceptY').value = c.acceptY ?? '';
+    const tb = c.textBridge ?? {};
+    callEl('callTextBridge').checked = tb.enabled !== false;
+    callEl('callTextBridgeOwnerOnly').checked = tb.routeOwnerOnly !== false;
+    void loadCallPresence();
     const d = c.diarization ?? {};
     callEl('callDiarMode').value = d.mode === 'anonymous' ? 'anonymous' : 'off';
     callEl('callDiarThreshold').value = d.threshold ?? 0.65;
@@ -4006,6 +4021,21 @@ async function loadCallConfig() {
     callEl('callMsg').textContent = '读取失败：' + (error?.message ?? error);
   }
 }
+async function loadCallPresence() {
+  const el = callEl('callPresenceMsg');
+  try {
+    const r = await api('/api/call/presence');
+    const p = r?.presence ?? {};
+    el.textContent = p.active
+      ? `通话路由：已接通（${p.withQQ || '未知'}，${p.routeKeys?.length || 0} 个会话在路由）`
+      : '通话路由：未连接（通话接通后自动注册）';
+    el.className = p.active ? 'meta ok' : 'meta';
+  } catch (error) {
+    el.textContent = '通话路由：读取失败 ' + (error?.message ?? error);
+    el.className = 'meta err';
+  }
+}
+
 async function saveCallConfig() {
   const msg = callEl('callMsg');
   msg.textContent = '保存中…';
@@ -4019,6 +4049,11 @@ async function saveCallConfig() {
       allowNames: callEl('callAllowNames').value,
       acceptX: num('callAcceptX'),
       acceptY: num('callAcceptY'),
+      textBridge: {
+        enabled: callEl('callTextBridge').checked,
+        routeOwnerOnly: callEl('callTextBridgeOwnerOnly').checked,
+        routeTtlMs: 600000
+      },
       diarization: {
         mode: callEl('callDiarMode').value,
         threshold: Number(callEl('callDiarThreshold').value),
@@ -4080,6 +4115,7 @@ const round1 = (x) => Math.round(x * 10) / 10;
 
 callEl('callSaveBtn').onclick = saveCallConfig;
 callEl('callRestartBtn').onclick = restartCallLoop;
+setInterval(() => { void loadCallPresence(); }, 10000);
 
 function fillVoiceIoForm(a, s) {
   vioEl('v2AsrEnabled').checked = a.enabled !== false;

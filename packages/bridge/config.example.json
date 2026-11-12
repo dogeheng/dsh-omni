@@ -561,6 +561,11 @@
       "maxSpeakers": 8,
       "minSegmentMs": 600,
       "minNewClusterMs": 1500
+    },
+    "textBridge": {
+      "enabled": true,
+      "routeOwnerOnly": true,
+      "routeTtlMs": 600000
     }
   }
 }

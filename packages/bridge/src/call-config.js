@@ -25,6 +25,11 @@ export const CALL_GROUP_GEOMETRY_DEFAULTS = Object.freeze({
 export const CALL_DEFAULTS = Object.freeze({
   autoAnswer: false,
   preset: '',
+  textBridge: {
+    enabled: true,
+    routeOwnerOnly: true,
+    routeTtlMs: 600000
+  },
   diarization: {
     mode: 'off',
     modelPath: '',
@@ -91,6 +96,19 @@ function toCoord(value) {
   return Number.isFinite(n) ? Math.round(n) : null;
 }
 
+function toTextBridge(raw) {
+  const r = (raw && typeof raw === 'object' && !Array.isArray(raw)) ? raw : {};
+  const clamp = (value, min, max, fallback) => {
+    const n = Number(value);
+    return Number.isFinite(n) ? Math.min(max, Math.max(min, Math.round(n))) : fallback;
+  };
+  return {
+    enabled: r.enabled !== false,
+    routeOwnerOnly: r.routeOwnerOnly !== false,
+    routeTtlMs: clamp(r.routeTtlMs, 60000, 1800000, 600000)
+  };
+}
+
 function toDiarization(raw) {
   const r = (raw && typeof raw === 'object' && !Array.isArray(raw)) ? raw : {};
   const mode = r.mode === 'anonymous' ? 'anonymous' : 'off';
@@ -140,6 +158,7 @@ export function normalizeCallConfig(raw) {
     groupGeometry: toGeometry(r.groupGeometry, CALL_GROUP_GEOMETRY_DEFAULTS),
     autoAnswer: r.autoAnswer === true,
     preset: typeof r.preset === 'string' ? r.preset.trim().slice(0, 64) : '',
+    textBridge: toTextBridge(r.textBridge),
     diarization: toDiarization(r.diarization),
     turnDetection: toTurnDetection(r.turnDetection),
     allow: toIdList(r.allow),

@@ -24,6 +24,8 @@ import { NodeApiClient, unwrap, createTurnCollector } from '../src/dsh-client.js
 import { pcm16ToFloat32, resampleLinear, parseWav } from '../src/voice-asr.js';
 import { createTtsService } from '../src/voice-tts.js';
 import { SpeakerTracker } from '../src/speaker-tracker.js';
+import { readConsoleToken } from '../src/call-presence.js';
+import { startSayServer } from '../src/call-say-server.js';
 import { parseWindows, pickNewWindow } from '../src/x11-windows.js';
 import {
   normalizeCallConfig, matchCaller, friendNameIndex, CALL_GROUP_GEOMETRY_DEFAULTS
@@ -1453,6 +1455,103 @@ async function main() {
     log('speaker', '零样本说话人模型/worker 缺失，本次不标说话人');
   }
 
+  // ── 通话文字→语音桥：只在通话接通时启动本地 /say 服务并向 bridge 注册 presence ──
+  const textBridgeCfg = callCfg.textBridge;
+  const bridgeBase = `http://127.0.0.1:${Number(cfg.consolePort) || 3100}`;
+  const callOwnerQQ = (() => {
+    const owner = String(cfg.ownerQQ || '');
+    if (owner && callCfg.allow.some((id) => String(id) === owner)) return owner;
+    return String(callCfg.allow[0] || owner || '');
+  })();
+  let sayServer = null;
+  let presenceTimer = null;
+  let externalQueue = [];
+  let externalBusy = false;
+  let presenceWarned = false;
+
+  async function registerCallPresence(active) {
+    const token = readConsoleToken(ROOT);
+    if (!token) throw new Error('缺少控制台令牌（data/console-token）');
+    const response = await fetch(`${bridgeBase}/api/call/presence`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', 'x-console-token': token },
+      body: JSON.stringify({
+        active,
+        withQQ: active ? callOwnerQQ : undefined,
+        sayUrl: active ? sayServer?.url : undefined,
+        ttlMs: 90_000
+      }),
+      signal: AbortSignal.timeout(5000)
+    });
+    const body = await response.json().catch(() => null);
+    if (!response.ok || body?.ok === false) throw new Error(body?.error || `HTTP ${response.status}`);
+    return body;
+  }
+
+  async function startCallTextBridge() {
+    if (!textBridgeCfg.enabled || sayServer) return;
+    const token = readConsoleToken(ROOT);
+    if (!token) { log('call', '通话文字→语音：缺少控制台令牌，关闭桥接'); return; }
+    sayServer = await startSayServer({
+      token,
+      log: (message) => log('call', message),
+      onSay: (payload) => enqueueExternalSpeech(payload.text, payload)
+    });
+    log('call', `通话文字→语音：/say 已启动（${sayServer.url}），主人 ${callOwnerQQ || '?'}`);
+    try {
+      await registerCallPresence(true);
+      log('call', '通话文字→语音：presence 已注册');
+    } catch (error) {
+      log('call', `通话文字→语音：presence 注册失败（会重试）：${String(error?.message ?? error).slice(0, 100)}`);
+    }
+    presenceTimer = setInterval(() => {
+      registerCallPresence(true).catch((error) => {
+        if (!presenceWarned) {
+          presenceWarned = true;
+          log('call', `通话文字→语音：presence 心跳失败：${String(error?.message ?? error).slice(0, 100)}`);
+        }
+      });
+    }, 30_000);
+    presenceTimer.unref?.();
+  }
+
+  async function stopCallTextBridge(reason = '通话结束') {
+    if (presenceTimer) { clearInterval(presenceTimer); presenceTimer = null; }
+    externalQueue = [];
+    externalBusy = false;
+    if (!sayServer) return;
+    try { await registerCallPresence(false); } catch {}
+    const server = sayServer;
+    sayServer = null;
+    log('call', `通话文字→语音：${reason}，/say 关闭`);
+    setTimeout(() => { server.close().catch(() => {}); }, 1000).unref?.();
+  }
+
+  function enqueueExternalSpeech(text, meta = {}) {
+    const clean = String(text ?? '').trim();
+    if (!clean) return;
+    if (externalQueue.length >= 20) externalQueue.shift();
+    externalQueue.push({ text: clean, meta });
+    log('call', `收到通话语音回复（${clean.length} 字）：${clean.slice(0, 50)}`);
+    pumpExternalSpeech().catch((error) => log('call', `外部语音失败：${String(error?.message ?? error).slice(0, 100)}`));
+  }
+
+  async function pumpExternalSpeech() {
+    if (externalBusy || ttsActive || brain.isBusy() || externalQueue.length === 0) return;
+    externalBusy = true;
+    ttsActive = true;
+    const item = externalQueue.shift();
+    try {
+      await speak(item.text);
+    } catch (error) {
+      log('call', `外部语音说话失败：${String(error?.message ?? error).slice(0, 100)}`);
+    } finally {
+      ttsActive = false;
+      externalBusy = false;
+      if (externalQueue.length > 0) setTimeout(() => { pumpExternalSpeech().catch(() => {}); }, 200).unref?.();
+    }
+  }
+
   // 诊断用：拿一张已经截好的图跑一遍认人（不需要来电）
   if (opts.identifyShot) {
     const callCfg = normalizeCallConfig(cfg.call);
@@ -1517,6 +1616,7 @@ async function main() {
         // Smart Turn 的 Python worker 启动约 0.8s，趁用户还在说第一句先拉起来。
         getTurnDetector()?.ensure().catch((e) => log('turn', `Smart Turn 预加载失败：${String(e?.message ?? e).slice(0, 60)}`));
         getSpeakerTracker()?.ensure().catch((e) => log('speaker', `说话人模型预加载失败：${String(e?.message ?? e).slice(0, 60)}`));
+        startCallTextBridge().catch((e) => log('call', `通话文字→语音启动失败：${String(e?.message ?? e).slice(0, 100)}`));
       } else {
         log('call', '通话结束：回收');
         speechEpoch++;                 // 作废在途的那一轮，回来也不念
@@ -1533,6 +1633,7 @@ async function main() {
         try { vad?.reset(); } catch {}   // 不保留半句
         try { mic.flush(); } catch {}
         if (idleDropped) { log('call', `未通话期间丢弃了 ${idleDropped} 帧`); idleDropped = 0; }
+        stopCallTextBridge('通话结束').catch(() => {});
         asr.unload('通话结束');
         brain.closeSession().catch(() => {});
       }
@@ -1681,6 +1782,7 @@ async function main() {
       await speak(reply);
     } finally {
       ttsActive = false;
+      setTimeout(() => { pumpExternalSpeech().catch(() => {}); }, 100).unref?.();
     }
     log('turn', `整轮 ${Date.now() - t0}ms（说话 ${seconds.toFixed(1)}s）`);
   }
@@ -1851,6 +1953,7 @@ async function main() {
     pendingTurn = null;
     try { turnDetector?.close(); } catch {}
     try { speakerTracker?.close(); } catch {}
+    try { stopCallTextBridge('call-loop 退出').catch(() => {}); } catch {}
     try { vad.flush(); } catch {}
     capture.close();
     mic.close();
