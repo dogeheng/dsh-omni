@@ -161,6 +161,7 @@ npm --prefix packages/bridge run preview:console
 
 | 想了解什么 | 入口 |
 | --- | --- |
+| 群语音按人分离 | [方案与选型](docs/DIARIZATION.md) |
 | 配置、其他 profile、自动启动、迁移、常见问题 | [安装与维护](docs/SETUP.md) |
 | 控制台分类、参数说明、角色互动 | [控制台界面](docs/CONSOLE_UI.md) |
 | 消息如何在 QQ 与 DSH 之间流转 | [架构](docs/ARCHITECTURE.md) |
