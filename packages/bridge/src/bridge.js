@@ -9237,7 +9237,15 @@ async function main() {
           const textBridgeCfg = normalizeCallConfig(cfg.call).textBridge;
           if (textBridgeCfg.enabled && callPresence.shouldRoute(key, kind, id)) {
             try {
-              await callPresence.say(message, { token: consoleToken, key, kind, messageId: replyToMessageId });
+              const routeState = getSocialV2State(key);
+              const lastIncoming = [...(Array.isArray(routeState.recentMessages) ? routeState.recentMessages : [])]
+                .reverse().find((m) => m && !m.isSelf);
+              const context = lastIncoming ? {
+                sender: String(lastIncoming.sender ?? ''),
+                text: String(lastIncoming.plain ?? lastIncoming.text ?? '').slice(0, 300),
+                media: Array.isArray(lastIncoming.media) ? lastIncoming.media.slice(0, 2) : []
+              } : null;
+              await callPresence.say(message, { token: consoleToken, key, kind, messageId: replyToMessageId, context });
               log(`通话路由：${key} → 语音「${message.slice(0, 60)}」`);
               sendJson({ ok: true, spoken: true, key, message: '已通过通话语音说出' });
             } catch (error) {

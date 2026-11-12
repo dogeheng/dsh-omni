@@ -26,6 +26,7 @@ import { createTtsService } from '../src/voice-tts.js';
 import { SpeakerTracker } from '../src/speaker-tracker.js';
 import { readConsoleToken } from '../src/call-presence.js';
 import { startSayServer } from '../src/call-say-server.js';
+import { buildCrossChannelNote } from '../src/call-context.js';
 import { parseWindows, pickNewWindow } from '../src/x11-windows.js';
 import {
   normalizeCallConfig, matchCaller, friendNameIndex, CALL_GROUP_GEOMETRY_DEFAULTS
@@ -1503,6 +1504,7 @@ async function main() {
   let sayServer = null;
   let presenceTimer = null;
   let externalQueue = [];
+  let externalContextNotes = [];
   let externalBusy = false;
   let presenceWarned = false;
 
@@ -1555,6 +1557,7 @@ async function main() {
   async function stopCallTextBridge(reason = '通话结束') {
     if (presenceTimer) { clearInterval(presenceTimer); presenceTimer = null; }
     externalQueue = [];
+    externalContextNotes = [];
     externalBusy = false;
     if (!sayServer) return;
     try { await registerCallPresence(false); } catch {}
@@ -1569,6 +1572,11 @@ async function main() {
     if (!clean) return;
     if (externalQueue.length >= 20) externalQueue.shift();
     externalQueue.push({ text: clean, meta });
+    const note = buildCrossChannelNote({ key: meta?.key, source: meta?.context, reply: clean });
+    if (note) {
+      externalContextNotes.push(note);
+      if (externalContextNotes.length > 3) externalContextNotes.shift();
+    }
     log('call', `收到通话语音回复（${clean.length} 字）：${clean.slice(0, 50)}`);
     pumpExternalSpeech().catch((error) => log('call', `外部语音失败：${String(error?.message ?? error).slice(0, 100)}`));
   }
@@ -1794,8 +1802,10 @@ async function main() {
     lastSpokenText = '';
     const speakerLabel = speakers.length === 1 ? speakers[0] : (speakers.length > 1 ? '多人' : '');
     if (speakerLabel) log('speaker', `本轮标签 ${speakerLabel}`);
+    const crossChannelNote = externalContextNotes.length ? `${externalContextNotes.join('\n')}\n\n` : '';
+    externalContextNotes = [];
     const userText = speakerLabel ? `[${speakerLabel}] ${text}` : text;
-    let promptText = userText;
+    let promptText = crossChannelNote + userText;
     if (bargeInContext) {
       const { heard: spoken, playing, ttsActive: wasTts } = bargeInContext;
       let note = '【打断提示】用户刚才打断了你的上一句。';
@@ -1805,7 +1815,7 @@ async function main() {
       else note += '上一句还没有说出口。';
       note += '被打断的部分没有说完，也没有生效；不要以为用户听到了，也不要把它当成已经答应/已经记下。'
         + '以用户下面这句话为准，用户纠正过的以最新说法为准。';
-      promptText = `${note}\n\n${userText}`;
+      promptText = `${crossChannelNote}${note}\n\n${userText}`;
       bargeInContext = null;
     }
     const t1 = Date.now();

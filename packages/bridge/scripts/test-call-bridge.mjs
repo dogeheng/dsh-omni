@@ -3,6 +3,7 @@
 import assert from 'node:assert/strict';
 import { startSayServer } from '../src/call-say-server.js';
 import { CallPresence } from '../src/call-presence.js';
+import { buildCrossChannelNote } from '../src/call-context.js';
 
 const TOKEN = 'test-token-0123456789abcdef';
 const said = [];
@@ -51,10 +52,20 @@ try {
   assert.equal(presence.shouldRoute('private:111111', 'private', 111111), false, '其他私聊不应路由');
   assert.equal(presence.shouldRoute('group:222222', 'group', 222222), false, '其他群不应路由');
 
-  await presence.say('这是要走语音的回复', { token: TOKEN, key: 'group:973614217', kind: 'group' });
+  await presence.say('这是要走语音的回复', {
+    token: TOKEN,
+    key: 'group:973614217',
+    kind: 'group',
+    context: { sender: 'doge.恆', text: '看这张图', media: ['image'] }
+  });
   assert.equal(said.length, 2, 'presence.say 应把文本送到 say server');
   assert.equal(said[1].text, '这是要走语音的回复');
-  console.log('  ✅ presence：标记 / 私聊 owner / 其他会话隔离 / say 投递');
+  assert.equal(said[1].context.text, '看这张图', '跨通道上下文应随 say 一起传');
+  const note = buildCrossChannelNote({ key: 'group:973614217', source: said[1].context, reply: said[1].text });
+  assert.match(note, /看这张图/);
+  assert.match(note, /这是要走语音的回复/);
+  assert.match(note, /带图片/);
+  console.log('  ✅ presence：标记 / 私聊 owner / 其他会话隔离 / say 投递 / 跨通道上下文');
 
   presence.expiresAt = Date.now() - 1;
   assert.equal(presence.isActive(), false, '过期后应自动失效');

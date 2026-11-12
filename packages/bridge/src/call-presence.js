@@ -94,7 +94,7 @@ export class CallPresence {
   }
 
   /** 把一段文本交给 call-loop 的 /say。 */
-  async say(text, { token, timeoutMs = 12_000, key = '', kind = '', messageId = null } = {}) {
+  async say(text, { token, timeoutMs = 12_000, key = '', kind = '', messageId = null, context = null } = {}) {
     if (!this.isActive()) throw new Error('当前不在通话中');
     const clean = String(text ?? '').trim();
     if (!clean) throw new Error('要说的文本为空');
@@ -104,7 +104,7 @@ export class CallPresence {
         'content-type': 'application/json',
         ...(token ? { 'x-console-token': token } : {})
       },
-      body: JSON.stringify({ text: clean, key, kind, messageId }),
+      body: JSON.stringify({ text: clean, key, kind, messageId, context }),
       signal: AbortSignal.timeout(timeoutMs)
     });
     let body = null;
