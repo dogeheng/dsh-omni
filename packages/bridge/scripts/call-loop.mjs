@@ -1049,7 +1049,9 @@ async function main() {
     numThreads: cfg.socialV2?.asr?.numThreads ?? 2,
     log: (m) => log('asr', m)
   });
-  await asr.open();
+  // SenseVoice 不预加载：模型子进程约 855MB，空闲时不该常驻。
+  // 第一句话之前（来电接通时）会 ensure()，首句识别前有几百毫秒预热时间；
+  // 挂断后 unload()，内存立刻还回去。
 
   const tts = opts.tts
     ? createTtsService({ getConfig: () => cfg.socialV2?.speak ?? {}, root: ROOT, log: (m) => log('tts', m) })
