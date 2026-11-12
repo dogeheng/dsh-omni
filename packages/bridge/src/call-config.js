@@ -17,6 +17,14 @@ export const CALL_GEOMETRY_DEFAULTS = Object.freeze({
 export const CALL_DEFAULTS = Object.freeze({
   autoAnswer: false,
   preset: '',
+  turnDetection: {
+    mode: 'smart',
+    threshold: 0.5,
+    continuationWindowMs: 1200,
+    maxWaitMs: 2500,
+    pythonPath: '',
+    modelPath: ''
+  },
   allow: [],
   allowGroups: [],
   allowNames: [],
@@ -67,6 +75,27 @@ function toCoord(value) {
   return Number.isFinite(n) ? Math.round(n) : null;
 }
 
+function toTurnDetection(raw) {
+  const r = (raw && typeof raw === 'object' && !Array.isArray(raw)) ? raw : {};
+  const mode = ['smart', 'punctuation', 'vad'].includes(r.mode) ? r.mode : 'smart';
+  const clamp = (value, min, max, fallback) => {
+    const n = Number(value);
+    return Number.isFinite(n) ? Math.min(max, Math.max(min, Math.round(n))) : fallback;
+  };
+  const thresholdRaw = Number(r.threshold);
+  const threshold = Number.isFinite(thresholdRaw)
+    ? Math.min(0.95, Math.max(0.05, thresholdRaw))
+    : 0.5;
+  return {
+    mode,
+    threshold,
+    continuationWindowMs: clamp(r.continuationWindowMs, 300, 3000, 1200),
+    maxWaitMs: clamp(r.maxWaitMs, 1000, 8000, 2500),
+    pythonPath: typeof r.pythonPath === 'string' ? r.pythonPath.trim() : '',
+    modelPath: typeof r.modelPath === 'string' ? r.modelPath.trim() : ''
+  };
+}
+
 /** 收敛成运行时用的形状。任何非法值都退回默认，绝不抛错（配置文件是手改的）。 */
 export function normalizeCallConfig(raw) {
   const r = (raw && typeof raw === 'object' && !Array.isArray(raw)) ? raw : {};
@@ -76,6 +105,7 @@ export function normalizeCallConfig(raw) {
     geometry: toGeometry(r.geometry),
     autoAnswer: r.autoAnswer === true,
     preset: typeof r.preset === 'string' ? r.preset.trim().slice(0, 64) : '',
+    turnDetection: toTurnDetection(r.turnDetection),
     allow: toIdList(r.allow),
     allowGroups: toIdList(r.allowGroups),
     allowNames: toNameList(r.allowNames),

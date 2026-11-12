@@ -541,5 +541,13 @@
     "maxTokens": 4096,
     "maxResults": 8,
     "timeoutMs": 35000
+  },
+  "call": {
+    "turnDetection": {
+      "mode": "smart",
+      "threshold": 0.5,
+      "continuationWindowMs": 1200,
+      "maxWaitMs": 2500
+    }
   }
 }

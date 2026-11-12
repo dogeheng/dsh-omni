@@ -1,6 +1,6 @@
 # 打电话（通话回路）
 
-> 状态：**能听、能想、能说**，支持打断（取消在途推理）和自动接听；屏幕共享还没接。
+> 状态：**能听、能想、能说**，支持语义判停、打断（取消在途推理）和自动接听；屏幕共享还没接。
 > 这就是 `docs` 里说的方案 B 的 B-2 阶段。
 
 QQ 的通话走的是 NTRTC（AVSDK），OneBot 没有实时媒体通道，所以这条路不是"扩展协议"，
@@ -179,6 +179,51 @@ node scripts/call-loop.mjs --auto-answer learn --simulate-call
 - 任何新弹出的大窗口都会被当成来电候选；头像对不上就不点，答完 20 秒冷却。
 - 头像换成新图后，缓存要 7 天才刷新；想立刻生效，删掉 `data/call-avatars/<qq>.raw`。
 - 别配合 `--preset` 用：那等于把工具给来电的人。
+
+## 语义端点检测（Smart Turn v3）
+
+只靠 VAD 的 450ms 静音判“说完了”，中文思考中的停顿很容易被当成句尾：你说「你要记下我这周要去上海」，停一下想改口，她已经开始处理了。现在默认再加一层语义判停：
+
+- 模型：[Pipecat Smart Turn v3.2](https://github.com/pipecat-ai/smart-turn)，Whisper Tiny 骨干 + 线性分类头，int8 ONNX 约 8 MB，支持 23 种语言（含中文）；
+- 只在 VAD 判出静音后跑一次，CPU 约 10–30ms；输出「这一轮说完了」的概率；
+- 概率 ≥ `threshold` → 立即提交给 DSH；
+- 概率 < `threshold` → 不提交，等 `continuationWindowMs`（默认 1.2s）看有没有下文；有就把 ASR 文本和音频拼起来重新判，没有就按超时提交；
+- 连续拼接最多到 `maxWaitMs`（默认 2.5s），避免用户一直说、她一直不答。
+
+实测（`zh.wav` 切成两段）：
+
+```text
+vad  一句话 1.68s
+asr  「开放时间早。」
+turn Smart Turn 0.46（阈值 0.5）→ 这句还没完，等 1200ms
+asr  「早上9点至下午5点。」
+turn Smart Turn 0.99 → 提交累积的一句（16 字）
+```
+
+如果只看句末标点，第一段「开放时间早。」带句号，会被误判成完整；语义模型把它拦下来了。
+
+**安装**：
+
+```bash
+cd packages/bridge
+npm run setup:turn          # 建 .turn-venv + 装 onnxruntime/numpy/transformers + 下模型
+node scripts/setup-turn.mjs --status
+```
+
+**配置**（`config.json` 的 `call.turnDetection`）：
+
+| 字段 | 默认 | 说明 |
+| --- | --- | --- |
+| `mode` | `smart` | `smart` / `punctuation` / `vad` |
+| `threshold` | `0.5` | 完成概率阈值；误判多就调高，反应慢就调低 |
+| `continuationWindowMs` | `1200` | 判为“没说完”后等下文的时间 |
+| `maxWaitMs` | `2500` | 连续拼接的上限 |
+| `pythonPath` | `.turn-venv/bin/python` | 可选覆盖 |
+| `modelPath` | `data/models/smart-turn/smart-turn-v3.2-cpu.onnx` | 可选覆盖 |
+
+**降级**：`.turn-venv` 或模型缺失时自动回退 `punctuation`（句末标点 + “但是/然后/因为…”等连接词）；模型运行失败也会回退并打日志，不会让通话哑掉。想完全回到旧行为，设 `mode: "vad"`。
+
+模型是音频模型，不是万能的：口音、背景噪声、极短句仍可能判错；阈值和等待窗口都可以按体感调。
 
 ## 打断（barge-in）
 

@@ -841,6 +841,136 @@ class CallWatcher {
   }
 }
 
+// ── 语义端点检测（Smart Turn v3） ─────────────────────────────────────────────
+
+/**
+ * 常驻 Python worker：stdin 收 base64 PCM，stdout 回完成概率。
+ * 模型只有 8MB（int8 ONNX），CPU 推理 10~30ms；不可用时 call-loop 自动回退标点。
+ */
+class TurnDetector {
+  constructor({ pythonPath, modelPath, workerPath, log }) {
+    this.pythonPath = pythonPath;
+    this.modelPath = modelPath;
+    this.workerPath = workerPath;
+    this.log = log;
+    this.child = null;
+    this.readyPromise = null;
+    this.readyResolve = null;
+    this.readyReject = null;
+    this.pending = new Map();
+    this.seq = 0;
+    this.buffer = '';
+  }
+
+  async ensure() {
+    if (this.child) return;
+    if (this.readyPromise) return this.readyPromise;
+    this.readyPromise = (async () => {
+      const child = spawn(this.pythonPath, [this.workerPath, this.modelPath], {
+        stdio: ['pipe', 'pipe', 'pipe'],
+        env: {
+          ...process.env,
+          PYTHONUNBUFFERED: '1',
+          TRANSFORMERS_VERBOSITY: 'error',
+          TOKENIZERS_PARALLELISM: 'false'
+        }
+      });
+      this.child = child;
+      child.stdout.setEncoding('utf8');
+      child.stdout.on('data', (chunk) => this._onData(chunk));
+      child.stderr.setEncoding('utf8');
+      child.stderr.on('data', (chunk) => {
+        const text = String(chunk).trim();
+        if (text) this.log('turn', `smart-turn stderr: ${text.slice(0, 160)}`);
+      });
+      child.on('error', (error) => this._failAll(new Error(`启动失败：${error.message}`)));
+      child.on('exit', (code, signal) => {
+        const error = new Error(`worker 退出 code=${code} signal=${signal}`);
+        this.child = null;
+        this.readyPromise = null;
+        this._failAll(error);
+      });
+      await new Promise((resolve, reject) => {
+        const timer = setTimeout(() => reject(new Error('等待 ready 超时（20s）')), 20000);
+        this.readyResolve = () => { clearTimeout(timer); resolve(); };
+        this.readyReject = (error) => { clearTimeout(timer); reject(error); };
+      });
+    })();
+    try {
+      await this.readyPromise;
+    } catch (error) {
+      this.readyPromise = null;
+      this.close();
+      throw error;
+    }
+  }
+
+  _onData(chunk) {
+    this.buffer += chunk;
+    let index;
+    while ((index = this.buffer.indexOf('\n')) >= 0) {
+      const line = this.buffer.slice(0, index).trim();
+      this.buffer = this.buffer.slice(index + 1);
+      if (!line) continue;
+      let msg;
+      try { msg = JSON.parse(line); } catch { continue; }
+      if (msg.type === 'ready') {
+        this.readyResolve?.();
+        this.readyResolve = null;
+        this.readyReject = null;
+        continue;
+      }
+      if (msg.type === 'fatal') {
+        this.readyReject?.(new Error(msg.error || 'worker fatal'));
+        continue;
+      }
+      const waiter = this.pending.get(msg.id);
+      if (!waiter) continue;
+      this.pending.delete(msg.id);
+      clearTimeout(waiter.timer);
+      if (msg.error) waiter.reject(new Error(msg.error));
+      else waiter.resolve(Number(msg.probability));
+    }
+  }
+
+  _failAll(error) {
+    this.readyReject?.(error);
+    for (const [, waiter] of this.pending) {
+      clearTimeout(waiter.timer);
+      waiter.reject(error);
+    }
+    this.pending.clear();
+  }
+
+  async predict(pcm) {
+    await this.ensure();
+    if (!this.child) throw new Error('worker 未启动');
+    const id = ++this.seq;
+    return new Promise((resolve, reject) => {
+      const timer = setTimeout(() => {
+        this.pending.delete(id);
+        reject(new Error('Smart Turn 超时'));
+      }, 3000);
+      this.pending.set(id, { resolve, reject, timer });
+      try {
+        this.child.stdin.write(JSON.stringify({ id, pcm: pcm.toString('base64') }) + '\n');
+      } catch (error) {
+        clearTimeout(timer);
+        this.pending.delete(id);
+        reject(error);
+      }
+    });
+  }
+
+  close() {
+    this._failAll(new Error('worker 已关闭'));
+    try { this.child?.kill('SIGTERM'); } catch {}
+    this.child = null;
+    this.readyPromise = null;
+    this.buffer = '';
+  }
+}
+
 // ── 大脑：DSH 会话 ──────────────────────────────────────────────────────────
 
 const CALL_HINT = '（正在打电话。用口语回答，一到两句，不要列表、不要 markdown，不要提"工具"或"会话"。）';
@@ -865,6 +995,10 @@ class Brain {
     this.pending = null;
     this.closed = false;
     this.pumpStarted = false;
+    this.streamOpen = false;
+    this.streamOpenPromise = null;
+    this.streamReadyResolve = null;
+    this.streamReadyReject = null;
     this.busy = false;
     this.preparing = false;
     this.cancelPromise = null;
@@ -900,7 +1034,26 @@ class Brain {
     this.api.events.follow(this.sessionId);
     this.primed = false;
     this.log('brain', `会话 ${this.sessionId}（preset=${this.preset || '无'}）`);
+    // 第一次建会话时，先等事件流真正打开再发 prompt。否则 prompt 很快、turn 在
+    // WebSocket 订阅生效之前就结束，turn/end 会丢，调用方只能等 90s 超时。
+    const needWait = !this.streamOpen;
+    if (needWait) {
+      this.streamOpenPromise = new Promise((resolve, reject) => {
+        const timer = setTimeout(() => reject(new Error('DSH 事件流 10s 未打开')), 10000);
+        this.streamReadyResolve = () => { clearTimeout(timer); resolve(); };
+        this.streamReadyReject = (error) => { clearTimeout(timer); reject(error); };
+      });
+    }
     if (!this.pumpStarted) { this.pumpStarted = true; this._pump(); }
+    if (needWait) {
+      try {
+        await this.streamOpenPromise;
+      } finally {
+        this.streamOpenPromise = null;
+        this.streamReadyResolve = null;
+        this.streamReadyReject = null;
+      }
+    }
   }
 
   /** 挂断后归档本通会话：下次来电是干净的上下文，不会继承上一通的自我介绍。 */
@@ -956,7 +1109,10 @@ class Brain {
     let retry = 3000;
     while (!this.closed) {
       try {
-        for await (const envelope of this.api.events.mux({})) {
+        for await (const envelope of this.api.events.mux({}, undefined, () => {
+          this.streamOpen = true;
+          this.streamReadyResolve?.();
+        })) {
           const frame = envelope.payload;
           if (frame?.type !== 'session/event' || frame.sessionId !== this.sessionId) continue;
           const ended = this.collector ? this.collector.push(frame.event) : null;
@@ -970,6 +1126,8 @@ class Brain {
         retry = 3000;
       } catch (error) {
         if (this.closed) return;
+        this.streamOpen = false;
+        this.streamReadyReject?.(error);
         this.log('brain', `事件流断开：${String(error?.message ?? error).slice(0, 120)}，${retry}ms 后重连`);
         await new Promise((r) => setTimeout(r, retry));
         retry = Math.min(retry * 2, 15000);
@@ -1039,6 +1197,7 @@ class Brain {
 
   close() {
     this.closed = true;
+    this.streamReadyReject?.(new Error('brain 已关闭'));
   }
 }
 
@@ -1105,6 +1264,28 @@ async function main() {
   const preset = opts.preset || callCfg.preset || '';
   log('boot', `容器=${opts.container} 设备=${opts.device} preset=${preset || '无'}`);
 
+  const turnCfg = callCfg.turnDetection;
+  const turnPython = turnCfg.pythonPath || path.join(ROOT, '.turn-venv', 'bin', 'python');
+  const turnModel = turnCfg.modelPath
+    ? path.resolve(ROOT, turnCfg.modelPath)
+    : path.join(ROOT, 'data', 'models', 'smart-turn', 'smart-turn-v3.2-cpu.onnx');
+  const turnWorker = path.join(ROOT, 'scripts', 'turn-detector-worker.py');
+  const turnSmartAvailable = turnCfg.mode === 'smart'
+    && fs.existsSync(turnPython) && fs.existsSync(turnModel) && fs.existsSync(turnWorker);
+  let turnMode = turnCfg.mode;
+  if (turnMode === 'smart' && !turnSmartAvailable) {
+    turnMode = 'punctuation';
+    log('turn', 'Smart Turn 不可用（.turn-venv 或模型缺失），回退标点判停');
+  }
+  let turnDetector = null;
+  function getTurnDetector() {
+    if (turnMode !== 'smart' || !turnSmartAvailable) return null;
+    if (!turnDetector) {
+      turnDetector = new TurnDetector({ pythonPath: turnPython, modelPath: turnModel, workerPath: turnWorker, log });
+    }
+    return turnDetector;
+  }
+
   // 诊断用：拿一张已经截好的图跑一遍认人（不需要来电）
   if (opts.identifyShot) {
     const callCfg = normalizeCallConfig(cfg.call);
@@ -1141,6 +1322,8 @@ async function main() {
   // 通话状态：mic 的回调可能在我们还没执行到下面那些声明时就被调用（中间有 await），
   // 所以这些必须提前声明。
   const queue = [];
+  const INTER_TURN_SILENCE = Buffer.alloc(16000 * 0.2 * 2);
+  let pendingTurn = null;
   let busy = false;
   let stopped = false;
   let utteranceIndex = 0;
@@ -1169,6 +1352,10 @@ async function main() {
         bargeInContext = null;
         lastSpokenText = '';
         ttsActive = false;
+        if (pendingTurn?.timer) clearTimeout(pendingTurn.timer);
+        pendingTurn = null;
+        try { turnDetector?.close(); } catch {}
+        turnDetector = null;
         queue.length = 0;              // 没处理的那几句直接丢掉
         try { vad?.reset(); } catch {}   // 不保留半句
         try { mic.flush(); } catch {}
@@ -1288,21 +1475,11 @@ async function main() {
     }
   }
 
-  async function handleUtterance(pcm, seconds, index) {
-    if (gateOnCall && !mic.recorder) { log('turn', '不在通话中，跳过这一句'); return; }
-    const t0 = Date.now();
+  async function askAndSpeak(text, seconds = 0, startedAt = Date.now()) {
+    const t0 = startedAt;
     const epoch = speechEpoch;
-    const samples = pcm16ToFloat32(pcm);
-    const asrResult = await asr.decode(samples);
-    const heard = String(asrResult?.text ?? '').trim();
-    log('asr', `${Date.now() - t0}ms → 「${heard}」`);
-    if (!heard || heard.length < 2) {
-      log('asr', '没听清，跳过');
-      return;
-    }
-    const t1 = Date.now();
     lastSpokenText = '';
-    let promptText = heard;
+    let promptText = text;
     if (bargeInContext) {
       const { heard: spoken, playing, ttsActive: wasTts } = bargeInContext;
       let note = '【打断提示】用户刚才打断了你的上一句。';
@@ -1312,9 +1489,10 @@ async function main() {
       else note += '上一句还没有说出口。';
       note += '被打断的部分没有说完，也没有生效；不要以为用户听到了，也不要把它当成已经答应/已经记下。'
         + '以用户下面这句话为准，用户纠正过的以最新说法为准。';
-      promptText = `${note}\n\n${heard}`;
+      promptText = `${note}\n\n${text}`;
       bargeInContext = null;
     }
+    const t1 = Date.now();
     const reply = await brain.ask(promptText);
     log('brain', `${Date.now() - t1}ms → 「${String(reply).slice(0, 120)}」`);
     if (!reply?.trim()) return;
@@ -1328,6 +1506,82 @@ async function main() {
     log('turn', `整轮 ${Date.now() - t0}ms（说话 ${seconds.toFixed(1)}s）`);
   }
 
+  /** 没有语义模型时的兜底：句末标点 + 常见未完结连接词。 */
+  function punctuationComplete(text) {
+    const t = String(text ?? '').trim();
+    if (!t) return false;
+    if (/(但是|然后|因为|所以|而且|不过|可是|如果|虽然|还有|就是说|我是说|那个|就是|比如说|比如)$/.test(t)) return false;
+    if (/[，、；：,;:]$/.test(t)) return false;
+    if (/[。！？!?…]$/.test(t)) return true;
+    if (/[”」』】）)]$/.test(t)) return /[。！？!?…][”」』】）)]$/.test(t);
+    return false;
+  }
+
+  async function turnIsComplete(pcm, text) {
+    if (turnMode === 'vad') return true;
+    if (turnMode === 'smart') {
+      const detector = getTurnDetector();
+      if (detector) {
+        try {
+          const probability = await detector.predict(pcm);
+          log('turn', `Smart Turn ${probability.toFixed(2)}（阈值 ${turnCfg.threshold}）`);
+          return probability >= turnCfg.threshold;
+        } catch (error) {
+          log('turn', `Smart Turn 失败，回退标点：${String(error?.message ?? error).slice(0, 120)}`);
+          turnMode = 'punctuation';
+          try { detector.close(); } catch {}
+          turnDetector = null;
+        }
+      }
+    }
+    return punctuationComplete(text);
+  }
+
+  function submitPending(reason) {
+    const pending = pendingTurn;
+    if (!pending) return;
+    pendingTurn = null;
+    if (pending.timer) { clearTimeout(pending.timer); pending.timer = null; }
+    log('turn', `提交累积的一句（${reason}，${pending.text.length} 字）`);
+    queue.push({ text: pending.text, seconds: pending.seconds, startedAt: pending.firstAt, index: ++utteranceIndex });
+    drain();
+  }
+
+  async function feedTurn(pcm, text, seconds) {
+    const now = Date.now();
+    if (pendingTurn) {
+      pendingTurn.text += text;
+      pendingTurn.pcm = Buffer.concat([pendingTurn.pcm, INTER_TURN_SILENCE, pcm]);
+      pendingTurn.seconds += seconds;
+      if (pendingTurn.timer) { clearTimeout(pendingTurn.timer); pendingTurn.timer = null; }
+    } else {
+      pendingTurn = { text, pcm, seconds, firstAt: now, timer: null };
+    }
+    const elapsed = now - pendingTurn.firstAt;
+    const complete = await turnIsComplete(pendingTurn.pcm, pendingTurn.text);
+    if (complete || elapsed >= turnCfg.maxWaitMs) {
+      submitPending(complete ? 'model-complete' : 'max-wait');
+      return;
+    }
+    pendingTurn.timer = setTimeout(() => submitPending('window-timeout'), turnCfg.continuationWindowMs);
+    pendingTurn.timer.unref?.();
+    log('turn', `这句还没完（${turnMode}），等 ${turnCfg.continuationWindowMs}ms 看有没有下文`);
+  }
+
+  async function handleUtterance(pcm, seconds, index) {
+    if (gateOnCall && !mic.recorder) { log('turn', '不在通话中，跳过这一句'); return; }
+    const t0 = Date.now();
+    const samples = pcm16ToFloat32(pcm);
+    const asrResult = await asr.decode(samples);
+    const heard = String(asrResult?.text ?? '').trim();
+    log('asr', `${Date.now() - t0}ms → 「${heard}」`);
+    if (!heard || heard.length < 2) {
+      log('asr', '没听清，跳过');
+      return;
+    }
+    await feedTurn(pcm, heard, seconds);
+  }
+
   async function drain() {
     if (busy) return;
     busy = true;
@@ -1335,14 +1589,15 @@ async function main() {
       while (queue.length) {
         const item = queue.shift();
         try {
-          await handleUtterance(item.pcm, item.seconds, item.index);
+          if (item.text) await askAndSpeak(item.text, item.seconds || 0, item.startedAt || Date.now());
+          else await handleUtterance(item.pcm, item.seconds, item.index);
         } catch (error) {
           if (error?.code === 'BARGE_IN') { log('turn', '这一轮被新的打断取消'); continue; }
           const msg = String(error?.message ?? error);
           log('turn', `处理失败：${msg}`);
           // DSH 每次重启会换随机端口；桥接会把新端口写回 config.json，但我们只在启动时读一次。
           // 连不上就退出，让 LaunchAgent 拿新配置重起（比在这里热更简单可靠）。
-          if (/fetch failed|ECONNREFUSED|ENOTFOUND|socket hang up|401|unauthorized/i.test(msg)) {
+          if (/fetch failed|ECONNREFUSED|ENOTFOUND|socket hang up|401|unauthorized|事件流.*未打开/i.test(msg)) {
             log('boot', 'DSH 连不上（可能重启换了端口），退出等守护进程重起');
             setTimeout(() => shutdown(3), 100);
           }
@@ -1350,7 +1605,7 @@ async function main() {
       }
     } finally {
       busy = false;
-      if (opts.once && queue.length === 0) shutdown(0);
+      if (opts.once && queue.length === 0 && !pendingTurn) shutdown(0);
     }
   }
 
@@ -1391,6 +1646,9 @@ async function main() {
     if (stopped) return;
     stopped = true;
     log('boot', '收尾…');
+    if (pendingTurn?.timer) clearTimeout(pendingTurn.timer);
+    pendingTurn = null;
+    try { turnDetector?.close(); } catch {}
     try { vad.flush(); } catch {}
     capture.close();
     mic.close();

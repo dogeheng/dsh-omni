@@ -23,6 +23,8 @@ packages/bridge/data/singing/
 
 # Isolated QQ Music search helper venv (optional online source)
 packages/bridge/.music-venv/
+.turn-venv/
+__pycache__/
 
 # Local design lab (separate experiment; not part of the bridge)
 profile-lab/
