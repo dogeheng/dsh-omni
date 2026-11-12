@@ -2215,6 +2215,26 @@ button:active:not(:disabled) {
       </div>
       <div class="meta">保存后会自动重启 call-loop，<b>正在进行的通话会断开</b>。接听坐标<b>留空</b>就用实测的默认位置（窗口中心偏右下 68/186 像素）；群语音邀请走 OCR + 群名反查。模型安装：<code>npm run setup:speaker</code>；参数与迁移见 <code>docs/DIARIZATION.md</code>、<code>docs/CALL.md</code>。</div>
     </div></details>
+<details class="settings-group" id="voiceprintsGroup"><summary>声纹库（本地 · 一对一/群语音认人）</summary><div class="settings-content">
+      <div class="meta" style="margin-bottom:8px">
+        本地 CAM++ 声纹：命中后把 <code>[说话人N]</code> 标成 <code>[张三]</code>；一对一只有一个说话人时命中也会标名字。
+        文件在 <code>data/voiceprints/</code>（0700/0600），<b>只在通话接通时读取</b>，不打电话不加载。注册方式：
+        <code>npm run voiceprints -- enroll --name 张三 --audio ./sample.wav</code>，或通话里说“刚才说话的是张三”。
+      </div>
+      <div class="row">
+        <label style="flex:1">启用声纹匹配</label><input type="checkbox" id="vpEnabled" style="width:auto">
+        <label style="flex:1">阈值</label><input type="number" id="vpThreshold" min="0.5" max="0.95" step="0.01" style="width:90px">
+        <label style="flex:1">与第二名间隔</label><input type="number" id="vpMargin" min="0" max="0.3" step="0.01" style="width:90px">
+        <button id="vpSaveBtn" type="button" class="btn-secondary">保存声纹参数并重启</button>
+      </div>
+      <div class="row" style="gap:8px;align-items:center">
+        <button id="vpRefreshBtn" type="button" class="btn-secondary">刷新列表</button>
+        <span id="vpMsg" class="meta"></span>
+      </div>
+      <div id="voiceprintList" class="meta">（加载中…）</div>
+      <audio id="vpAudio" controls style="width:100%;margin-top:8px"></audio>
+      <div class="meta">试听样本是注册时截的 5 秒；删除会同时删 JSON 和 WAV。声纹是生物特征，只存在本机。</div>
+    </div></details>
 <details class="settings-group" id="v2VoiceIoGroup"><summary>听懂语音 / 开口说话（ASR · TTS）</summary><div class="settings-content">
       <div class="meta" style="margin-bottom:8px">
         <b>听懂语音</b>：群友发来的 QQ 语音会先转成「[语音 6秒·语气开心] 原话」再交给 AI。默认用本地 SenseVoice-Small（免费）。模型<b>按需加载</b>：第一条语音到来时才启动识别进程，闲置一段时间后自动结束，约 850MB 内存归还系统。<br>
@@ -4016,6 +4036,10 @@ async function loadCallConfig() {
     callEl('callTextBridge').checked = tb.enabled !== false;
     callEl('callTextBridgeOwnerOnly').checked = tb.routeOwnerOnly !== false;
     callEl('callMemoryEnabled').checked = c.memory?.enabled !== false;
+    const vp = c.voiceprints ?? {};
+    callEl('vpEnabled').checked = vp.enabled !== false;
+    callEl('vpThreshold').value = vp.threshold ?? 0.72;
+    callEl('vpMargin').value = vp.margin ?? 0.05;
     void loadCallPresence();
     const d = c.diarization ?? {};
     callEl('callDiarMode').value = d.mode === 'anonymous' ? 'anonymous' : 'off';
@@ -4027,6 +4051,51 @@ async function loadCallConfig() {
     callEl('callMsg').textContent = '读取失败：' + (error?.message ?? error);
   }
 }
+async function loadVoiceprints() {
+  const box = callEl('voiceprintList');
+  const msg = callEl('vpMsg');
+  try {
+    const r = await api('/api/voiceprints');
+    const rows = Array.isArray(r?.voiceprints) ? r.voiceprints : [];
+    if (rows.length === 0) {
+      box.innerHTML = '<span class="meta">（声纹库为空）</span>';
+    } else {
+      box.innerHTML = rows.map((v) => (
+        '<div class="row" style="gap:8px;align-items:center;border-top:1px solid var(--dsw-alias-border-l1,#eee);padding:6px 0">'
+        + `<b style="flex:1">${esc(v.name)}</b>`
+        + `<span class="meta" style="flex:1">${v.qq ? 'QQ ' + esc(v.qq) : 'QQ 未知'} · ${v.samples} 段 · ${esc(v.source)}</span>`
+        + `<button class="small" type="button" onclick="playVoiceprint('${esc(v.id)}')" ${v.hasSample ? '' : 'disabled'}>试听</button>`
+        + `<button class="small" type="button" onclick="renameVoiceprint('${esc(v.id)}')">重命名</button>`
+        + `<button class="small" type="button" onclick="deleteVoiceprint('${esc(v.id)}')">删除</button>`
+        + '</div>'
+      )).join('');
+    }
+    msg.textContent = `共 ${rows.length} 条`;
+  } catch (error) {
+    box.innerHTML = '<span class="meta err">读取失败：' + esc(error?.message ?? error) + '</span>';
+  }
+}
+async function playVoiceprint(id) {
+  const audio = callEl('vpAudio');
+  const token = localStorage.getItem('consoleToken') || '';
+  audio.src = '/api/voiceprints/sample?id=' + encodeURIComponent(id) + '&token=' + encodeURIComponent(token);
+  try { await audio.play(); } catch (error) { callEl('vpMsg').textContent = '试听失败：' + (error?.message ?? error); }
+  callEl('vpMsg').textContent = '试听中…';
+}
+async function renameVoiceprint(id) {
+  const name = prompt('新的名字：');
+  if (!name) return;
+  const r = await api('/api/voiceprints/rename', 'POST', { id, name });
+  callEl('vpMsg').textContent = r.ok ? '✅ 已重命名' : ('❌ ' + (r.error || '失败'));
+  if (r.ok) loadVoiceprints();
+}
+async function deleteVoiceprint(id) {
+  if (!confirm('删除这条声纹？会同时删除试听样本。')) return;
+  const r = await api('/api/voiceprints/delete', 'POST', { id });
+  callEl('vpMsg').textContent = r.ok ? '✅ 已删除' : ('❌ ' + (r.error || '失败'));
+  if (r.ok) loadVoiceprints();
+}
+
 async function loadCallPresence() {
   const el = callEl('callPresenceMsg');
   try {
@@ -4061,6 +4130,11 @@ async function saveCallConfig() {
         routeTtlMs: 600000
       },
       memory: { enabled: callEl('callMemoryEnabled').checked },
+      voiceprints: {
+        enabled: callEl('vpEnabled').checked,
+        threshold: Number(callEl('vpThreshold').value),
+        margin: Number(callEl('vpMargin').value)
+      },
       diarization: {
         mode: callEl('callDiarMode').value,
         threshold: Number(callEl('callDiarThreshold').value),
@@ -4122,6 +4196,8 @@ const round1 = (x) => Math.round(x * 10) / 10;
 
 callEl('callSaveBtn').onclick = saveCallConfig;
 callEl('callRestartBtn').onclick = restartCallLoop;
+callEl('vpSaveBtn').onclick = saveCallConfig;
+callEl('vpRefreshBtn').onclick = () => loadVoiceprints();
 setInterval(() => { void loadCallPresence(); }, 10000);
 
 function fillVoiceIoForm(a, s) {
@@ -6551,7 +6627,7 @@ document.getElementById('memRollback').addEventListener('click', () => memoryAdv
 
 setConsolePage(location.hash.slice(1), { updateHash:false });
 
-refresh(); refreshRoles(); refreshWhitelist(); refreshSessions(); refreshPending(); refreshPresets(); loadFeatures(); loadPower(); loadSocialForm(); loadV2Config(); refreshV2Activity(); loadV2ToolLog(); loadV2SessionOptions(); loadCallConfig(); refreshSocialStatus(); refreshSlang(); loadSlangConfig(); loadSecurity(); refreshSimPrompt(); refreshDshModel(); refreshUsage(); refreshUsageChart(); refreshUsageRecent();
+refresh(); refreshRoles(); refreshWhitelist(); refreshSessions(); refreshPending(); refreshPresets(); loadFeatures(); loadPower(); loadSocialForm(); loadV2Config(); refreshV2Activity(); loadV2ToolLog(); loadV2SessionOptions(); loadCallConfig(); loadVoiceprints(); refreshSocialStatus(); refreshSlang(); loadSlangConfig(); loadSecurity(); refreshSimPrompt(); refreshDshModel(); refreshUsage(); refreshUsageChart(); refreshUsageRecent();
 setInterval(() => { refresh(); refreshSessions(); refreshPending(); refreshSocialStatus(); refreshSlang(); }, 3000);
 // 用量看板只在本页可见时轮询：既保证「实时」，又不让其它页白白多打两份接口。
 setInterval(() => { if (currentConsolePage !== 'usage') return; refreshUsage(); refreshUsageChart(); refreshUsageRecent(); }, 3000);

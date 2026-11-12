@@ -9454,6 +9454,53 @@ async function main() {
           }
           return;
         }
+        // ── 声纹库管理（控制台；CLI 直连文件） ─────────────────────────────────
+        if (req.method === 'GET' && url.pathname === '/api/voiceprints') {
+          const store = new VoiceprintStore({ root: ROOT, log });
+          sendJson({ ok: true, voiceprints: store.list() });
+          return;
+        }
+        if (req.method === 'POST' && url.pathname === '/api/voiceprints/rename') {
+          const body = await readBody();
+          const id = String(body.id ?? '').trim();
+          const name = String(body.name ?? '').trim();
+          try {
+            const record = new VoiceprintStore({ root: ROOT, log }).rename(id, name);
+            sendJson({ ok: true, voiceprint: { id: record.id, name: record.name } });
+          } catch (error) {
+            sendJson({ ok: false, error: String(error?.message ?? error) }, 400);
+          }
+          return;
+        }
+        if (req.method === 'POST' && url.pathname === '/api/voiceprints/delete') {
+          const body = await readBody();
+          const id = String(body.id ?? '').trim();
+          try {
+            const record = new VoiceprintStore({ root: ROOT, log }).remove(id);
+            sendJson({ ok: true, voiceprint: { id: record.id, name: record.name } });
+          } catch (error) {
+            sendJson({ ok: false, error: String(error?.message ?? error) }, 400);
+          }
+          return;
+        }
+        if (req.method === 'GET' && url.pathname === '/api/voiceprints/sample') {
+          const id = String(url.searchParams.get('id') ?? '').trim();
+          const file = new VoiceprintStore({ root: ROOT, log }).samplePath(id);
+          if (!file) { sendJson({ ok: false, error: '没有试听样本' }, 404); return; }
+          try {
+            const data = fs.readFileSync(file);
+            res.writeHead(200, {
+              'content-type': 'audio/wav',
+              'content-length': data.length,
+              'cache-control': 'no-store',
+              ...SECURITY_HEADERS
+            });
+            res.end(data);
+          } catch (error) {
+            sendJson({ ok: false, error: String(error?.message ?? error) }, 500);
+          }
+          return;
+        }
         // ── 挂断后：把本次确认的声纹绑定写成身份事实（不写原文） ──────────────────
         if (req.method === 'POST' && url.pathname === '/api/call/summary') {
           const body = await readBody();

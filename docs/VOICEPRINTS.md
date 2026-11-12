@@ -151,6 +151,19 @@ bridge 用 `memory.remember` 写**身份事实**（不是原文、不是音频�
 
 测试：`npm run test:call-memory` 覆盖挂断绑定写 group scope 事实；`/api/call/summary` 实测写入后已删除。
 
+## 3.7 控制台声纹库
+
+设置页 →「声纹库（本地 · 一对一/群语音认人）」：
+
+- **启用声纹匹配**、阈值、与第二名间隔；
+- **刷新列表**：名字、QQ、样本数、来源、是否有试听；
+- **试听**：播放注册时保存的 5 秒 WAV（`/api/voiceprints/sample`，控制台令牌鉴权）；
+- **重命名**：只改显示名，ID 不变；
+- **删除**：同时删 JSON 和试听 WAV；
+- 「保存声纹参数并重启」会写 `call.voiceprints` 并重启 call-loop，正在通话会断开。
+
+注册入口仍是 CLI 或通话内“刚才说话的是 X”；控制台不提供上传音频（避免误传/隐私扩散）。
+
 ## 4. 迁移与隐私
 
 - 代码在 git；声纹 JSON/WAV 在 `data/`（被 gitignore），迁移时连同 `data/voiceprints/` 一起复制；
