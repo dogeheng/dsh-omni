@@ -264,6 +264,32 @@ node scripts/setup-speaker.mjs --status
 }
 ```
 
+### 控制台开关、按需与迁移
+
+**控制台**：设置页 →「通话（自动接听 · 群语音按人分离）」：
+
+- `按人分离`：关闭 / 匿名说话人；
+- `相似度阈值`：默认 0.65；
+- `最多人数`：默认 8；
+- `最短片段（ms）`：默认 600；
+- `新人最短（ms）`：默认 1500；
+- 「保存通话设置并重启」会写 `config.json` 并自动 `launchctl kickstart` call-loop；正在通话会断开；
+- 另有「只重启通话进程」按钮，改完配置不想重存时用。
+
+**按需**：
+
+- 控制台/桥接启动时不加载说话人模型，也不 fork worker；
+- 只有 call-loop 检测到通话接通（`mic` 的 recorder 变 true）才预加载；
+- 挂断立即 `close()`，worker 退出、模型内存归还；
+- 不打电话时 `pgrep speaker-worker` 应该为空；模型只在磁盘上占 27MB。
+
+**迁移**：
+
+- 代码在 git（`speaker-tracker.js` / `speaker-worker.mjs` / `setup-speaker.mjs`）；
+- 模型在 `data/models/speaker/`，被 `.gitignore` 排除；新机器执行 `npm run setup:speaker` 下载 27MB 即可；
+- 默认路径全部相对仓库根，不依赖旧电脑绝对路径；只有你手填 `modelPath` 才会写绝对路径；
+- 控制台参数存在 `config.json`（本机私有），迁移时随配置一起复制，或在新机器控制台重设一次。
+
 ## 5. 需要先确认的产品问题
 
 1. **要不要认名字？**

@@ -6123,7 +6123,11 @@ async function main() {
               allowNames: nextCall.allowNames,
               acceptX: nextCall.acceptX,
               acceptY: nextCall.acceptY,
-              geometry: nextCall.geometry
+              geometry: nextCall.geometry,
+              groupGeometry: nextCall.groupGeometry,
+              preset: nextCall.preset,
+              turnDetection: nextCall.turnDetection,
+              diarization: nextCall.diarization
             };
             cfg.call = nextCall;
           }
@@ -9388,6 +9392,23 @@ async function main() {
           try { fs.writeFileSync(ACTIVITY_LOG, ''); } catch {}
           log(`控制台：已清空 QQ 聊天工作区（停止 ${stoppedCount} 个、归档 ${archivedCount} 个会话，映射与活动日志已清空）`);
           sendJson({ ok: true, archivedCount, stoppedCount });
+          return;
+        }
+        // ── 重启 call-loop（控制台保存通话/说话人参数后立即生效） ───────────────
+        if (req.method === 'POST' && url.pathname === '/api/call/restart') {
+          if (process.platform !== 'darwin') {
+            sendJson({ ok: false, error: 'call-loop 自动重启目前只支持 macOS' }, 501);
+            return;
+          }
+          const uid = typeof process.getuid === 'function' ? process.getuid() : '';
+          execFile('launchctl', ['kickstart', '-k', `gui/${uid}/com.dogeheng.dsh-omni-call`], { timeout: 10000 }, (error, stdout, stderr) => {
+            if (error) {
+              sendJson({ ok: false, error: String(stderr || error.message).trim().slice(0, 300) }, 500);
+              return;
+            }
+            log('控制台：已重启 call-loop');
+            sendJson({ ok: true, message: 'call-loop 已重启' });
+          });
           return;
         }
         // ── 重启桥接（守护模式下 5 秒后自动拉起） ──────────────────────────────

@@ -156,6 +156,8 @@ OCR helper 是 `scripts/ocr.swift`：首次使用 `swiftc -O` 编译到 `data/bi
 
 > 按人分离（谁说了什么、怎么映射到 QQ 昵称）的选型与分阶段计划见 [DIARIZATION.md](DIARIZATION.md)。
 
+控制台「通话（自动接听 · 群语音按人分离）」里可以开关和调阈值，保存会自动重启 call-loop；模型按需加载、挂断释放。
+
 群语音现在已接入**零样本匿名说话人标签**（`call.diarization.mode=anonymous`）：第 2 个人说话后，日志会出现 `本轮标签 说话人2`，prompt 里带 `[说话人2]`；同一段混了两个人标 `[多人]`。标签不猜真实姓名，一对一通话不会出现标签。安装模型：`npm run setup:speaker`。
 
 
