@@ -5,7 +5,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { createMemoryManager } from '../src/memory/index.js';
-import { recordCallTurn } from '../src/call-memory.js';
+import { recordCallTurn, recordVoiceprintBindings } from '../src/call-memory.js';
 
 const root = fs.mkdtempSync(path.join(os.tmpdir(), 'dsh-call-memory-'));
 const memory = createMemoryManager({
@@ -103,6 +103,20 @@ try {
   assert.equal(groupCandidate.captured, false);
   assert.equal(groupCandidate.skipped, 'explicit_only');
   console.log('  ✅ 群语音匿名候选 → 跳过（不误归因）');
+
+  const bindings = recordVoiceprintBindings({
+    memory,
+    key: 'group:973614217',
+    ownerQQ: '952866364',
+    bindings: [{ name: '赵六', qq: '' }, { name: '孙七', qq: '12345678' }]
+  });
+  assert.equal(bindings.ok, true);
+  assert.equal(bindings.written, 2, '两条声纹绑定事实应写入');
+  const bound = memory.listMemories({ query: '赵六', limit: 10 }).memories ?? [];
+  assert.equal(bound.length, 1);
+  assert.equal(bound[0].scope, 'group');
+  assert.match(bound[0].content, /已确认声纹/);
+  console.log('  ✅ 挂断后声纹绑定 → group scope 事实');
 
   console.log('\nPASS');
 } finally {

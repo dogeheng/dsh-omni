@@ -32,7 +32,7 @@ import { discoverSnowLumaConnection, persistSnowLumaEndpoint, persistToken } fro
 import { createAsrService, formatVoiceText, normalizeAsrConfig } from './voice-asr.js';
 import { normalizeCallConfig } from './call-config.js';
 import { CallPresence } from './call-presence.js';
-import { recordCallTurn } from './call-memory.js';
+import { recordCallTurn, recordVoiceprintBindings } from './call-memory.js';
 import { VoiceprintStore } from './voiceprints.js';
 import { autoSpeakable, createTtsService, normalizeSpeakConfig, redactSpeakConfig, SPEAK_EMOTIONS } from './voice-tts.js';
 import { createSingingService, normalizeSingingConfig, redactSingingConfig } from './singing.js';
@@ -9450,6 +9450,29 @@ async function main() {
             sendJson({ ok: result.ok !== false, ...result });
           } catch (error) {
             log(`通话记忆失败 ${key}：${error?.message ?? error}`);
+            sendJson({ ok: false, error: String(error?.message ?? error) }, 500);
+          }
+          return;
+        }
+        // ── 挂断后：把本次确认的声纹绑定写成身份事实（不写原文） ──────────────────
+        if (req.method === 'POST' && url.pathname === '/api/call/summary') {
+          const body = await readBody();
+          if (!memory || !cfg.memory?.enabled) {
+            sendJson({ ok: false, error: '长期记忆未启用' }, 409);
+            return;
+          }
+          const key = String(body.key ?? '').trim();
+          if (!/^(private|group):\d+$/.test(key)) { sendJson({ ok: false, error: 'key 格式无效' }, 400); return; }
+          try {
+            const result = recordVoiceprintBindings({
+              memory,
+              key,
+              bindings: body.bindings,
+              ownerQQ: cfg.ownerQQ ?? ''
+            });
+            log(`通话声纹记忆 ${key}：写入 ${result.written ?? 0} 条`);
+            sendJson(result);
+          } catch (error) {
             sendJson({ ok: false, error: String(error?.message ?? error) }, 500);
           }
           return;

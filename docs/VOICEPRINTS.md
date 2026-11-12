@@ -129,6 +129,28 @@ S3是王五
 }
 ```
 
+## 3.6 挂断后写确认事实
+
+通话内每成功绑定一次，call-loop 记一条 `callBindings`；挂断时 POST bridge `/api/call/summary`：
+
+```json
+{ "key": "group:973614217", "bindings": [{ "name": "张三", "qq": "12345678" }] }
+```
+
+bridge 用 `memory.remember` 写**身份事实**（不是原文、不是音频）：
+
+```text
+已确认声纹：张三（QQ 12345678）
+```
+
+- key 决定 scope：私聊 `owner_private`，群 `group`；
+- `subjectKey=voiceprint:<name>`：同名再次确认会取代旧事实，不膨胀；
+- 没有 QQ 时 subject 为空，只写群/私聊 scope 里的名字事实；
+- 和 Phase 2 的逐句记忆独立：这里只写“声纹已确认”，不重复通话内容；
+- 记忆关闭时接口返回 409，call-loop 只记日志，不影响通话。
+
+测试：`npm run test:call-memory` 覆盖挂断绑定写 group scope 事实；`/api/call/summary` 实测写入后已删除。
+
 ## 4. 迁移与隐私
 
 - 代码在 git；声纹 JSON/WAV 在 `data/`（被 gitignore），迁移时连同 `data/voiceprints/` 一起复制；

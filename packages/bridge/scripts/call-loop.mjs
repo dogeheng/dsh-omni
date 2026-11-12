@@ -1595,6 +1595,32 @@ async function main() {
     return true;
   }
 
+  async function postCallBindings() {
+    if (callBindings.length === 0) return;
+    const bindings = [...callBindings];
+    callBindings.length = 0;
+    const info = watcher?.lastCallInfo;
+    const isGroupCall = info?.via === 'ocr-group' && info.groupId;
+    const key = isGroupCall ? `group:${info.groupId}` : `private:${callOwnerQQ}`;
+    const token = readConsoleToken(ROOT);
+    if (!token) return;
+    try {
+      const response = await fetch(`${bridgeBase}/api/call/summary`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json', 'x-console-token': token },
+        body: JSON.stringify({
+          key,
+          bindings: bindings.map((b) => ({ name: b.name, qq: b.qq || '' }))
+        }),
+        signal: AbortSignal.timeout(5000)
+      });
+      if (!response.ok) log('memory', `通话声纹记忆写入失败：HTTP ${response.status}`);
+      else log('memory', `通话声纹记忆已写入 ${bindings.length} 条`);
+    } catch (error) {
+      log('memory', `通话声纹记忆写入失败：${String(error?.message ?? error).slice(0, 100)}`);
+    }
+  }
+
   let sayServer = null;
   let presenceTimer = null;
   let externalQueue = [];
@@ -1753,6 +1779,8 @@ async function main() {
     onRecorderChange: (recording) => {
       if (recording) {
         log('call', '通话接通：提前把识别进程拉起来');
+        callBindings.length = 0;
+        recentSpeakerSegments = [];
         asr.ensure().catch((e) => log('asr', `预加载失败：${String(e?.message ?? e).slice(0, 60)}`));
         // Smart Turn 的 Python worker 启动约 0.8s，趁用户还在说第一句先拉起来。
         getTurnDetector()?.ensure().catch((e) => log('turn', `Smart Turn 预加载失败：${String(e?.message ?? e).slice(0, 60)}`));
@@ -1774,6 +1802,7 @@ async function main() {
         try { vad?.reset(); } catch {}   // 不保留半句
         try { mic.flush(); } catch {}
         if (idleDropped) { log('call', `未通话期间丢弃了 ${idleDropped} 帧`); idleDropped = 0; }
+        postCallBindings().catch(() => {});
         stopCallTextBridge('通话结束').catch(() => {});
         asr.unload('通话结束');
         brain.closeSession().catch(() => {});

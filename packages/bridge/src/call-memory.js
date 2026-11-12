@@ -19,6 +19,39 @@ function stripExplicitCommand(text) {
  * @param {string} [p.sender]          展示名
  * @param {string|number|null} [p.messageId]
  */
+/**
+ * 挂断后写入“已确认的声纹绑定”事实。只写身份，不写通话原文。
+ * @returns {{ok:boolean, written:number, ids:number[], reason?:string}}
+ */
+export function recordVoiceprintBindings({ memory, key, bindings = [], ownerQQ = '' } = {}) {
+  if (!memory) return { ok: false, written: 0, ids: [], reason: '记忆模块未初始化' };
+  if (!/^(private|group):\d+$/.test(String(key ?? ''))) return { ok: false, written: 0, ids: [], reason: '会话 key 无效' };
+  const list = (Array.isArray(bindings) ? bindings : []).filter((b) => b && String(b.name || '').trim()).slice(0, 8);
+  if (list.length === 0) return { ok: true, written: 0, ids: [] };
+  const ids = [];
+  for (const binding of list) {
+    const name = String(binding.name).trim().slice(0, 32);
+    const qq = /^\d{5,12}$/.test(String(binding.qq || '')) ? String(binding.qq) : '';
+    const ctx = memory.buildContext({
+      conversationKey: key,
+      ownerQQ: String(ownerQQ || ''),
+      senders: qq ? [{ userId: qq, name }] : []
+    });
+    if (!ctx) continue;
+    const result = memory.remember({
+      ctx,
+      kind: 'fact',
+      content: `已确认声纹：${name}${qq ? `（QQ ${qq}）` : ''}`,
+      subjectId: qq || null,
+      subjectLabel: name,
+      subjectKey: `voiceprint:${name}`,
+      origin: 'explicit'
+    });
+    if (result?.ok && result.created) ids.push(result.id);
+  }
+  return { ok: true, written: ids.length, ids };
+}
+
 export function recordCallTurn({ memory, key, text, userId = '', sender = '', messageId = null, explicitOnly = false } = {}) {
   if (!memory) return { ok: false, reason: '记忆模块未初始化' };
   const cleanText = String(text ?? '').trim();
