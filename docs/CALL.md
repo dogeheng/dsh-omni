@@ -197,6 +197,13 @@ node scripts/call-loop.mjs --auto-answer learn --simulate-call
 
 **还没做的调优**：目前 VAD 一检测到开口就打断，允许「嗯/对」这类 backchannel 误触发。LiveKit 的 `interruption.min_duration` / `min_words`、Pipecat 的 `MinWordsUserTurnStartStrategy` 和 Vocode 的 `interrupt_sensitivity` 都是可借鉴的做法；需要先加一个短语音分类，避免 200ms 的「嗯」也把她掐掉。
 
+参考（成熟方案怎么处理同一件事）：
+
+- [Pipecat Interruptions](https://docs.pipecat.ai/pipecat/fundamentals/interruptions)：`InterruptionFrame` 取消 LLM/TTS、清空未播音频，并且**只把真正播放出来的文字写进上下文**；支持取消函数调用。
+- [LiveKit turn-taking tuning](https://docs.livekit.io/agents/logic/turns/tuning)：`interruption.mode=adaptive`、`min_duration`、`min_words`、false-interruption timeout + resume。
+- [pydantic-ai #8757](https://github.com/pydantic/pydantic-ai/pull/8757)：专门修「回复已经生成完、用户才打断」的情况，用 `conversation.item.truncate` 截断 provider 侧的历史。
+- [Vocode conversational dials](https://docs.vocode.dev/conversational-dials)：`interrupt_sensitivity` 区分 low/high，low 会忽略「嗯/好」这类 backchannel。
+
 ## 已知限制
 
 | 限制 | 说明 |

@@ -1013,7 +1013,15 @@ class Brain {
         throw new Error(`prompt 被拒：${accepted?.result?.error?.code}: ${accepted?.result?.error?.message}`);
       }
       if (this.turnEpoch !== myEpoch) {
-        await this.cancelCurrentTurn('late-barge-in');
+        // prompt 已经落地才赶上打断：上一轮的 cancelPromise 可能早于这次 prompt 结束，
+        // 不能再复用；等它收尾后对当前会话再 cancel 一次，避免迟到 turn 逃掉。
+        if (this.cancelPromise) await this.cancelPromise;
+        try {
+          await this.api.stopSessionWork(this.sessionId);
+          this.log('brain', '已取消迟到的在途回合');
+        } catch (error) {
+          this.log('brain', `取消迟到回合失败：${String(error?.message ?? error).slice(0, 120)}`);
+        }
         throw bargeInError();
       }
       return await reply;
