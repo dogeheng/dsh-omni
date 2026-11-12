@@ -33,6 +33,11 @@ export const CALL_DEFAULTS = Object.freeze({
   memory: {
     enabled: true
   },
+  voiceprints: {
+    enabled: true,
+    threshold: 0.72,
+    margin: 0.05
+  },
   diarization: {
     mode: 'off',
     modelPath: '',
@@ -97,6 +102,17 @@ function toCoord(value) {
   if (value === null || value === undefined || value === '') return null;
   const n = Number(value);
   return Number.isFinite(n) ? Math.round(n) : null;
+}
+
+function toVoiceprints(raw) {
+  const r = (raw && typeof raw === 'object' && !Array.isArray(raw)) ? raw : {};
+  const threshold = Number(r.threshold);
+  const margin = Number(r.margin);
+  return {
+    enabled: r.enabled !== false,
+    threshold: Number.isFinite(threshold) ? Math.min(0.95, Math.max(0.5, threshold)) : 0.72,
+    margin: Number.isFinite(margin) ? Math.min(0.3, Math.max(0, margin)) : 0.05
+  };
 }
 
 function toCallMemory(raw) {
@@ -168,6 +184,7 @@ export function normalizeCallConfig(raw) {
     preset: typeof r.preset === 'string' ? r.preset.trim().slice(0, 64) : '',
     textBridge: toTextBridge(r.textBridge),
     memory: toCallMemory(r.memory),
+    voiceprints: toVoiceprints(r.voiceprints),
     diarization: toDiarization(r.diarization),
     turnDetection: toTurnDetection(r.turnDetection),
     allow: toIdList(r.allow),

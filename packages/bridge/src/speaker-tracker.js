@@ -18,7 +18,9 @@ const DEFAULTS = {
   threshold: 0.65,
   maxSpeakers: 8,
   minSegmentMs: 600,
-  minNewClusterMs: 1500
+  minNewClusterMs: 1500,
+  voiceprintThreshold: 0.72,
+  voiceprintMargin: 0.05
 };
 
 function normalize(vector) {
@@ -54,6 +56,9 @@ export class SpeakerTracker {
     maxSpeakers = DEFAULTS.maxSpeakers,
     minSegmentMs = DEFAULTS.minSegmentMs,
     minNewClusterMs = DEFAULTS.minNewClusterMs,
+    voiceprints = [],
+    voiceprintThreshold = DEFAULTS.voiceprintThreshold,
+    voiceprintMargin = DEFAULTS.voiceprintMargin,
     log = () => {}
   }) {
     this.modelPath = modelPath;
@@ -65,6 +70,11 @@ export class SpeakerTracker {
     // 群语音里一声“嗯”“对”不该造出一个新人。
     this.minNewSamples = Math.max(this.minSamples, Math.round((Number(minNewClusterMs) || DEFAULTS.minNewClusterMs) * 16));
     this.log = log;
+    this.voiceprintThreshold = Math.min(0.95, Math.max(0.5, Number(voiceprintThreshold) || DEFAULTS.voiceprintThreshold));
+    this.voiceprintMargin = Math.min(0.3, Math.max(0, Number(voiceprintMargin) || DEFAULTS.voiceprintMargin));
+    this.voiceprints = (Array.isArray(voiceprints) ? voiceprints : [])
+      .filter((record) => record && Array.isArray(record.centroid) && record.centroid.length > 0)
+      .map((record) => ({ ...record, centroid: normalize(record.centroid) }));
     this.child = null;
     this.ready = null;
     this.pending = new Map();
@@ -160,9 +170,58 @@ export class SpeakerTracker {
     });
   }
 
+  _matchCluster(cluster) {
+    if (!cluster || cluster.name || this.voiceprints.length === 0) return;
+    const scored = [];
+    for (const record of this.voiceprints) {
+      if (record.centroid.length !== cluster.centroid.length) continue;
+      scored.push({ record, score: cosine(cluster.centroid, record.centroid) });
+    }
+    scored.sort((a, b) => b.score - a.score);
+    const best = scored[0];
+    if (!best || best.score < this.voiceprintThreshold) return;
+    const second = scored[1];
+    if (second && best.score - second.score < this.voiceprintMargin) return;
+    cluster.name = best.record.name;
+    cluster.qq = best.record.qq || '';
+    cluster.voiceprintId = best.record.id;
+    cluster.matchScore = best.score;
+    this.log('speaker', `声纹命中：${cluster.name}${cluster.qq ? `（${cluster.qq}）` : ''} ${best.score.toFixed(3)}`);
+  }
+
   _result(index, score) {
-    const label = this.clusters.length >= 2 ? `说话人${index + 1}` : null;
-    return { id: `S${index + 1}`, label, score, index };
+    const cluster = this.clusters[index];
+    const label = cluster?.name || (this.clusters.length >= 2 ? `说话人${index + 1}` : null);
+    return {
+      id: `S${index + 1}`,
+      label,
+      score,
+      index,
+      name: cluster?.name || null,
+      qq: cluster?.qq || '',
+      voiceprintId: cluster?.voiceprintId || null,
+      matchScore: cluster?.matchScore ?? null
+    };
+  }
+
+  _cluster(id) {
+    const match = /^S(\d+)$/.exec(String(id ?? ''));
+    if (!match) return null;
+    return this.clusters[Number(match[1]) - 1] || null;
+  }
+
+  getCentroid(id) {
+    const cluster = this._cluster(id);
+    return cluster ? [...cluster.centroid] : null;
+  }
+
+  setName(id, name, qq = '') {
+    const cluster = this._cluster(id);
+    if (!cluster) return false;
+    cluster.name = String(name || '').trim();
+    cluster.qq = String(qq || '').trim();
+    cluster.matchScore = 1;
+    return !!cluster.name;
   }
 
   /**
@@ -191,14 +250,17 @@ export class SpeakerTracker {
       }
       cluster.centroid = normalize(centroid);
       cluster.count = next;
+      this._matchCluster(cluster);
       return this._result(bestIndex, best);
     }
 
     if (samples.length < this.minNewSamples) return null;
     if (this.clusters.length < this.maxSpeakers) {
-      this.clusters.push({ centroid: vector, count: 1 });
+      const cluster = { centroid: vector, count: 1 };
+      this.clusters.push(cluster);
       const index = this.clusters.length - 1;
       this.log('speaker', `新说话人 S${index + 1}（当前 ${this.clusters.length} 人）`);
+      this._matchCluster(cluster);
       return this._result(index, 1);
     }
 
@@ -208,7 +270,9 @@ export class SpeakerTracker {
   snapshot() {
     return this.clusters.map((cluster, index) => ({
       id: `S${index + 1}`,
-      label: this.clusters.length >= 2 ? `说话人${index + 1}` : null,
+      label: cluster.name || (this.clusters.length >= 2 ? `说话人${index + 1}` : null),
+      name: cluster.name || null,
+      qq: cluster.qq || '',
       count: cluster.count
     }));
   }

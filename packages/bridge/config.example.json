@@ -569,6 +569,11 @@
     },
     "memory": {
       "enabled": true
+    },
+    "voiceprints": {
+      "enabled": true,
+      "threshold": 0.72,
+      "margin": 0.05
     }
   }
 }

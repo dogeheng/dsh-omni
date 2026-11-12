@@ -24,6 +24,7 @@ import { NodeApiClient, unwrap, createTurnCollector } from '../src/dsh-client.js
 import { pcm16ToFloat32, resampleLinear, parseWav } from '../src/voice-asr.js';
 import { createTtsService } from '../src/voice-tts.js';
 import { SpeakerTracker } from '../src/speaker-tracker.js';
+import { VoiceprintStore } from '../src/voiceprints.js';
 import { readConsoleToken } from '../src/call-presence.js';
 import { startSayServer } from '../src/call-say-server.js';
 import { buildCrossChannelNote } from '../src/call-context.js';
@@ -1442,6 +1443,13 @@ async function main() {
   function getSpeakerTracker() {
     if (!speakerAvailable) return null;
     if (!speakerTracker) {
+      const voiceCfg = callCfg.voiceprints;
+      let voiceprints = [];
+      if (voiceCfg.enabled) {
+        try { voiceprints = new VoiceprintStore({ root: ROOT, log }).all(); }
+        catch (error) { log('speaker', `声纹库读取失败：${String(error?.message ?? error).slice(0, 100)}`); }
+      }
+      if (voiceprints.length) log('speaker', `声纹库 ${voiceprints.length} 条，命中后会标姓名`);
       speakerTracker = new SpeakerTracker({
         modelPath: speakerModel,
         workerPath: speakerWorker,
@@ -1449,6 +1457,9 @@ async function main() {
         maxSpeakers: diarCfg.maxSpeakers,
         minSegmentMs: diarCfg.minSegmentMs,
         minNewClusterMs: diarCfg.minNewClusterMs,
+        voiceprints,
+        voiceprintThreshold: voiceCfg.threshold,
+        voiceprintMargin: voiceCfg.margin,
         log
       });
     }

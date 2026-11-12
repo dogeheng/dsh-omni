@@ -58,6 +58,27 @@ node scripts/voiceprints.mjs remove --id qq_12345678
 - 删除会同时删 JSON 和试听 WAV；
 - `--dir` 可指定临时目录（测试/迁移用），默认 `data/voiceprints`。
 
+## 2.5 已接入：说话人标签
+
+- call-loop 在**通话接通**时读取 `data/voiceprints/`（不在启动/空闲时加载）；
+- 每个 cluster 的 centroid 与声纹库匹配，命中后 `SpeakerTracker` 直接返回 `name`；
+- prompt 里会从 `[说话人2]` 变成 `[张三]`；一对一通话只有一个人时，命中声纹也会直接标名字；
+- 未命中保持 `[说话人N]`，短片段不会硬认；
+- 配置：
+
+```jsonc
+"call": {
+  "voiceprints": {
+    "enabled": true,
+    "threshold": 0.72,
+    "margin": 0.05
+  }
+}
+```
+
+- `threshold`：cosine 下限；`margin`：best 与 second 的最小差距；
+- 声纹库为空时行为与之前的匿名模式完全一样。
+
 ## 3. 匹配
 
 - 每个 diarization cluster 的 centroid 与声纹库做 cosine；
