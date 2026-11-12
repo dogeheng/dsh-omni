@@ -16,6 +16,7 @@ export const CALL_GEOMETRY_DEFAULTS = Object.freeze({
 
 export const CALL_DEFAULTS = Object.freeze({
   autoAnswer: false,
+  preset: '',
   allow: [],
   allowGroups: [],
   allowNames: [],
@@ -74,6 +75,7 @@ export function normalizeCallConfig(raw) {
   return {
     geometry: toGeometry(r.geometry),
     autoAnswer: r.autoAnswer === true,
+    preset: typeof r.preset === 'string' ? r.preset.trim().slice(0, 64) : '',
     allow: toIdList(r.allow),
     allowGroups: toIdList(r.allowGroups),
     allowNames: toNameList(r.allowNames),

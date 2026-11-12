@@ -41,6 +41,23 @@ function candidateProfiles(home) {
   return names;
 }
 
+/**
+ * 桌面版 DSH 的依赖在 app.asar.unpacked/dsh/node_modules 里（asar 本身不可直接 require）。
+ * 从 /Applications 下的 .app 反查，省得每次跑校验脚本都手动设 DSH_INSTALL_MODULES。
+ */
+function desktopAppModules() {
+  let apps;
+  try { apps = fs.readdirSync('/Applications'); } catch { return null; }
+  for (const name of apps) {
+    if (!name.endsWith('.app')) continue;
+    const dir = path.join('/Applications', name, 'Contents', 'Resources', 'app.asar.unpacked', 'dsh', 'node_modules');
+    try {
+      if (fs.existsSync(path.join(dir, '@deepseek-ai'))) return dir;
+    } catch { /* 权限/坏包，继续 */ }
+  }
+  return null;
+}
+
 export function dshModulesDir() {
   const override = process.env.DSH_INSTALL_MODULES || process.env.DSH_MODULES;
   if (override) return override;
@@ -57,6 +74,9 @@ export function dshModulesDir() {
       } catch { /* 换下一个 specifier，再换下一个 profile */ }
     }
   }
+
+  const desktop = desktopAppModules();
+  if (desktop) return desktop;
 
   throw new Error(
     '无法定位 DSH 安装目录下的 node_modules。\n'

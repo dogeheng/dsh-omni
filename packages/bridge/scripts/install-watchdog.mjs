@@ -24,6 +24,11 @@ const DATA_DIR = path.join(ROOT, 'data');
 const SCRIPT = path.join(HERE, 'ensure-bridge.mjs');
 const LABEL = 'com.dogeheng.dsh-omni-bridge';
 const PLIST = path.join(os.homedir(), 'Library', 'LaunchAgents', `${LABEL}.plist`);
+// launchd 自己打开 StandardOut/Error 时不走进程的 TCC 授权：如果日志放在
+// ~/Documents（macOS 受保护目录），xpcproxy 会报 "Operation not permitted"
+// 并让整个 job 变成 spawn failed。日志统一放到 ~/Library/Logs。
+const LOG_DIR = path.join(os.homedir(), 'Library', 'Logs', 'dsh-omni');
+const LOG = path.join(LOG_DIR, 'watchdog.log');
 const UID = String(process.getuid?.() ?? '');
 const DOMAIN = `gui/${UID}`;
 const NODE = process.execPath;
@@ -81,9 +86,9 @@ function plistText() {
   <key>ProcessType</key>
   <string>Background</string>
   <key>StandardOutPath</key>
-  <string>${xml(path.join(DATA_DIR, 'watchdog.log'))}</string>
+  <string>${xml(LOG)}</string>
   <key>StandardErrorPath</key>
-  <string>${xml(path.join(DATA_DIR, 'watchdog.log'))}</string>
+  <string>${xml(LOG)}</string>
   <key>EnvironmentVariables</key>
   <dict>
     <key>PATH</key>
@@ -113,6 +118,7 @@ function install() {
   if (!fs.existsSync(SCRIPT)) fail(`missing ${SCRIPT}`);
   fs.mkdirSync(path.dirname(PLIST), { recursive: true });
   fs.mkdirSync(DATA_DIR, { recursive: true, mode: 0o700 });
+  fs.mkdirSync(LOG_DIR, { recursive: true, mode: 0o700 });
   fs.writeFileSync(PLIST, plistText(), { mode: 0o644 });
   bootout();
   try {
@@ -125,7 +131,7 @@ function install() {
   console.log(`[watchdog] installed ${LABEL}`);
   console.log(`[watchdog] plist:  ${PLIST}`);
   console.log(`[watchdog] script: ${SCRIPT}`);
-  console.log(`[watchdog] logs:   ${path.join(DATA_DIR, 'watchdog.log')}`);
+  console.log(`[watchdog] logs:   ${LOG}`);
   console.log(`[watchdog] next:   every 20s, and at login (Docker → container → bridge)`);
 }
 

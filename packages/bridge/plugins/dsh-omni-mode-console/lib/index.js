@@ -165,7 +165,11 @@ function kickStackOnce() {
     }
     const kick = () => {
       try {
-        const child = spawn(node, [script], { cwd: root, detached: true, stdio: 'ignore', env: process.env });
+        const env = {
+          ...process.env,
+          PATH: [path.dirname(node), process.env.PATH || ''].filter(Boolean).join(':'),
+        };
+        const child = spawn(node, [script], { cwd: root, detached: true, stdio: 'ignore', env });
         child.on('error', (error) => diag(`stack kick error: ${error?.message ?? error}`));
         child.unref();
         diag(`stack kick: ${script}`);

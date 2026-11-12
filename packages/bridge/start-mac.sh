@@ -14,6 +14,22 @@
 set -euo pipefail
 cd "$(dirname "$0")"
 
+# 从 DSH / launchd 这类不读登录 shell 的父进程里启动时，PATH 里常常没有 node。
+# 先补上常见的 Node 安装位置，后续的 node -e 才能跑。
+if ! command -v node >/dev/null 2>&1; then
+  for dir in "$HOME/.n/bin" /opt/homebrew/bin /usr/local/bin; do
+    if [ -x "$dir/node" ]; then
+      PATH="$dir:$PATH"
+      export PATH
+      break
+    fi
+  done
+fi
+if ! command -v node >/dev/null 2>&1; then
+  echo "❌ 找不到 node（已尝试 ~/.n/bin、/opt/homebrew/bin、/usr/local/bin）" >&2
+  exit 127
+fi
+
 # DeepSeek 可能同时监听 *:3081（内部）和 127.0.0.1:<随机>（Web GUI）。
 # 桥接必须连后者；优先选 127.0.0.1 上的端口。
 PORT="$(lsof -nP -iTCP -sTCP:LISTEN 2>/dev/null | awk '/DeepSeek/ { name=$9; if (name ~ /^127\.0\.0\.1:/) { n=split(name, a, ":"); if (a[n] ~ /^[0-9]+$/) { print a[n]; exit } } }')"

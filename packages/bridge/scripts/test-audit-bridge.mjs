@@ -344,8 +344,12 @@ await test('malformed HTTP request targets return 400 without hanging', async (h
   } });
   try {
     await h.sendStickerV2('group:456', 'fixture-sticker');
-    assert.equal(body.message.find((part) => part.type === 'image').data.file, 'base64://' + image.toString('base64'));
-    console.log('PASS sticker sending gives OneBot validated bytes, never a URL to refetch');
+    // 收藏表情现在走 send_custom_face（emoji_id），QQ 里才是真正的表情；
+    // 带 @ 时才退回 image 段。这里断言默认路径不再把图片字节塞进 message。
+    assert.equal(body.emoji_id, 'fixture-sticker', '收藏表情走 emoji_id');
+    assert.equal(body.group_id, 456, '发给正确群');
+    assert.equal(body.message, undefined, '默认不再发 image 段');
+    console.log('PASS sticker sending uses send_custom_face with the sticker id');
   } catch (error) { failures++; console.error('FAIL safe sticker sending:', error.message); }
   finally { await h.close(); }
 }
@@ -374,7 +378,7 @@ await test('malformed HTTP request targets return 400 without hanging', async (h
 
     // 1) AI 只能按语音库名字取文件
     const okPath = h.resolveVoicePathForV2('hello');
-    assert.equal(okPath.path, path.join(audioDir, 'hello.mp3'), 'AI 省略扩展名也能命中语音库文件');
+    assert.equal(okPath.path, fs.realpathSync(path.join(audioDir, 'hello.mp3')), 'AI 省略扩展名也能命中语音库文件');
 
     // 2) 绝对路径默认被拒（防 prompt injection 拿任意本地文件外发）
     assert.throws(() => h.resolveVoicePathForV2(outside), /语音库|绝对路径/, 'AI 传库外绝对路径被拒');
@@ -392,7 +396,7 @@ await test('malformed HTTP request targets return 400 without hanging', async (h
     assert.equal(call.body.group_id, 456, '语音发给正确群');
     assert.equal(call.body.message.length, 1, '语音只发一个段');
     assert.equal(call.body.message[0].type, 'record', '段类型是 record');
-    assert.equal(call.body.message[0].data.file, path.join(audioDir, 'hello.mp3'), 'record 段指向库内绝对路径');
+    assert.equal(call.body.message[0].data.file, fs.realpathSync(path.join(audioDir, 'hello.mp3')), 'record 段指向库内绝对路径');
     assert.equal(sent.messageId, 9001, '返回网关 message_id');
     assert.equal(sent.readback, null, '显式关掉回读时不调 fetch_ptt_text');
 

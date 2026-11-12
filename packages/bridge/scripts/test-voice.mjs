@@ -238,8 +238,11 @@ console.log('## 回归：AI 语音通道不许穿出语音库（P1，曾可复�
     fs.writeFileSync(outside, Buffer.alloc(512, 1));
 
     // 正常用法必须仍然可用（别把功能一起修死）
-    ok(h.resolveVoicePathForV2('ok.mp3').path === path.join(dir, 'ok.mp3'), '合法文件名可用');
-    ok(h.resolveVoicePathForV2('ok').path === path.join(dir, 'ok.mp3'), '省略扩展名仍可用');
+    // macOS 的 /var 是 /private/var 的符号链接；桥接会 realpath，比较也要用 realpath。
+    const realDir = fs.realpathSync(dir);
+    const okPath = fs.realpathSync(path.join(dir, 'ok.mp3'));
+    ok(h.resolveVoicePathForV2('ok.mp3').path === okPath, '合法文件名可用');
+    ok(h.resolveVoicePathForV2('ok').path === okPath, '省略扩展名仍可用');
 
     for (const [label, payload] of [
       ['..\\..\\ 相对穿越', '..\\..\\secret-outside.mp3'],
@@ -266,7 +269,7 @@ console.log('## 回归：AI 语音通道不许穿出语音库（P1，曾可复�
     for (const p of ['ok.mp3', 'ok', '..\\..\\secret-outside.mp3', outside, 'sub/../../x.mp3']) {
       try { accepted.push(h.resolveVoicePathForV2(p).path); } catch {}
     }
-    ok(accepted.every((p) => p.startsWith(dir + path.sep)), '被接受的路径全部落在语音库内', `${accepted.length} 个被接受`);
+    ok(accepted.every((p) => p.startsWith(realDir + path.sep)), '被接受的路径全部落在语音库内', `${accepted.length} 个被接受`);
   } finally { await h.close(); }
 }
 

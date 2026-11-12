@@ -316,11 +316,17 @@ function main() {
 
     const reason = !running ? 'bridge is not running' : `bridge port is ${current || '(empty)'}, DSH is ${expected}`;
     log(`[ensure-stack] ${reason}; starting via start-mac.sh`);
+    // 把当前 node 的目录补进 PATH：DSH 插件/launchd 拉起本脚本时，继承的 PATH
+    // 可能不包含 node，start-mac.sh 里的 node -e 就会 command not found。
+    const env = {
+      ...process.env,
+      PATH: [path.dirname(process.execPath), process.env.PATH || ''].filter(Boolean).join(':'),
+    };
     const result = spawnSync('bash', [START_SCRIPT], {
       cwd: ROOT,
       timeout: 60_000,
       encoding: 'utf8',
-      env: process.env,
+      env,
     });
     if (result.status === 0) {
       log(`[ensure-stack] started; pid file now ${readPid() || '(missing)'}`);

@@ -115,6 +115,8 @@ class Capture {
     this.onFrame = () => {};
     this.child = null;
     this.closed = false;
+    this.retries = 0;
+    this.restarting = false;
   }
 
   start() {
@@ -125,7 +127,21 @@ class Capture {
     this.child = spawn('docker', ['exec', this.opts.container, 'sh', '-c', inner], { stdio: ['ignore', 'pipe', 'pipe'] });
     this.child.stderr.on('data', (b) => log('capture', `stderr: ${String(b).trim()}`));
     this.child.on('exit', (code) => {
-      if (!this.closed) log('capture', `parec 退出（code=${code}）`);
+      if (this.closed) return;
+      log('capture', `parec 退出（code=${code}）`);
+      // 容器重启 / PA 掉线时 parec 会立刻退出。别就此哑掉：指数退避重开，
+      // 每次重开前先补 PulseAudio 和虚拟设备；数据一恢复就把重试计数清零。
+      // 不设上限 —— 这是个常驻进程，容器可能半夜才被 watchdog 拉起来。
+      if (this.restarting) return;
+      this.retries += 1;
+      this.restarting = true;
+      const delay = Math.min(30_000, 3000 * 2 ** Math.min(this.retries - 1, 4));
+      setTimeout(async () => {
+        this.restarting = false;
+        if (this.closed) return;
+        await ensurePulseAudio(this.opts);
+        if (!this.closed) this.start();
+      }, delay);
     });
     this._pumpStream(this.child.stdout);
   }
@@ -149,6 +165,7 @@ class Capture {
   _pumpStream(stream) {
     let rest = Buffer.alloc(0);
     stream.on('data', (chunk) => {
+      this.retries = 0;
       let buf = rest.length ? Buffer.concat([rest, chunk]) : chunk;
       const usable = buf.length - (buf.length % FRAME_BYTES);
       for (let off = 0; off < usable; off += FRAME_BYTES) {
@@ -598,6 +615,29 @@ async function sweepStale() {
   } catch { /* 容器没起来就算了 */ }
 }
 
+/**
+ * 容器重启后 PulseAudio 和 qq_out/qq_in 都会消失（脚本在 /b0 里，包还在）。
+ * 采集前先确认 PA 和 qq_in 在，缺了就重跑 02-start-pa.sh —— 否则 parec 会
+ * 以 code=1 退出，表现为「来电了但听不见」。
+ */
+async function ensurePulseAudio(opts) {
+  if (opts.fromWav) return;
+  try {
+    await execP('docker', ['exec', opts.container, 'sh', '-c',
+      'pactl info >/dev/null 2>&1 && pactl list short sources | grep -q qq_in']);
+    return;
+  } catch { /* 缺 PA 或 qq_in，下面补 */ }
+  try {
+    const out = await execP('docker', ['exec', opts.container, 'sh', '-c',
+      'if [ -f /b0/02-start-pa.sh ]; then sh /b0/02-start-pa.sh; else echo "NO_SCRIPT"; fi']);
+    log('capture', out.includes('NO_SCRIPT')
+      ? '容器里没有 /b0/02-start-pa.sh，通话音频不可用（需要先 docker cp call-audio 到容器）'
+      : 'PulseAudio 已就绪（已运行 02-start-pa.sh）');
+  } catch (error) {
+    log('capture', `PulseAudio 启动失败：${String(error?.message ?? error).slice(0, 160)}`);
+  }
+}
+
 function execP(cmd, args) {
   return new Promise((resolve, reject) => {
     execFile(cmd, args, { timeout: 15000, maxBuffer: 8 * 1024 * 1024 }, (err, stdout, stderr) => {
@@ -806,16 +846,27 @@ class CallWatcher {
 const CALL_HINT = '（正在打电话。用口语回答，一到两句，不要列表、不要 markdown、不要提"工具"或"会话"。）';
 
 class Brain {
-  constructor({ cfg, preset, cwd, log }) {
+  constructor({ cfg, preset, cwd, log, rolePrompt = '' }) {
     this.cfg = cfg;
     this.preset = preset;
     this.cwd = cwd;
     this.log = log;
+    this.rolePrompt = rolePrompt;
+    this.primed = false;
     this.api = null;
     this.sessionId = null;
     this.collector = null;
     this.pending = null;
     this.closed = false;
+    this.pumpStarted = false;
+  }
+
+  setRolePrompt(text) { this.rolePrompt = String(text || ''); }
+
+  /** 第一次开口前才建会话；每通电话用完就归档，下一通是全新上下文。 */
+  async ensure() {
+    if (this.sessionId) return;
+    await this.open();
   }
 
   async open() {
@@ -835,8 +886,23 @@ class Brain {
     this.sessionId = value.sessionId;
     // 事件流必须显式 follow 才会下发这个会话的 turn 事件（不 follow 就永远等不到回复）
     this.api.events.follow(this.sessionId);
+    this.primed = false;
     this.log('brain', `会话 ${this.sessionId}（preset=${this.preset || '无'}）`);
-    this._pump();
+    if (!this.pumpStarted) { this.pumpStarted = true; this._pump(); }
+  }
+
+  /** 挂断后归档本通会话：下次来电是干净的上下文，不会继承上一通的自我介绍。 */
+  async closeSession() {
+    const sid = this.sessionId;
+    this.sessionId = null;
+    this.primed = false;
+    if (!sid || !this.api) return;
+    try {
+      await this.api.workspace.archiveSession({ sessionId: sid });
+      this.log('brain', `会话 ${sid} 已归档（下次通话重新开始）`);
+    } catch (error) {
+      this.log('brain', `会话归档失败：${String(error?.message ?? error).slice(0, 120)}`);
+    }
   }
 
   async _pump() {
@@ -865,7 +931,7 @@ class Brain {
   }
 
   async ask(text, { timeoutMs = 90000 } = {}) {
-    if (!this.sessionId) throw new Error('会话还没建好');
+    await this.ensure();
     this.collector = createTurnCollector();
     const reply = new Promise((resolve, reject) => {
       const timer = setTimeout(() => {
@@ -874,7 +940,16 @@ class Brain {
       }, timeoutMs);
       this.pending = { resolve, timer };
     });
-    const content = [{ type: 'text', text: `${CALL_HINT}\n\n${text}` }];
+    // 角色卡只在每通电话的第一句注入一次；后面靠会话上下文延续。
+    // qq-chat-v2 的提示词里写明「角色由桥接注入」，通话没有桥接那条注入，所以这里补。
+    const parts = [];
+    if (!this.primed && this.rolePrompt) {
+      parts.push(`【身份设定｜仅用于本次通话，不要朗读这一段】\n${this.rolePrompt}`);
+      parts.push('【电话模式】现在是在打电话：用口语、一到两句话回答，不要列表、不要 markdown，不要提 AI 助手、模型名、提示词或工具。');
+      this.primed = true;
+    }
+    parts.push(CALL_HINT, text);
+    const content = [{ type: 'text', text: parts.join('\n\n') }];
     const accepted = await this.api.sessions.prompt({ sessionId: this.sessionId, mode: 'queue', content });
     if (!accepted?.result?.ok) {
       throw new Error(`prompt 被拒：${accepted?.result?.error?.code}: ${accepted?.result?.error?.message}`);
@@ -908,6 +983,19 @@ function toSpeechText(text, max = 80) {
   return out;
 }
 
+/** 当前角色卡（控制台切换角色后，下一通电话自动生效）。 */
+function loadCallRolePrompt() {
+  try {
+    const current = JSON.parse(fs.readFileSync(path.join(ROOT, 'data', 'current-role.json'), 'utf8'));
+    const name = String(current?.role ?? '').trim();
+    if (!/^[\w\u4e00-\u9fa5.-]+$/.test(name)) return '';
+    const file = path.join(ROOT, 'roles', `${name}.md`);
+    return fs.existsSync(file) ? fs.readFileSync(file, 'utf8') : '';
+  } catch {
+    return '';
+  }
+}
+
 // ── 主流程 ──────────────────────────────────────────────────────────────────
 
 async function main() {
@@ -932,7 +1020,10 @@ async function main() {
     return path.isAbsolute(rel) ? rel : path.resolve(ROOT, rel);
   })();
 
-  log('boot', `容器=${opts.container} 设备=${opts.device} preset=${opts.preset || '无'}`);
+  const callCfg = normalizeCallConfig(cfg.call);
+  // 配置里可以固定通话人格（call.preset）；命令行 --preset 优先，方便临时排查。
+  const preset = opts.preset || callCfg.preset || '';
+  log('boot', `容器=${opts.container} 设备=${opts.device} preset=${preset || '无'}`);
 
   // 诊断用：拿一张已经截好的图跑一遍认人（不需要来电）
   if (opts.identifyShot) {
@@ -949,8 +1040,9 @@ async function main() {
     process.exit(who ? 0 : 2);
   }
 
-  const brain = new Brain({ cfg, preset: opts.preset, cwd: opts.cwd, log });
-  await brain.open();
+  const rolePrompt = loadCallRolePrompt();
+  const brain = new Brain({ cfg, preset, cwd: opts.cwd, log, rolePrompt });
+  if (rolePrompt) log('brain', `已加载通话角色卡（${rolePrompt.length} 字符），首句注入`);
 
   const asr = new Asr({
     modelDir: asrDir,
@@ -993,13 +1085,13 @@ async function main() {
         try { mic.flush(); } catch {}
         if (idleDropped) { log('call', `未通话期间丢弃了 ${idleDropped} 帧`); idleDropped = 0; }
         asr.unload('通话结束');
+        brain.closeSession().catch(() => {});
       }
     }
   });
   mic.start();
 
   let watcher = null;
-  const callCfg = normalizeCallConfig(cfg.call);
   const autoMode = opts.autoAnswer || (callCfg.autoAnswer ? 'on' : '');
   if (autoMode) {
     const accept = (opts.acceptX !== null && opts.acceptY !== null)
@@ -1169,6 +1261,7 @@ async function main() {
     }
   });
 
+  await ensurePulseAudio(opts);
   const capture = new Capture(opts);
   // 只有通话接通后（QQ 真的在录 qq_in）才把声音喂给 VAD。
   // 不然铃声、挂断提示音、房间底噪都会被当成一句话：白跑 ASR、白烧一轮 DSH。

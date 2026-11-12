@@ -408,30 +408,46 @@ export function parseBingHtml(html, maxResults = 8) {
   return results;
 }
 
-/** Bing 搜索（RSS 优先，HTML 兜底）。 */
-export async function bingSearch(query, config = defaultConfig) {
-  const maxResults = config.maxResults || defaultConfig.maxResults;
-  const rss = new URL('https://cn.bing.com/search');
+/** Bing 搜索（RSS 优先，HTML 兜底）。
+ *
+ * 主机顺序很重要：`cn.bing.com` 从中国大陆访问快，但从北美经常只返回一个空
+ * RSS（0 条），所以先用 `www.bing.com`，空了再试 `cn.bing.com` —— 两边都能用。
+ */
+const BING_HOSTS = ['https://www.bing.com', 'https://cn.bing.com'];
+
+async function bingSearchOn(host, query, maxResults) {
+  const rss = new URL('/search', host);
   rss.searchParams.set('q', query);
   rss.searchParams.set('format', 'rss');
   rss.searchParams.set('count', String(Math.min(20, maxResults)));
-  rss.searchParams.set('setlang', 'zh-hans');
-  rss.searchParams.set('cc', 'CN');
   try {
     const res = await safeFetch(rss.toString(), 512000);
     if (res.statusCode >= 200 && res.statusCode < 300) {
       const results = parseBingRss(res.body, maxResults);
       if (results.length) return results;
     }
-  } catch {}
-  const html = new URL('https://cn.bing.com/search');
+  } catch { /* RSS 不行就走 HTML */ }
+  const html = new URL('/search', host);
   html.searchParams.set('q', query);
   html.searchParams.set('count', String(Math.min(20, maxResults)));
-  html.searchParams.set('setlang', 'zh-hans');
-  html.searchParams.set('cc', 'CN');
   const res = await safeFetch(html.toString(), 512000);
   if (res.statusCode < 200 || res.statusCode >= 300) throw new Error(`Bing 搜索 HTTP ${res.statusCode}`);
   return parseBingHtml(res.body, maxResults);
+}
+
+export async function bingSearch(query, config = defaultConfig) {
+  const maxResults = config.maxResults || defaultConfig.maxResults;
+  let lastError = null;
+  for (const host of BING_HOSTS) {
+    try {
+      const results = await bingSearchOn(host, query, maxResults);
+      if (results.length) return results;
+    } catch (error) {
+      lastError = error;
+    }
+  }
+  if (lastError) throw lastError;
+  return [];
 }
 
 const cache = new Map(); // `${provider}|${query}` -> { at, value }

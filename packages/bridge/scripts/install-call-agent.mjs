@@ -17,7 +17,10 @@ const ROOT = path.resolve(fileURLToPath(new URL('..', import.meta.url)));
 const LABEL = 'com.dogeheng.dsh-omni-call';
 const PLIST = path.join(os.homedir(), 'Library', 'LaunchAgents', `${LABEL}.plist`);
 const SCRIPT = path.join(ROOT, 'scripts', 'call-loop.mjs');
-const LOG = path.join(ROOT, 'data', 'call-loop.log');
+// 同 install-watchdog：launchd 自己打开日志文件时不走 Documents 的 TCC 授权，
+// 放在 ~/Documents 下会让 job 直接 spawn failed（EX_CONFIG 78）。
+const LOG_DIR = path.join(os.homedir(), 'Library', 'Logs', 'dsh-omni');
+const LOG = path.join(LOG_DIR, 'call-loop.log');
 
 function which(bin) {
   try {
@@ -64,7 +67,7 @@ const plist = `<?xml version="1.0" encoding="UTF-8"?>
 `;
 
 fs.mkdirSync(path.dirname(PLIST), { recursive: true });
-fs.mkdirSync(path.dirname(LOG), { recursive: true });
+fs.mkdirSync(LOG_DIR, { recursive: true });
 fs.writeFileSync(PLIST, plist);
 
 const domain = `gui/${process.getuid()}`;
