@@ -548,6 +548,12 @@
       "threshold": 0.5,
       "continuationWindowMs": 1200,
       "maxWaitMs": 2500
+    },
+    "groupGeometry": {
+      "avatarSize": 116,
+      "avatarOffsetY": -83,
+      "acceptOffsetX": -65,
+      "acceptOffsetY": 238
     }
   }
 }

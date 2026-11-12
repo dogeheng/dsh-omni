@@ -24,7 +24,9 @@ import { NodeApiClient, unwrap, createTurnCollector } from '../src/dsh-client.js
 import { pcm16ToFloat32, resampleLinear, parseWav } from '../src/voice-asr.js';
 import { createTtsService } from '../src/voice-tts.js';
 import { parseWindows, pickNewWindow } from '../src/x11-windows.js';
-import { normalizeCallConfig, matchCaller, friendNameIndex } from '../src/call-config.js';
+import {
+  normalizeCallConfig, matchCaller, friendNameIndex, CALL_GROUP_GEOMETRY_DEFAULTS
+} from '../src/call-config.js';
 
 const ROOT = path.resolve(fileURLToPath(new URL('..', import.meta.url)));
 const T0 = Date.now();
@@ -655,12 +657,13 @@ function execP(cmd, args) {
  * 所以只在显式开 `--auto-answer` 时才启用，而且答完有 20 秒冷却。
  */
 class CallWatcher {
-  constructor({ container, mode, accept, log, geometry = null, allowIds = [], allowGroups = [], allowNames = [], oneBotUrl = '', oneBotToken = '' }) {
+  constructor({ container, mode, accept, log, geometry = null, groupGeometry = null, allowIds = [], allowGroups = [], allowNames = [], oneBotUrl = '', oneBotToken = '' }) {
     this.container = container;
     this.mode = mode;
     this.accept = accept;
     this.log = log;
     this.geometry = geometry || { avatarSize: AVATAR_DIAMETER, avatarOffsetY: AVATAR_DY, acceptOffsetX: ACCEPT_DX, acceptOffsetY: ACCEPT_DY };
+    this.groupGeometry = groupGeometry || CALL_GROUP_GEOMETRY_DEFAULTS;
     this.allowIds = allowIds;
     this.allowGroups = allowGroups;
     this.allowNames = allowNames;
@@ -668,6 +671,9 @@ class CallWatcher {
     this.oneBotToken = oneBotToken;
     this.nameCache = { at: 0, names: [] };
     this.known = new Set();
+    this.groupCache = { at: 0, list: [] };
+    this.ocrPromise = null;
+    this.ocrDisabled = false;
     this.timer = null;
     this.busy = false;
     this.cooldownUntil = 0;
@@ -767,8 +773,128 @@ class CallWatcher {
       this.log('call', `认出来了（头像）：${best.label}，相关 ${best.score.toFixed(3)}`);
       return { who: best.label, via: 'avatar' };
     }
+    // 群语音邀请显示的是发起人头像，不是群头像；再用邀请文案里的群名兜底。
+    const group = await this._ocrGroupInvite(shotPath, win);
+    if (group) {
+      return { who: `群 ${group.id}`, via: 'ocr-group', groupId: group.id };
+    }
     this.log('call', `头像没对上（最高 ${best.score.toFixed(3)} ${best.label || '无候选'}），不接`);
     return null;
+  }
+
+  /** 编译 macOS Vision OCR helper（scripts/ocr.swift → data/bin/qq-ocr）。 */
+  async _ensureOcr() {
+    if (this.ocrDisabled) throw new Error('OCR 已禁用');
+    if (this.ocrPromise) return this.ocrPromise;
+    this.ocrPromise = (async () => {
+      const bin = path.join(ROOT, 'data', 'bin', 'qq-ocr');
+      const src = path.join(ROOT, 'scripts', 'ocr.swift');
+      let need = !fs.existsSync(bin);
+      if (!need) {
+        try { need = fs.statSync(bin).mtimeMs < fs.statSync(src).mtimeMs; } catch {}
+      }
+      if (need) {
+        fs.mkdirSync(path.dirname(bin), { recursive: true });
+        await new Promise((resolve, reject) => {
+          execFile('swiftc', ['-O', src, '-o', bin], { timeout: 60000 }, (error, stdout, stderr) => {
+            if (error) reject(new Error(String(stderr || error.message).trim().slice(0, 200)));
+            else resolve();
+          });
+        });
+        this.log('call', 'OCR helper 已编译');
+      }
+      return bin;
+    })();
+    try {
+      return await this.ocrPromise;
+    } catch (error) {
+      this.ocrPromise = null;
+      this.ocrDisabled = true;
+      throw error;
+    }
+  }
+
+  async _ocr(imagePath) {
+    const bin = await this._ensureOcr();
+    const raw = await execP(bin, [imagePath]);
+    return String(raw).split('\n')
+      .map((line) => line.split('\t'))
+      .filter((parts) => parts.length >= 5)
+      .map((parts) => ({ text: parts[0], x: Number(parts[1]), y: Number(parts[2]), w: Number(parts[3]), h: Number(parts[4]) }));
+  }
+
+  async _groupList() {
+    if (Date.now() - this.groupCache.at < 300000) return this.groupCache.list;
+    const url = `${String(this.oneBotUrl || 'http://127.0.0.1:3000').replace(/\/+$/, '')}/get_group_list`;
+    const response = await fetch(url, {
+      method: 'POST',
+      headers: {
+        'content-type': 'application/json',
+        ...(this.oneBotToken ? { authorization: `Bearer ${this.oneBotToken}` } : {})
+      },
+      body: '{}',
+      signal: AbortSignal.timeout(8000)
+    });
+    if (!response.ok) throw new Error(`get_group_list HTTP ${response.status}`);
+    const payload = await response.json();
+    const list = (Array.isArray(payload?.data) ? payload.data : [])
+      .map((g) => ({ id: String(g.group_id), name: String(g.group_name ?? '') }));
+    this.groupCache = { at: Date.now(), list };
+    return list;
+  }
+
+  /**
+   * 群语音邀请里显示的是「发起人头像 + 邀请您加入「群名」的语音通话」，
+   * 不是群头像，所以头像比对认不出来。这里裁中间邀请文案做 OCR，再用群名反查群号。
+   */
+  async _ocrGroupInvite(shotPath, win) {
+    if (this.ocrDisabled || this.allowGroups.length === 0) return null;
+    const x = Math.max(0, Math.round(win.width * 0.25));
+    const y = Math.max(0, Math.round(win.height * 0.36));
+    const w = Math.max(120, Math.round(win.width * 0.5));
+    const h = Math.max(60, Math.round(win.height * 0.16));
+    const crop = path.join(os.tmpdir(), `call-invite-${Date.now()}.png`);
+    try {
+      await execP('ffmpeg', [
+        '-hide_banner', '-loglevel', 'error', '-y', '-i', shotPath,
+        '-vf', `crop=${w}:${h}:${x}:${y},scale=${w * 2}:${h * 2}`, crop
+      ]);
+      const lines = await this._ocr(crop);
+      const text = lines.map((line) => line.text).join('').replace(/\s+/g, '');
+      const match = text.match(/邀请您加入[“"「]?(.+?)[”"」“]?的语音通话/);
+      if (!match) return null;
+      const name = match[1].replace(/[“”"「」\s]/g, '').trim();
+      if (!name) return null;
+      const groups = await this._groupList();
+      const hit = groups.find((g) => this.allowGroups.includes(g.id)
+        && g.name.replace(/[，,。.、\s]/g, '') === name.replace(/[，,。.、\s]/g, ''));
+      if (hit) {
+        this.log('call', `OCR 群邀请：${hit.name}（${hit.id}）`);
+        return hit;
+      }
+      this.log('call', `OCR 群邀请未命中白名单：${name}`);
+      return null;
+    } catch (error) {
+      this.log('call', `群邀请 OCR 失败：${String(error?.message ?? error).slice(0, 120)}`);
+      return null;
+    }
+  }
+
+  /** 启动时预热 OCR（swiftc 编译 + Vision 冷启动），别等来电才做。 */
+  async warmOcr() {
+    if (this.allowGroups.length === 0) return;
+    try {
+      const bin = await this._ensureOcr();
+      const tmp = path.join(os.tmpdir(), 'qq-ocr-warm.png');
+      await execP('ffmpeg', ['-hide_banner', '-loglevel', 'error', '-y', '-f', 'lavfi', '-i', 'color=c=black:s=16x16', '-frames:v', '1', tmp]);
+      await new Promise((resolve, reject) => {
+        execFile(bin, [tmp], { timeout: 30000 }, (error) => (error ? reject(error) : resolve()));
+      });
+      this.log('call', 'OCR 预热完成（群语音自动接听可用）');
+    } catch (error) {
+      this.ocrDisabled = true;
+      this.log('call', `OCR 预热失败（群语音自动接听不可用）：${String(error?.message ?? error).slice(0, 120)}`);
+    }
   }
 
   async _tick() {
@@ -798,7 +924,7 @@ class CallWatcher {
       return;
     }
 
-    const g = this.geometry;
+    const g = who.via === 'ocr-group' ? this.groupGeometry : this.geometry;
     const ax = this.accept ? this.accept.x : Math.round(win.width / 2 + g.acceptOffsetX);
     const ay = this.accept ? this.accept.y : Math.round(win.height / 2 + g.acceptOffsetY);
     const x = win.x + ax;
@@ -1002,6 +1128,7 @@ class Brain {
     this.busy = false;
     this.preparing = false;
     this.cancelPromise = null;
+    this.promptAbort = null;
     this.turnEpoch = 0;
   }
 
@@ -1096,6 +1223,7 @@ class Brain {
         }
       })();
     }
+    try { this.promptAbort?.abort(); } catch {}
     if (this.pending) {
       const { reject, timer } = this.pending;
       this.pending = null;
@@ -1138,6 +1266,7 @@ class Brain {
   async ask(text, { timeoutMs = 90000 } = {}) {
     this.preparing = true;
     const myEpoch = this.turnEpoch;
+    const promptController = new AbortController();
     try {
       await this.ensure();
       // 上一轮还没取消完就发新 prompt，会被 stopSessionWork 一起取消。
@@ -1166,7 +1295,14 @@ class Brain {
       }
       parts.push(CALL_HINT, text);
       const content = [{ type: 'text', text: parts.join('\n\n') }];
-      const accepted = await this.api.sessions.prompt({ sessionId: this.sessionId, mode: 'queue', content });
+      // prompt 本身也可能永远不返回（DSH 卡住/HTTP 半开）。给它 15s 硬超时，
+      // 并允许 cancelCurrentTurn 直接 abort；否则 busy 永远为 true，整通电话哑掉。
+      this.promptAbort = promptController;
+      const promptSignal = AbortSignal.any([promptController.signal, AbortSignal.timeout(15000)]);
+      const accepted = await this.api.sessions.prompt(
+        { sessionId: this.sessionId, mode: 'queue', content },
+        promptSignal
+      );
       if (!accepted?.result?.ok) {
         throw new Error(`prompt 被拒：${accepted?.result?.error?.code}: ${accepted?.result?.error?.message}`);
       }
@@ -1188,8 +1324,10 @@ class Brain {
         clearTimeout(this.pending.timer);
         this.pending = null;
       }
+      if (error?.name === 'AbortError' && this.turnEpoch !== myEpoch) throw bargeInError();
       throw error;
     } finally {
+      if (this.promptAbort === promptController) this.promptAbort = null;
       this.preparing = false;
       this.busy = false;
     }
@@ -1292,7 +1430,8 @@ async function main() {
     const [w, h] = String(opts.identifySize).split('x').map(Number);
     const watcher = new CallWatcher({
       container: opts.container, mode: 'on', accept: callCfg.accept, log,
-      geometry: callCfg.geometry, allowIds: callCfg.allow, allowGroups: callCfg.allowGroups, allowNames: callCfg.allowNames,
+      geometry: callCfg.geometry, groupGeometry: callCfg.groupGeometry,
+      allowIds: callCfg.allow, allowGroups: callCfg.allowGroups, allowNames: callCfg.allowNames,
       oneBotUrl: cfg.snowluma?.httpUrl || '', oneBotToken: cfg.snowluma?.accessToken || ''
     });
     log('call', `诊断：${opts.identifyShot}（${w}x${h}）`);
@@ -1384,6 +1523,7 @@ async function main() {
       accept,
       log,
       geometry: callCfg.geometry,
+      groupGeometry: callCfg.groupGeometry,
       allowIds: callCfg.allow,
       allowGroups: callCfg.allowGroups,
       allowNames: callCfg.allowNames,
@@ -1400,6 +1540,8 @@ async function main() {
       process.exit(0);
     }
     await watcher.start();
+    // OCR 编译 + Vision 冷启动很慢（首次十几秒），放在后台预热，别等来电才做。
+    watcher.warmOcr().catch(() => {});
   }
 
   /** 把回复切成短句：短句先合成、先开口，长句并行合成。 */

@@ -14,6 +14,14 @@ export const CALL_GEOMETRY_DEFAULTS = Object.freeze({
   acceptOffsetY: 186
 });
 
+/** 群语音邀请浮层的几何（头像 116px，接听按钮更靠下）。 */
+export const CALL_GROUP_GEOMETRY_DEFAULTS = Object.freeze({
+  avatarSize: 116,
+  avatarOffsetY: -83,
+  acceptOffsetX: -65,
+  acceptOffsetY: 238
+});
+
 export const CALL_DEFAULTS = Object.freeze({
   autoAnswer: false,
   preset: '',
@@ -54,11 +62,11 @@ function toNameList(value) {
   return out;
 }
 
-function toGeometry(raw) {
+function toGeometry(raw, defaults = CALL_GEOMETRY_DEFAULTS) {
   const r = (raw && typeof raw === 'object' && !Array.isArray(raw)) ? raw : {};
   const pick = (key) => {
     const n = Number(r[key]);
-    return Number.isFinite(n) ? Math.round(n) : CALL_GEOMETRY_DEFAULTS[key];
+    return Number.isFinite(n) ? Math.round(n) : defaults[key];
   };
   const size = Math.min(400, Math.max(40, pick('avatarSize')));
   return {
@@ -103,6 +111,7 @@ export function normalizeCallConfig(raw) {
   const acceptY = toCoord(r.acceptY);
   return {
     geometry: toGeometry(r.geometry),
+    groupGeometry: toGeometry(r.groupGeometry, CALL_GROUP_GEOMETRY_DEFAULTS),
     autoAnswer: r.autoAnswer === true,
     preset: typeof r.preset === 'string' ? r.preset.trim().slice(0, 64) : '',
     turnDetection: toTurnDetection(r.turnDetection),
