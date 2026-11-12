@@ -32,6 +32,7 @@ import { discoverSnowLumaConnection, persistSnowLumaEndpoint, persistToken } fro
 import { createAsrService, formatVoiceText, normalizeAsrConfig } from './voice-asr.js';
 import { normalizeCallConfig } from './call-config.js';
 import { CallPresence } from './call-presence.js';
+import { recordCallTurn } from './call-memory.js';
 import { autoSpeakable, createTtsService, normalizeSpeakConfig, redactSpeakConfig, SPEAK_EMOTIONS } from './voice-tts.js';
 import { createSingingService, normalizeSingingConfig, redactSingingConfig } from './singing.js';
 import { createShortCoverService } from './short-cover/manager-v2.js';
@@ -6131,6 +6132,7 @@ async function main() {
               groupGeometry: nextCall.groupGeometry,
               preset: nextCall.preset,
               textBridge: nextCall.textBridge,
+              memory: nextCall.memory,
               turnDetection: nextCall.turnDetection,
               diarization: nextCall.diarization
             };
@@ -9411,6 +9413,34 @@ async function main() {
           try { fs.writeFileSync(ACTIVITY_LOG, ''); } catch {}
           log(`控制台：已清空 QQ 聊天工作区（停止 ${stoppedCount} 个、归档 ${archivedCount} 个会话，映射与活动日志已清空）`);
           sendJson({ ok: true, archivedCount, stoppedCount });
+          return;
+        }
+        // ── 通话内容 → 长期记忆（call-loop 发来用户 ASR 文本；规则与文字聊天一致） ──
+        if (req.method === 'POST' && url.pathname === '/api/call/memory') {
+          const body = await readBody();
+          if (!memory || !cfg.memory?.enabled) {
+            sendJson({ ok: false, error: '长期记忆未启用' }, 409);
+            return;
+          }
+          const key = String(body.key ?? '').trim();
+          const text = String(body.text ?? '').trim();
+          if (!/^(private|group):\d+$/.test(key)) { sendJson({ ok: false, error: 'key 格式无效' }, 400); return; }
+          if (!text) { sendJson({ ok: false, error: 'text 不能为空' }, 400); return; }
+          try {
+            const result = recordCallTurn({
+              memory,
+              key,
+              text,
+              userId: String(body.userId ?? cfg.ownerQQ ?? ''),
+              sender: String(body.sender ?? ''),
+              messageId: body.messageId ?? null
+            });
+            log(`通话记忆 ${key}：${result.mode || 'none'}${result.captured ? '（候选）' : ''}${result.ok ? '' : ` 失败：${result.reason ?? ''}`}`);
+            sendJson({ ok: result.ok !== false, ...result });
+          } catch (error) {
+            log(`通话记忆失败 ${key}：${error?.message ?? error}`);
+            sendJson({ ok: false, error: String(error?.message ?? error) }, 500);
+          }
           return;
         }
         // ── 通话 presence（call-loop 注册；发送工具据此切换输出通道） ──────────

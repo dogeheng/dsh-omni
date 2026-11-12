@@ -30,6 +30,9 @@ export const CALL_DEFAULTS = Object.freeze({
     routeOwnerOnly: true,
     routeTtlMs: 600000
   },
+  memory: {
+    enabled: true
+  },
   diarization: {
     mode: 'off',
     modelPath: '',
@@ -96,6 +99,11 @@ function toCoord(value) {
   return Number.isFinite(n) ? Math.round(n) : null;
 }
 
+function toCallMemory(raw) {
+  const r = (raw && typeof raw === 'object' && !Array.isArray(raw)) ? raw : {};
+  return { enabled: r.enabled !== false };
+}
+
 function toTextBridge(raw) {
   const r = (raw && typeof raw === 'object' && !Array.isArray(raw)) ? raw : {};
   const clamp = (value, min, max, fallback) => {
@@ -159,6 +167,7 @@ export function normalizeCallConfig(raw) {
     autoAnswer: r.autoAnswer === true,
     preset: typeof r.preset === 'string' ? r.preset.trim().slice(0, 64) : '',
     textBridge: toTextBridge(r.textBridge),
+    memory: toCallMemory(r.memory),
     diarization: toDiarization(r.diarization),
     turnDetection: toTurnDetection(r.turnDetection),
     allow: toIdList(r.allow),

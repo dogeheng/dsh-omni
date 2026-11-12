@@ -566,6 +566,9 @@
       "enabled": true,
       "routeOwnerOnly": true,
       "routeTtlMs": 600000
+    },
+    "memory": {
+      "enabled": true
     }
   }
 }

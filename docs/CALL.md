@@ -163,9 +163,60 @@ docker exec snowluma pkill -f '[p]arec --device=qq_out.monitor'
 
 ### 限制
 
-- 电话里的 Yuki 目前**不会自动知道**群里那条消息的完整上下文；她只是把原本要发到群里的回复说出来（Phase 2/3 再做上下文与会话统一）。
+- 电话里的 Yuki 目前**不会自动知道**群里那条消息的完整上下文；她只是把原本要发到群里的回复说出来（Phase 3 再做上下文与会话统一；Phase 2 只把通话内容接进记忆）。
 - 只路由**文本回复**；如果模型选择发表情/图片/QQ 语音，不走这条路。
 - 群语音多人标签（`说话人N`）和文字回复路由是两套独立能力，可以同时开。
+
+## 通话内容进长期记忆（Phase 2）
+
+目标：语音里说的话，按**文字聊天同一套规则**筛进长期记忆；不把整段通话原文/音频倒进去。
+
+### 规则
+
+| 通话里说的 | 处理 |
+|---|---|
+| “记住我下周三去上海” | 走 `memory.remember`（Level 1 显式记忆），去掉“记住”命令词，写 `owner_private` |
+| “我明天要去面试” | 走 `memory.observeMessage`（Level 2 规则候选），命中才进候选，不直接写长期记忆 |
+| “今天天气不错” | 没有规则命中，一条都不写 |
+| Yuki 自己说的话 | 不写（`isSelf`） |
+| 群通话 | Phase 2 暂不写：说话人还没稳定映射到 QQ，避免把别人的话写进主人私聊 |
+
+候选之后仍由现有批量提炼/巩固（每日预算、`extractionConversations`）决定是否升为长期记忆，不会因为打电话多出新的逐句 LLM 调用。
+
+### 实现
+
+```text
+call-loop 每句用户 ASR
+  → POST bridge /api/call/memory
+  → recordCallTurn()
+  → memory.buildContext({ conversationKey: private:<owner> })
+  → memory.remember() 或 memory.observeMessage()
+```
+
+- `src/call-memory.js`：规则分派 + 命令词清洗；
+- `bridge.js`：`/api/call/memory`，只接受 console token（call-loop 用）；
+- call-loop 只在**真实通话**里投递（`--from-wav` 自测不写）；
+- 不写 AI 回复、不写原始音频、不写全文。
+
+### 控制台与配置
+
+控制台「通话」里勾选「通话内容按文字规则进长期记忆」；配置：
+
+```jsonc
+"call": {
+  "memory": { "enabled": true }
+}
+```
+
+- 关闭后 call-loop 不发记忆请求；
+- `call.memory` 与 `call.textBridge` 独立，可以只开记忆、不开文字转语音，反之亦然；
+- 记忆库仍是 `data/memory/memory.sqlite`，scope 规则不变；迁移只需代码 + `config.json`，无新模型/依赖。
+
+### 测试
+
+- `npm run test:call-memory`：临时 SQLite，验证显式/候选/无规则/群 scope；
+- `/api/call/memory` 实测：噪声句 `captured:false`；群显式测试写入 `scope=group` 后删除；
+- `npm run test:call`：离线通话不触发记忆投递；
 
 ## 自动接听
 

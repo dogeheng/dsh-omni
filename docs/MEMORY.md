@@ -45,6 +45,7 @@ QQ 消息 ──► bridge.js（可信会话上下文）
 | `src/memory/store.js` | SQLite schema、CRUD、去重/取代/过期/删除、FTS 同步、候选、预算、备份 |
 | `src/memory/retrieve.js` | 需求分档（要不要查）、打分排序、去重、渲染与 Token 裁剪 |
 | `src/memory/capture.js` | Level 2 规则（计划/约定/边界/偏好/自我事实/事件/显式要求） |
+| `src/call-memory.js` | 通话入口：用户 ASR → 显式 `remember` / 规则 `observeMessage`，沿用 scope |
 | `src/memory/legacy.js` | `social-v2.json` → SQLite 迁移、备份、校验、回滚 |
 | `src/memory/extract.js` | Level 3 批量提炼（计划/解析/应用）、本地巩固、每日预算 |
 | `src/memory/manager.js` | 门面：懒加载、降级、指标、LRU、Session 退役、运维入口 |

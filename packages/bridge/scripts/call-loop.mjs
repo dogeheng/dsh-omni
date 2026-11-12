@@ -674,6 +674,7 @@ class CallWatcher {
     this.oneBotToken = oneBotToken;
     this.nameCache = { at: 0, names: [] };
     this.known = new Set();
+    this.lastCallInfo = null;
     this.groupCache = { at: 0, list: [] };
     this.ocrPromise = null;
     this.ocrDisabled = false;
@@ -927,6 +928,7 @@ class CallWatcher {
       return;
     }
 
+    this.lastCallInfo = who;
     const g = who.via === 'ocr-group' ? this.groupGeometry : this.geometry;
     const ax = this.accept ? this.accept.x : Math.round(win.width / 2 + g.acceptOffsetX);
     const ay = this.accept ? this.accept.y : Math.round(win.height / 2 + g.acceptOffsetY);
@@ -1457,12 +1459,47 @@ async function main() {
 
   // ── 通话文字→语音桥：只在通话接通时启动本地 /say 服务并向 bridge 注册 presence ──
   const textBridgeCfg = callCfg.textBridge;
+  const callMemoryCfg = callCfg.memory;
   const bridgeBase = `http://127.0.0.1:${Number(cfg.consolePort) || 3100}`;
   const callOwnerQQ = (() => {
     const owner = String(cfg.ownerQQ || '');
     if (owner && callCfg.allow.some((id) => String(id) === owner)) return owner;
     return String(callCfg.allow[0] || owner || '');
   })();
+  let watcher = null;
+  let memoryWarned = false;
+  async function postCallMemory(text) {
+    if (!callMemoryCfg.enabled || !gateOnCall || !callOwnerQQ) return;
+    // Phase 2 只处理一对一：群通话的说话人还没稳定映射到 QQ，先不把别人的话写进主人私聊记忆。
+    if (watcher?.lastCallInfo?.via === 'ocr-group') return;
+    const clean = String(text ?? '').trim();
+    if (!clean) return;
+    const token = readConsoleToken(ROOT);
+    if (!token) return;
+    try {
+      const response = await fetch(`${bridgeBase}/api/call/memory`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json', 'x-console-token': token },
+        body: JSON.stringify({
+          key: `private:${callOwnerQQ}`,
+          text: clean,
+          userId: callOwnerQQ,
+          sender: '主人'
+        }),
+        signal: AbortSignal.timeout(5000)
+      });
+      if (!response.ok && !memoryWarned) {
+        memoryWarned = true;
+        log('memory', `通话记忆投递失败：HTTP ${response.status}`);
+      }
+    } catch (error) {
+      if (!memoryWarned) {
+        memoryWarned = true;
+        log('memory', `通话记忆投递失败：${String(error?.message ?? error).slice(0, 100)}`);
+      }
+    }
+  }
+
   let sayServer = null;
   let presenceTimer = null;
   let externalQueue = [];
@@ -1641,7 +1678,6 @@ async function main() {
   });
   mic.start();
 
-  let watcher = null;
   const autoMode = opts.autoAnswer || (callCfg.autoAnswer ? 'on' : '');
   if (autoMode) {
     const accept = (opts.acceptX !== null && opts.acceptY !== null)
@@ -1871,6 +1907,8 @@ async function main() {
       log('asr', '没听清，跳过');
       return;
     }
+    // 通话里的用户原话按文字聊天的规则进记忆（候选/显式），不写 AI 自己的话。
+    postCallMemory(heard);
     let speaker = null;
     if (speakerAvailable) {
       try {

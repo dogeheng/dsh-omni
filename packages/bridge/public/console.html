@@ -2180,6 +2180,11 @@ button:active:not(:disabled) {
         <label style="flex:1">只处理主人的消息（推荐）</label>
         <input type="checkbox" id="callTextBridgeOwnerOnly" style="width:auto">
       </div>
+      <div class="row">
+        <label style="flex:1">通话内容按文字规则进长期记忆</label>
+        <input type="checkbox" id="callMemoryEnabled" style="width:auto">
+        <span class="meta" style="flex:2">只处理一对一；显式“记住…”直接写，普通句子走候选/批量提炼，保留 private/group scope。</span>
+      </div>
       <div class="meta" id="callPresenceMsg">通话路由：未连接</div>
       <div class="meta" style="margin:14px 0 8px;border-top:1px solid var(--dsw-alias-border-l1,#e5e7eb);padding-top:12px">
         <b>群语音按人分离（零样本匿名）</b>：给群语音里的不同说话人打「说话人1/2」标签，不注册声纹、不认识真实姓名。
@@ -4010,6 +4015,7 @@ async function loadCallConfig() {
     const tb = c.textBridge ?? {};
     callEl('callTextBridge').checked = tb.enabled !== false;
     callEl('callTextBridgeOwnerOnly').checked = tb.routeOwnerOnly !== false;
+    callEl('callMemoryEnabled').checked = c.memory?.enabled !== false;
     void loadCallPresence();
     const d = c.diarization ?? {};
     callEl('callDiarMode').value = d.mode === 'anonymous' ? 'anonymous' : 'off';
@@ -4054,6 +4060,7 @@ async function saveCallConfig() {
         routeOwnerOnly: callEl('callTextBridgeOwnerOnly').checked,
         routeTtlMs: 600000
       },
+      memory: { enabled: callEl('callMemoryEnabled').checked },
       diarization: {
         mode: callEl('callDiarMode').value,
         threshold: Number(callEl('callDiarThreshold').value),
