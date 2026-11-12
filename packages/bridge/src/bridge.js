@@ -9441,7 +9441,8 @@ async function main() {
               text,
               userId: String(body.userId ?? cfg.ownerQQ ?? ''),
               sender: String(body.sender ?? ''),
-              messageId: body.messageId ?? null
+              messageId: body.messageId ?? null,
+              explicitOnly: body.explicitOnly === true
             });
             log(`通话记忆 ${key}：${result.mode || 'none'}${result.captured ? '（候选）' : ''}${result.ok ? '' : ` 失败：${result.reason ?? ''}`}`);
             sendJson({ ok: result.ok !== false, ...result });

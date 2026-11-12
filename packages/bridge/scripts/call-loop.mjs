@@ -1471,10 +1471,14 @@ async function main() {
   let memoryWarned = false;
   async function postCallMemory(text) {
     if (!callMemoryCfg.enabled || !gateOnCall || !callOwnerQQ) return;
-    // Phase 2 只处理一对一：群通话的说话人还没稳定映射到 QQ，先不把别人的话写进主人私聊记忆。
-    if (watcher?.lastCallInfo?.via === 'ocr-group') return;
     const clean = String(text ?? '').trim();
     if (!clean) return;
+    const info = watcher?.lastCallInfo;
+    const isGroupCall = info?.via === 'ocr-group' && info.groupId;
+    // 群语音没有稳定身份：只收显式“记住…”，写 group scope；不把匿名候选误归到某个人。
+    const key = isGroupCall ? `group:${info.groupId}` : `private:${callOwnerQQ}`;
+    const userId = isGroupCall ? '' : callOwnerQQ;
+    const sender = isGroupCall ? '群语音' : '主人';
     const token = readConsoleToken(ROOT);
     if (!token) return;
     try {
@@ -1482,10 +1486,11 @@ async function main() {
         method: 'POST',
         headers: { 'content-type': 'application/json', 'x-console-token': token },
         body: JSON.stringify({
-          key: `private:${callOwnerQQ}`,
+          key,
           text: clean,
-          userId: callOwnerQQ,
-          sender: '主人'
+          userId,
+          sender,
+          explicitOnly: !!isGroupCall
         }),
         signal: AbortSignal.timeout(5000)
       });

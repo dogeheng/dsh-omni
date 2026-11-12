@@ -179,7 +179,7 @@ docker exec snowluma pkill -f '[p]arec --device=qq_out.monitor'
 | “我明天要去面试” | 走 `memory.observeMessage`（Level 2 规则候选），命中才进候选，不直接写长期记忆 |
 | “今天天气不错” | 没有规则命中，一条都不写 |
 | Yuki 自己说的话 | 不写（`isSelf`） |
-| 群通话 | Phase 2 暂不写：说话人还没稳定映射到 QQ，避免把别人的话写进主人私聊 |
+| 群通话 | 只收显式“记住…”并写 `group` scope；匿名候选跳过，避免把别人的话误归到某个人 |
 
 候选之后仍由现有批量提炼/巩固（每日预算、`extractionConversations`）决定是否升为长期记忆，不会因为打电话多出新的逐句 LLM 调用。
 
@@ -193,7 +193,7 @@ call-loop 每句用户 ASR
   → memory.remember() 或 memory.observeMessage()
 ```
 
-- `src/call-memory.js`：规则分派 + 命令词清洗；
+- `src/call-memory.js`：规则分派 + 命令词清洗；群语音 `explicitOnly` 只收显式；
 - `bridge.js`：`/api/call/memory`，只接受 console token（call-loop 用）；
 - call-loop 只在**真实通话**里投递（`--from-wav` 自测不写）；
 - 不写 AI 回复、不写原始音频、不写全文。

@@ -77,6 +77,33 @@ try {
   assert.equal(groupRows[0].scope, 'group', '群 scope 不应写成私聊');
   console.log('  ✅ 群 scope 保留（不污染私聊）');
 
+  const groupAnonymous = recordCallTurn({
+    memory,
+    key: 'group:973614217',
+    text: '记住这个群下周三有匿名测试活动',
+    userId: '',
+    sender: '群语音'
+  });
+  assert.equal(groupAnonymous.ok, true);
+  assert.equal(groupAnonymous.mode, 'explicit');
+  assert.equal(groupAnonymous.scope, 'group');
+  const anonRows = memory.listMemories({ query: '匿名测试', limit: 10 }).memories ?? [];
+  assert.equal(anonRows.length, 1, '群语音显式记忆应写入 group scope');
+  console.log('  ✅ 群语音匿名显式记忆 → group scope');
+
+  const groupCandidate = recordCallTurn({
+    memory,
+    key: 'group:973614217',
+    text: '我明天要去面试',
+    userId: '',
+    sender: '群语音',
+    explicitOnly: true
+  });
+  assert.equal(groupCandidate.ok, true);
+  assert.equal(groupCandidate.captured, false);
+  assert.equal(groupCandidate.skipped, 'explicit_only');
+  console.log('  ✅ 群语音匿名候选 → 跳过（不误归因）');
+
   console.log('\nPASS');
 } finally {
   memory.close();

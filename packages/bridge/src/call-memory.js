@@ -19,7 +19,7 @@ function stripExplicitCommand(text) {
  * @param {string} [p.sender]          展示名
  * @param {string|number|null} [p.messageId]
  */
-export function recordCallTurn({ memory, key, text, userId = '', sender = '', messageId = null } = {}) {
+export function recordCallTurn({ memory, key, text, userId = '', sender = '', messageId = null, explicitOnly = false } = {}) {
   if (!memory) return { ok: false, reason: '记忆模块未初始化' };
   const cleanText = String(text ?? '').trim();
   if (!cleanText) return { ok: false, reason: '文本为空' };
@@ -47,6 +47,12 @@ export function recordCallTurn({ memory, key, text, userId = '', sender = '', me
       });
       return { ...result, mode: 'explicit', text: fact };
     }
+  }
+
+  // 群语音没有稳定的说话人身份：只收“记住…”这类显式记忆，避免把匿名候选
+  // 误归到某个人；一对一通话仍然走完整的候选规则。
+  if (explicitOnly) {
+    return { ok: true, captured: false, mode: 'candidate', skipped: 'explicit_only' };
   }
 
   // Level 2：规则候选。命中才落候选，没命中一条都不写。
