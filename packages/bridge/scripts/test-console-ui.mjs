@@ -83,7 +83,11 @@ try {
     }
     return target;
   }
-  async function fill(id, value) { await (await reveal(`#${id}`)).fill(String(value)); }
+  async function fill(id, value) {
+    const target = await reveal(`#${id}`);
+    if (await target.evaluate(el => el.tagName === 'SELECT')) await target.selectOption(String(value));
+    else await target.fill(String(value));
+  }
   async function check(id, checked) { await (await reveal(`#${id}`)).setChecked(checked); }
   async function clickWrite(selector, path, method = 'POST') {
     const target = await reveal(selector);
@@ -115,7 +119,7 @@ try {
       assert(visiblePages.length > 0, `${view} has no visible content`);
       assert(visiblePages.every(x => x === view), `${view} exposes another page: ${visiblePages.join(', ')}`);
     }
-    const drafts = { wlGroups: '100001, 100002', roleInput: '未保存的角色', v2AgentPreset: 'draft-preset', sKeywords: '未保存关键词', slangMeaning: '未保存的含义', tsMsg: '未发送的测试消息' };
+    const drafts = { wlGroups: '100001, 100002', roleInput: '温柔助手', v2AgentPreset: 'draft-preset', sKeywords: '未保存关键词', slangMeaning: '未保存的含义', tsMsg: '未发送的测试消息' };
     for (const [id, value] of Object.entries(drafts)) await fill(id, value);
     await navigate('overview');
     await page.waitForTimeout(3300); // Exercise the real 3-second status polling interval.
@@ -135,12 +139,18 @@ try {
   });
 
   await test('Role creation, selection, clearing and silent-mode contracts', async () => {
+    if (!original) {
+      assert.equal(await (await reveal('#roleInput')).inputValue(), fixture.state.role);
+    }
     await fill('newRoleName', '契约测试角色');
     await fill('newRoleContent', '温柔、有耐心，回答简洁。');
     assert.deepEqual(await clickWrite('#roleCreate', '/api/roles/create'), { name: '契约测试角色', content: '温柔、有耐心，回答简洁。' });
     await fill('roleInput', '契约测试角色');
     assert.deepEqual(await clickWrite('#roleSet', '/api/role'), { role: '契约测试角色' });
     assert.deepEqual(await clickWrite('#roleClear', '/api/role'), { role: null });
+    if (!original) {
+      await page.waitForFunction(() => document.getElementById('roleInput').value === '' && document.getElementById('roleSet').disabled);
+    }
     assert.deepEqual(await clickWrite('#silentOn', '/api/role-mode'), { mode: 'silent' });
     assert.deepEqual(await clickWrite('#silentOff', '/api/role-mode'), { mode: 'active' });
   });
@@ -442,10 +452,20 @@ try {
   });
 
   if (!original) await test('Mobile and tablet layouts have no document-level horizontal overflow', async () => {
-    for (const width of [390, 768]) {
+    for (const width of [360, 390, 768]) {
       await page.setViewportSize({ width, height: 844 });
       for (const view of views) {
         await navigate(view);
+        if (view === 'persona') {
+          await reveal('#roleInput');
+          const controls = await page.locator('.role-switch-row > select, .role-switch-row > button').evaluateAll(nodes => nodes.map(node => {
+            const rect = node.getBoundingClientRect();
+            return { id: node.id || 'help', width: rect.width, centerY: rect.y + rect.height / 2 };
+          }));
+          assert.equal(controls.length, 4, 'Personality picker, help, set and clear must all be present');
+          assert(controls[0].width <= 221, 'Personality picker should stay compact');
+          assert(controls.every(control => Math.abs(control.centerY - controls[0].centerY) < 1), `${width}px / personality controls wrapped: ${JSON.stringify(controls)}`);
+        }
         const dimensions = await page.evaluate(() => ({ viewport: document.documentElement.clientWidth, document: document.documentElement.scrollWidth, body: document.body.scrollWidth }));
         assert(dimensions.document <= dimensions.viewport + 1, `${width}px / ${view}: ${JSON.stringify(dimensions)}`);
         if (artifacts && width === 390 && ['overview', 'social-v2', 'slang'].includes(view)) {

@@ -4448,7 +4448,24 @@ async function main() {
       if (consoleToken && !tokenMatches) {
         if (req.method === 'GET' && url.pathname === '/') {
           res.writeHead(401, { 'content-type': 'text/html; charset=utf-8', ...SECURITY_HEADERS });
-          res.end('<!doctype html><meta charset="utf-8"><title>需要令牌</title><script>const t=prompt(\'请输入控制台访问令牌\');if(t)location.href=\'/?token=\'+encodeURIComponent(t);</script>');
+          // 根页面也需要鉴权，完整控制台尚未加载时在此读取已保存令牌。
+          // 带令牌的请求仍返回 401 表示令牌已失效，清掉缓存再询问，避免重定向循环。
+          res.end(`<!doctype html><meta charset="utf-8"><title>需要令牌</title><script>
+            const rejectedToken = new URLSearchParams(location.search).has('token');
+            let savedToken = '';
+            try {
+              if (rejectedToken) localStorage.removeItem('consoleToken');
+              else savedToken = (localStorage.getItem('consoleToken') || '').trim();
+            } catch {}
+            if (savedToken) {
+              location.replace('/?token=' + encodeURIComponent(savedToken) + location.hash);
+            } else {
+              const enteredToken = prompt('请输入控制台访问令牌');
+              if (enteredToken && enteredToken.trim()) {
+                location.replace('/?token=' + encodeURIComponent(enteredToken.trim()) + location.hash);
+              }
+            }
+          </script>`);
         } else {
           sendJson({ ok: false, error: '未授权：请提供控制台访问令牌' }, 401);
         }

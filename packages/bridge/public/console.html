@@ -590,6 +590,19 @@ h1 {
 .row select {
   flex-shrink:1
 }
+.role-switch-row {
+  flex-wrap:nowrap;
+  gap:8px
+}
+#roleInput {
+  flex:0 1 220px;
+  width:220px;
+  text-overflow:ellipsis
+}
+.role-switch-row>button {
+  flex:0 0 auto;
+  white-space:nowrap
+}
 .meta,.inline-tip {
   font-size:12px;
   color:var(--muted);
@@ -1929,9 +1942,11 @@ button:active:not(:disabled) {
       <details class="settings-group">
         <summary>切换当前启用的人格</summary>
         <div class="settings-content">
-          <div class="row" style="margin-top:10px">
-            <input type="text" id="roleInput" placeholder="选择已有角色或输入新角色名">
-            <button id="roleSet">设置</button>
+          <div class="row role-switch-row" style="margin-top:10px">
+            <select id="roleInput" aria-label="选择要启用的人格">
+              <option value="" disabled>请选择人格</option>
+            </select>
+            <button id="roleSet" disabled>设置</button>
             <button id="roleClear">清除</button>
           </div>
           <div class="meta">清空当前人格后，AI 只按「仿真提示词」行动，不扮演任何角色。</div>
@@ -3409,6 +3424,22 @@ async function refreshRoles() {
       if (input && document.activeElement !== input) input.value = String(roleInjectMax);
     }
     const names = Array.isArray(r.roles) ? r.roles : [];
+    const roleSelect = document.getElementById('roleInput');
+    roleSelect.replaceChildren();
+    const placeholder = document.createElement('option');
+    placeholder.value = '';
+    placeholder.textContent = names.length ? '请选择人格' : '暂无可用人格';
+    placeholder.disabled = true;
+    roleSelect.appendChild(placeholder);
+    for (const name of names) {
+      const option = document.createElement('option');
+      option.value = name;
+      option.textContent = name;
+      roleSelect.appendChild(option);
+    }
+    roleSelect.value = names.includes(r.current) ? r.current : '';
+    roleSelect.disabled = names.length === 0;
+    document.getElementById('roleSet').disabled = !roleSelect.value;
     roleCache = Array.isArray(r.summaries) && r.summaries.length === names.length
       ? r.summaries
       : names.map((name) => ({ name, chars: 0, bytes: 0, excerpt: '', truncated: false }));
@@ -3610,9 +3641,14 @@ document.getElementById('closedPreset').addEventListener('change', async () => {
   const mode = active ? active.dataset.mode : 'chat';
   await saveMode(mode);
 });
+document.getElementById('roleInput').addEventListener('change', () => {
+  document.getElementById('roleSet').disabled = !document.getElementById('roleInput').value;
+});
 document.getElementById('roleSet').addEventListener('click', async () => {
-  const r = await api('/api/role', 'POST', { role: document.getElementById('roleInput').value.trim() });
-  if (r.ok) refreshRoles(); else alert(r.error || '设置失败');
+  const role = document.getElementById('roleInput').value;
+  if (!role) return;
+  const r = await api('/api/role', 'POST', { role });
+  if (r.ok) { await refreshRoles(); await refresh(); } else alert(r.error || '设置失败');
 });
 document.getElementById('roleClear').addEventListener('click', async () => { await api('/api/role', 'POST', { role: null }); refreshRoles(); refresh(); });
 document.getElementById('roleCreate').addEventListener('click', async () => {

@@ -51,6 +51,7 @@
     "test:i18n": "node scripts/test-console-i18n.mjs",
     "test:console-character": "node scripts/test-console-character.mjs",
     "test:power": "node scripts/test-power.mjs",
+    "test:stack": "node scripts/test-stack-mac.mjs",
     "test:preset-prompt": "node scripts/test-preset-prompt.mjs",
     "test:role-card": "node scripts/test-role-card.mjs",
     "preview:console": "node scripts/console-ui-fixture.mjs",

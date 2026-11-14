@@ -143,6 +143,17 @@ bash packages/bridge/start-mac.sh
 
 DSH 桌面版重启后可能更换端口，需要重新运行启动脚本。也可以安装[自动跟随服务](docs/SETUP.md#watchdog)和[插电不睡](docs/SETUP.md#nosleep)。
 
+安装配置完成后，macOS 日常启停可以直接在仓库根目录运行：
+
+```bash
+make start    # 启动 Docker、QQ 网关、DSH 和桥接
+make stop     # 关闭桥接、QQ 网关和 DSH，保留数据与 Docker Desktop
+make restart  # 关闭后重新启动
+make status   # 查看运行状态
+```
+
+首次登录仍需扫码。`make stop` 会暂停自动拉起，`make start` 成功后恢复；详见[安装与维护](docs/SETUP.md)。
+
 <details>
 <summary>只想先试试控制台？</summary>
 

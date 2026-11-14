@@ -1,9 +1,11 @@
 // Exercise public UI resources through the real console server and auth guards.
 import assert from 'node:assert/strict';
 import http from 'node:http';
+import vm from 'node:vm';
 import { bridgeHarness } from './audit-bridge-harness.mjs';
 
 const harness = await bridgeHarness({ files: {
+  'public/console.html': '<!doctype html><title>Authenticated console fixture</title>',
   'public/console-assets/experience.js': 'window.consoleAssetFixture = true;',
   'public/console-assets/experience.css': 'body { color: navy; }',
   'public/console-assets/companion-rig.js': 'window.fixtureRig = true;',
@@ -38,6 +40,48 @@ try {
   assert.equal((await request('/console-assets/experience.js', { host: 'evil.example' })).status, 403);
   assert.equal((await request('/api/status', { token: 'fixture-console-token' })).status, 200);
   console.log('PASS Shipped assets load without credentials; Host, API auth, method and path boundaries remain intact.');
+
+  // Execute the actual unauthenticated landing page: saved credentials must still
+  // pass server authentication, and stale credentials must not redirect forever.
+  const runLogin = (html, { saved = null, search = '', answer = null, storageBlocked = false } = {}) => {
+    const storage = new Map(saved === null ? [] : [['consoleToken', saved]]);
+    const redirects = [];
+    let prompts = 0;
+    vm.runInNewContext(html.match(/<script>([\s\S]*?)<\/script>/)[1], {
+      URLSearchParams,
+      location: { search, hash: '#roles', replace: url => redirects.push(url) },
+      localStorage: {
+        getItem: key => { if (storageBlocked) throw new Error('Storage blocked'); return storage.get(key) ?? null; },
+        removeItem: key => { if (storageBlocked) throw new Error('Storage blocked'); storage.delete(key); },
+      },
+      prompt: () => { prompts++; return answer; },
+    });
+    return { redirects, prompts, storage };
+  };
+  const landing = await request('/');
+  assert.equal(landing.status, 401);
+  assert(!landing.body.includes('fixture-console-token'), 'Login page must not embed server credentials');
+  const remembered = runLogin(landing.body, { saved: 'fixture-console-token' });
+  assert.equal(remembered.prompts, 0, 'Remembered login should not prompt');
+  assert.deepEqual(remembered.redirects, ['/?token=fixture-console-token#roles']);
+  const consolePage = await request(remembered.redirects[0].split('#')[0]);
+  assert.equal(consolePage.status, 200, 'Saved token must authenticate through the server');
+  assert(consolePage.body.includes('Authenticated console fixture'));
+
+  const stalePage = await request('/?token=expired-token');
+  assert.equal(stalePage.status, 401);
+  const expired = runLogin(stalePage.body, { saved: 'expired-token', search: '?token=expired-token' });
+  assert.equal(expired.prompts, 1);
+  assert.equal(expired.storage.has('consoleToken'), false);
+  assert.deepEqual(expired.redirects, [], 'Cancelled expired login must not loop');
+  const firstLogin = runLogin(landing.body, { answer: '  fixture-console-token  ' });
+  assert.equal(firstLogin.prompts, 1);
+  assert.deepEqual(firstLogin.redirects, remembered.redirects);
+  const blockedStorage = runLogin(landing.body, { storageBlocked: true, answer: 'fixture-console-token' });
+  assert.equal(blockedStorage.prompts, 1);
+  assert.deepEqual(blockedStorage.redirects, remembered.redirects);
+  assert.deepEqual(runLogin(landing.body, { answer: '  ' }).redirects, []);
+  console.log('PASS Saved console login, expired-token recovery, first login and blocked storage.');
 } finally {
   await new Promise(resolve => server.close(resolve));
   await harness.close();

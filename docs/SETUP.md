@@ -39,6 +39,21 @@ node packages/bridge/scripts/setup-dsh.mjs desktop
 
 ### macOS 桌面版
 
+首次安装和扫码完成后，在仓库根目录可以统一启停：
+
+```bash
+make start    # 打开 Docker，启动 SnowLuma、DSH 和桥接
+make stop     # 停止桥接、SnowLuma 和 DSH
+make restart  # 关闭后重新启动，也用于加载新代码和 DSH 预设
+make status   # 查看进程和容器状态
+```
+
+`make start` 等待 Docker 和 DSH 端口就绪，复用运行中的服务；容器不存在时使用本仓库的
+Compose 配置和 `.env` 创建。首次 QQ 登录、DSH 登录仍需自行完成。
+`make stop` 保留配置、记忆和容器卷，也保留 Docker Desktop，便于其他容器继续工作。
+它写入 `data/stack-stopped` 暂停 watchdog 和 DSH 插件的自动拉起；下次 `make start`
+成功后恢复。关闭 DSH 会结束该应用的其他会话；需要只重启桥接时继续用下方脚本。
+
 ```bash
 bash packages/bridge/start-mac.sh
 ```
