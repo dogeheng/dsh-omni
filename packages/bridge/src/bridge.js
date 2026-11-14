@@ -35,6 +35,7 @@ import { CallPresence } from './call-presence.js';
 import { recordCallTurn, recordVoiceprintBindings } from './call-memory.js';
 import { buildCallMemoryContext } from './call-memory-context.js';
 import { VoiceprintStore } from './voiceprints.js';
+import { pruneStaleUnread } from './unread-freshness.js';
 import { autoSpeakable, createTtsService, normalizeSpeakConfig, redactSpeakConfig, SPEAK_EMOTIONS } from './voice-tts.js';
 import { createSingingService, normalizeSingingConfig, redactSingingConfig } from './singing.js';
 import { createShortCoverService } from './short-cover/manager-v2.js';
@@ -967,7 +968,8 @@ function loadConfig() {
         threadLimit: 6,
         wakeMessageLimit: 12,
         wakeRecentLimit: 4,
-        wakeMaxChars: 6000
+        wakeMaxChars: 6000,
+        staleUnreadMs: 2 * 60 * 60 * 1000
       },
       // 操作者在控制台为单个会话预写的「初始提示词」的字数上限（只在首次唤醒时注入一次）。
       // 它不是安全边界，只是防止误粘贴一篇长文把首次唤醒的 prompt 撑爆。
@@ -12947,6 +12949,27 @@ async function main() {
 
   // Only messages actually offered to the model authorize cursor-based acknowledgement.
   // Keep this receipt in memory: after a restart the model must fetch unread again.
+  function pruneStaleUnreadV2(key, st) {
+    const staleMs = Number(cfg.socialV2?.context?.staleUnreadMs ?? 2 * 60 * 60 * 1000);
+    if (!Number.isFinite(staleMs) || staleMs <= 0 || !Array.isArray(st.unread) || st.unread.length === 0) return 0;
+    const result = pruneStaleUnread({
+      unread: st.unread,
+      now: Date.now(),
+      staleMs,
+      lastUnreadSeq: st.lastUnreadSeq
+    });
+    if (result.removed.length === 0) return 0;
+    st.unread = result.unread;
+    if (result.through != null) st.lastReadThroughSeq = Math.max(st.lastReadThroughSeq || 0, result.through);
+    const kept = new Set(st.unread.map((m) => m.seq));
+    st.modelSeenSeqs = new Set([...(st.modelSeenSeqs || [])].filter((seq) => kept.has(seq)));
+    saveSocialV2State();
+    const hours = Math.round((staleMs / 3_600_000) * 10) / 10;
+    appendActivity(`${key} [reserved2] 跳过 ${result.removed.length} 条超过 ${hours}h 的旧未读`);
+    log(`[reserved2] ${key} 未读时效：跳过 ${result.removed.length} 条超过 ${hours}h 的旧消息`);
+    return result.removed.length;
+  }
+
   function readThroughSeqV2(st, additional = []) {
     const seen = new Set(st.modelSeenSeqs || []);
     for (const msg of additional) if (Number.isSafeInteger(msg?.seq) && msg.seq > 0) seen.add(msg.seq);
@@ -13003,6 +13026,7 @@ async function main() {
     const context = cfg.socialV2?.context ?? {};
     if (context.inlineWakeMessages === false || (!v2ToolEnabled('getUnread') && !v2ToolEnabled('getRecent'))) return null;
     const st = getSocialV2State(key);
+    pruneStaleUnreadV2(key, st);
     const bounded = (name, fallback, min, max) => {
       const value = Number(context[name] ?? fallback);
       return Number.isFinite(value) ? Math.min(max, Math.max(min, Math.round(value))) : fallback;
@@ -13025,8 +13049,9 @@ async function main() {
       return false;
     };
     if (v2ToolEnabled('getUnread')) {
-      // Oldest unread first: a budget cutoff must not silently acknowledge unseen messages.
-      for (const msg of st.unread.slice(0, maxUnread)) if (!tryAdd('messages', msg)) break;
+      // 优先展示最新的未读：旧积压不能把触发这次唤醒的新消息挤出去。
+      // 更早的未读仍可通过 qq_get_unread_messages 补读；freshness 提示会告诉模型别回旧闻。
+      for (const msg of st.unread.slice(-maxUnread)) if (!tryAdd('messages', msg)) break;
     }
     if (v2ToolEnabled('getRecent') && maxRecent > 0) {
       const unread = new Set(st.unread.map((m) => m.seq));
@@ -13110,6 +13135,7 @@ async function main() {
     const roleLine = roleState.role ? `【当前角色】${roleState.role}（完整角色卡请调用 qq_get_prompt 查看）\n\n` : '';
     const identityLine = selfIdentityTextV2();
     const st = getSocialV2State(key);
+    const staleSkipped = pruneStaleUnreadV2(key, st);
     const tokenLine = `【会话令牌】${st.agentToken}（调用二代状态工具时请在参数中带上此令牌）\n\n`;
     // 动态人格：不要求用户清空上下文。每次唤醒比较当前角色卡/仿真提示词与
     // 这个 DSH 会话上次注入的版本；变化（或新会话）时把最新版作为高优先级
@@ -13171,7 +13197,11 @@ async function main() {
     if (lastMsg) statusBits.push(`最近一条来自 ${String(lastMsg.sender || '未知')}：${String(lastMsg.text || lastMsg.plain || '').slice(0, 30)}`);
     if (lastMsg && looksLikeUnfinished(String(lastMsg.tail || lastMsg.plain || lastMsg.text || ''))) statusBits.push('对方可能没说完');
     if (lastAiMin != null) statusBits.push(`你上次发言 ${lastAiMin} 分钟前`);
+    if (staleSkipped) statusBits.push(`已跳过 ${staleSkipped} 条超过 ${Math.round((Number(cfg.socialV2?.context?.staleUnreadMs ?? 7200000) / 3_600_000) * 10) / 10}h 的旧未读`);
     const statusLine = `【此刻状态】${statusBits.join('；')}\n\n`;
+    const freshnessLine = (st.unread?.length || staleSkipped)
+      ? '【时效】只回应最新一条/触发这次唤醒的消息；未读里的旧消息只当背景，不要把几小时前的事当成刚刚发生。\n\n'
+      : '';
     // 只给主人私聊：余额是账户信息，不给群聊/其他人。主人在群里问时先私聊或说“回头私聊”。
     const accountLine = key === `private:${cfg.ownerQQ}`
       ? '【账户】主人问“还有多少钱/余额”时，调用 qq_get_prompt 查看 account；不要把余额、账户或付费信息告诉其他人。\n\n'
@@ -13205,7 +13235,7 @@ async function main() {
     // 也不会把「省电模式关了」说成「加载不出来」。插电时这一行是空串，不多占 token。
     const powerText = powerPromptLine(cfg.power, powerMonitor?.state?.() ?? null);
     const powerLine = powerText ? `${powerText}\n\n` : '';
-    const base = roleLine + identityLine + tokenLine + personaUpdateLine + freshLine + initialPromptLine + antiAiLine + facadeLine + styleLearnLine + powerLine + proactiveLine + stickerLine + speakLine + singLine + replyLine + statusLine + accountLine + wakeLine + memoryLine + participationLine + preSleepLine;
+    const base = roleLine + identityLine + tokenLine + personaUpdateLine + freshLine + initialPromptLine + antiAiLine + facadeLine + styleLearnLine + powerLine + proactiveLine + stickerLine + speakLine + singLine + replyLine + statusLine + freshnessLine + accountLine + wakeLine + memoryLine + participationLine + preSleepLine;
     if (reason === 'bootstrap') {
       return `${base}【引导唤醒】你已接入 QQ 会话 ${key}。\n当前是二代仿真模式：你的文本输出不会自动发送到 QQ，所有发言必须通过工具完成。\n请先调用 qq_get_prompt 查看角色、推荐值、可用工具和状态；有待回应的消息先按首回复节奏处理，最后才用 qq_set_wake_config 设置你希望如何被唤醒。`;
     }
