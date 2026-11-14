@@ -6135,6 +6135,7 @@ async function main() {
               preset: nextCall.preset,
               textBridge: nextCall.textBridge,
               memory: nextCall.memory,
+              fullDuplex: nextCall.fullDuplex,
               voiceprints: nextCall.voiceprints,
               turnDetection: nextCall.turnDetection,
               diarization: nextCall.diarization

@@ -575,6 +575,9 @@
       "enabled": true,
       "threshold": 0.72,
       "margin": 0.05
+    },
+    "fullDuplex": {
+      "softBarge": true
     }
   }
 }

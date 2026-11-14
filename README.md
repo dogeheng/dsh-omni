@@ -162,6 +162,7 @@ npm --prefix packages/bridge run preview:console
 | 想了解什么 | 入口 |
 | --- | --- |
 | 群语音按人分离 | [方案与选型](docs/DIARIZATION.md) |
+| 全双工现状 | [软打断与流式路线](docs/FULL_DUPLEX.md) |
 | 声纹认人 | [声纹库/CLI](docs/VOICEPRINTS.md) |
 | 配置、其他 profile、自动启动、迁移、常见问题 | [安装与维护](docs/SETUP.md) |
 | 控制台分类、参数说明、角色互动 | [控制台界面](docs/CONSOLE_UI.md) |

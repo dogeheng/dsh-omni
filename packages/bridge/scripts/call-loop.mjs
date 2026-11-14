@@ -29,6 +29,7 @@ import { readConsoleToken } from '../src/call-presence.js';
 import { startSayServer } from '../src/call-say-server.js';
 import { buildCrossChannelNote } from '../src/call-context.js';
 import { parseSpeakerBinding } from '../src/call-voice-binding.js';
+import { isBackchannel } from '../src/call-barge.js';
 import { parseWindows, pickNewWindow } from '../src/x11-windows.js';
 import {
   normalizeCallConfig, matchCaller, friendNameIndex, CALL_GROUP_GEOMETRY_DEFAULTS
@@ -1473,6 +1474,7 @@ async function main() {
   // ── 通话文字→语音桥：只在通话接通时启动本地 /say 服务并向 bridge 注册 presence ──
   const textBridgeCfg = callCfg.textBridge;
   const callMemoryCfg = callCfg.memory;
+  const fullDuplexCfg = callCfg.fullDuplex;
   const bridgeBase = `http://127.0.0.1:${Number(cfg.consolePort) || 3100}`;
   const callOwnerQQ = (() => {
     const owner = String(cfg.ownerQQ || '');
@@ -1821,6 +1823,8 @@ async function main() {
   let speechEpoch = 0;
   // 被打断时记下「用户到底听到了多少」，下一轮告诉模型，避免它以为整段都说过。
   let bargeInContext = null;
+  // 全双工软打断：她说话时用户开口，先听完 ASR 再决定是应声还是真插话。
+  let bargeCandidate = null;
   let lastSpokenText = '';
   let ttsActive = false;
   let idleDropped = 0;
@@ -1849,6 +1853,7 @@ async function main() {
         log('call', '通话结束：回收');
         speechEpoch++;                 // 作废在途的那一轮，回来也不念
         bargeInContext = null;
+        bargeCandidate = null;
         lastSpokenText = '';
         ttsActive = false;
         if (pendingTurn?.timer) clearTimeout(pendingTurn.timer);
@@ -2106,6 +2111,11 @@ async function main() {
       log('asr', '没听清，跳过');
       return;
     }
+    await handleHeard(pcm, seconds, samples, heard);
+  }
+
+  async function handleHeard(pcm, seconds, samples, heard) {
+    if (gateOnCall && !mic.recorder) return;
     let speaker = null;
     if (speakerAvailable) {
       try {
@@ -2131,6 +2141,38 @@ async function main() {
       .catch(() => {});
     if (speaker) pushRecentSpeaker(speaker, samples);
     await feedTurn(pcm, heard, seconds, speaker);
+  }
+
+  async function processBargeUtterance(pcm, seconds) {
+    const candidate = bargeCandidate;
+    bargeCandidate = null;
+    if (!candidate) return;
+    const t0 = Date.now();
+    const samples = pcm16ToFloat32(pcm);
+    const asrResult = await asr.decode(samples);
+    const heard = String(asrResult?.text ?? '').trim();
+    log('asr', `${Date.now() - t0}ms → 「${heard}」（插话判断）`);
+    if (!heard) {
+      log('turn', '插话没听清，继续说完');
+      return;
+    }
+    if (isBackchannel(heard, seconds)) {
+      log('turn', `应声「${heard}」，继续说完`);
+      return;
+    }
+    const playing = mic.isSpeaking();
+    const speaking = playing || ttsActive;
+    const thinking = brain.isBusy();
+    if (speaking || thinking) doBargeIn(speaking, thinking, playing, candidate.heard);
+    await handleHeard(pcm, seconds, samples, heard);
+  }
+
+  function doBargeIn(speaking, thinking, playing, heard = lastSpokenText) {
+    speechEpoch++;
+    try { mic.flush(); } catch {}
+    bargeInContext = { heard, playing, ttsActive, thinking };
+    log('turn', speaking ? '被打断：停止播放并取消推理' : '打断思考：取消推理');
+    brain.cancelCurrentTurn(speaking ? 'speaking' : 'thinking').catch(() => {});
   }
 
   async function drain() {
@@ -2171,13 +2213,21 @@ async function main() {
       const speaking = playing || ttsActive;
       const thinking = brain.isBusy();
       if (!speaking && !thinking) return;
-      speechEpoch++;
-      try { mic.flush(); } catch {}
-      bargeInContext = { heard: lastSpokenText, playing, ttsActive, thinking };
-      log('turn', speaking ? '被打断：停止播放并取消推理' : '打断思考：取消推理');
-      brain.cancelCurrentTurn(speaking ? 'speaking' : 'thinking').catch(() => {});
+      // 全双工软打断：她出声时用户开口，先不掐，等 ASR 听完再判断是应声还是真插话。
+      if (speaking && fullDuplexCfg.softBarge) {
+        bargeCandidate = { heard: lastSpokenText, playing, ttsActive, thinking, at: Date.now() };
+        log('turn', '检测到用户开口：先听清是否应声');
+        return;
+      }
+      doBargeIn(speaking, thinking, playing);
     },
     onUtterance: (pcm, seconds) => {
+      if (bargeCandidate) {
+        processBargeUtterance(pcm, seconds).catch((error) => {
+          log('turn', `插话处理失败：${String(error?.message ?? error).slice(0, 120)}`);
+        });
+        return;
+      }
       queue.push({ pcm, seconds, index: ++utteranceIndex });
       drain();
     }

@@ -33,6 +33,9 @@ export const CALL_DEFAULTS = Object.freeze({
   memory: {
     enabled: true
   },
+  fullDuplex: {
+    softBarge: true
+  },
   voiceprints: {
     enabled: true,
     threshold: 0.72,
@@ -102,6 +105,11 @@ function toCoord(value) {
   if (value === null || value === undefined || value === '') return null;
   const n = Number(value);
   return Number.isFinite(n) ? Math.round(n) : null;
+}
+
+function toFullDuplex(raw) {
+  const r = (raw && typeof raw === 'object' && !Array.isArray(raw)) ? raw : {};
+  return { softBarge: r.softBarge !== false };
 }
 
 function toVoiceprints(raw) {
@@ -184,6 +192,7 @@ export function normalizeCallConfig(raw) {
     preset: typeof r.preset === 'string' ? r.preset.trim().slice(0, 64) : '',
     textBridge: toTextBridge(r.textBridge),
     memory: toCallMemory(r.memory),
+    fullDuplex: toFullDuplex(r.fullDuplex),
     voiceprints: toVoiceprints(r.voiceprints),
     diarization: toDiarization(r.diarization),
     turnDetection: toTurnDetection(r.turnDetection),

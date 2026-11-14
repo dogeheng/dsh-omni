@@ -2187,6 +2187,11 @@ button:active:not(:disabled) {
         <input type="checkbox" id="callMemoryRead" style="width:auto">
         <span class="meta" style="flex:2">写：显式“记住…”直接写，普通句子走候选；读：每轮注入相关记忆（≤350 tokens）。</span>
       </div>
+      <div class="row">
+        <label style="flex:1">边听边判断（软打断）</label>
+        <input type="checkbox" id="callSoftBarge" style="width:auto">
+        <span class="meta" style="flex:2">她说话时你只“嗯/对”就不打断；真正插话才停。全双工的前置，不是流式 ASR/TTS。</span>
+      </div>
       <div class="meta" id="callPresenceMsg">通话路由：未连接</div>
       <div class="meta" style="margin:14px 0 8px;border-top:1px solid var(--dsw-alias-border-l1,#e5e7eb);padding-top:12px">
         <b>群语音按人分离（零样本匿名）</b>：给群语音里的不同说话人打「说话人1/2」标签，不注册声纹、不认识真实姓名。
@@ -4039,6 +4044,7 @@ async function loadCallConfig() {
     callEl('callTextBridgeOwnerOnly').checked = tb.routeOwnerOnly !== false;
     callEl('callMemoryEnabled').checked = c.memory?.enabled !== false;
     callEl('callMemoryRead').checked = c.memory?.read !== false;
+    callEl('callSoftBarge').checked = c.fullDuplex?.softBarge !== false;
     const vp = c.voiceprints ?? {};
     callEl('vpEnabled').checked = vp.enabled !== false;
     callEl('vpThreshold').value = vp.threshold ?? 0.72;
@@ -4132,6 +4138,7 @@ async function saveCallConfig() {
         routeOwnerOnly: callEl('callTextBridgeOwnerOnly').checked,
         routeTtlMs: 600000
       },
+      fullDuplex: { softBarge: callEl('callSoftBarge').checked },
       memory: {
         enabled: callEl('callMemoryEnabled').checked,
         read: callEl('callMemoryRead').checked

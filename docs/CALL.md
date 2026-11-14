@@ -270,6 +270,13 @@ bridge 路由回复时，把最后一条群/私聊消息作为 context 一起送
 
 测试：`test:call-bridge` 里断言 `say` 携带 context，且 `buildCrossChannelNote` 生成包含来源/回复/媒体标记的提示。
 
+## 全双工现状（软打断）
+
+- 音频同时收发；对话仍是轮次式；
+- 已实现「边听边判断」：她说话时你只“嗯/对/好/收到”不打断；真正插话才停止播放并取消推理；
+- 配置 `call.fullDuplex.softBarge`，控制台可关；
+- 还不是流式 ASR/TTS 的真全双工；详见 [FULL_DUPLEX.md](FULL_DUPLEX.md)。
+
 ## 自动接听
 
 在**控制台**「通话（自动接听 · 只接指定的人）」里设置，存进 `config.json` 的 `call`：
