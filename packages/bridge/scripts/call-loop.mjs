@@ -418,7 +418,18 @@ class Mic {
       stdio: ['pipe', 'ignore', 'pipe']
     });
     this.child.stderr.on('data', (b) => log('mic', `stderr: ${String(b).trim()}`));
-    this.child.on('exit', (code) => log('mic', `注入进程退出（code=${code}）`));
+    // docker exec 的下游一旦退出（挂断/容器重启），继续写 stdin 会抛 EPIPE；
+    // 这是未捕获的 'error' 事件，会直接把整个 call-loop 杀进程。必须吞掉并停泵。
+    this.child.stdin.on('error', (error) => {
+      log('mic', `stdin 错误（停止注入）：${String(error?.message ?? error).slice(0, 80)}`);
+      this.pumping = false;
+      this.child = null;
+    });
+    this.child.on('exit', (code) => {
+      log('mic', `注入进程退出（code=${code}）`);
+      this.pumping = false;
+      this.child = null;
+    });
     log('mic', `注入到 ${this.container}:${this.fifo}`);
     // 关键：管道在没人录的时候会把数据囤起来（实测能攒到 5 秒），
     // 而 QQ 是接听后才有录音流 —— 那段积压会让她的第一句话整体延后。
@@ -506,8 +517,15 @@ class Mic {
     } else {
       frame = this.noise;
     }
-    this.child.stdin.write(frame);
-    return true;
+    try {
+      this.child.stdin.write(frame);
+      return true;
+    } catch (error) {
+      log('mic', `写入注入进程失败（停止泵）：${String(error?.message ?? error).slice(0, 80)}`);
+      this.pumping = false;
+      this.child = null;
+      return false;
+    }
   }
 
   close() {
@@ -1223,8 +1241,18 @@ class Brain {
       const sid = this.sessionId;
       this.cancelPromise = (async () => {
         try {
-          await this.api.stopSessionWork(sid);
-          this.log('brain', `已取消在途回合（${reason}）`);
+          // stopSessionWork 自己可能挂住（DSH 半开/重启）。没有超时的话 cancelPromise
+          // 永远不清，isBusy() 永远为 true，之后每一句都只“取消思考”，整通电话哑掉。
+          let timer;
+          const timeout = new Promise((_, reject) => {
+            timer = setTimeout(() => reject(new Error('stopSessionWork 超时（5s）')), 5000);
+          });
+          try {
+            await Promise.race([this.api.stopSessionWork(sid), timeout]);
+            this.log('brain', `已取消在途回合（${reason}）`);
+          } finally {
+            clearTimeout(timer);
+          }
         } catch (error) {
           this.log('brain', `取消在途回合失败：${String(error?.message ?? error).slice(0, 120)}`);
         } finally {
@@ -1240,6 +1268,21 @@ class Brain {
       reject(bargeInError());
     }
     return this.cancelPromise;
+  }
+
+  forceReset(reason = '硬超时') {
+    // ask() 可能在 DSH 的某个 await 里永远不返回；cancel 只能清 pending，
+    // 不能取消已经挂住的 Promise。这里把状态强制归零，让 drain 继续处理下一句。
+    this.turnEpoch += 1;
+    this.busy = false;
+    this.preparing = false;
+    this.cancelPromise = null;
+    if (this.pending) {
+      clearTimeout(this.pending.timer);
+      this.pending = null;
+    }
+    try { this.promptAbort?.abort(); } catch {}
+    this.log('brain', `强制复位（${reason}）`);
   }
 
   async _pump() {
@@ -1321,8 +1364,18 @@ class Brain {
         // 不能再复用；等它收尾后对当前会话再 cancel 一次，避免迟到 turn 逃掉。
         if (this.cancelPromise) await this.cancelPromise;
         try {
-          await this.api.stopSessionWork(this.sessionId);
-          this.log('brain', '已取消迟到的在途回合');
+          // 这里也必须带超时：prompt 已落地才赶上打断时，stopSessionWork 若挂住，
+          // ask 会永远不返回，drain 一直 busy —— 表现就是整通电话只“取消思考”。
+          let timer;
+          const timeout = new Promise((_, reject) => {
+            timer = setTimeout(() => reject(new Error('stopSessionWork 超时（5s）')), 5000);
+          });
+          try {
+            await Promise.race([this.api.stopSessionWork(this.sessionId), timeout]);
+            this.log('brain', '已取消迟到的在途回合');
+          } finally {
+            clearTimeout(timer);
+          }
         } catch (error) {
           this.log('brain', `取消迟到回合失败：${String(error?.message ?? error).slice(0, 120)}`);
         }
@@ -1330,6 +1383,7 @@ class Brain {
       }
       return await reply;
     } catch (error) {
+      this.log('brain', `ask 异常：${String(error?.message ?? error).slice(0, 100)}`);
       if (this.pending) {
         clearTimeout(this.pending.timer);
         this.pending = null;
@@ -1592,15 +1646,37 @@ async function main() {
     if (recentSpeakerSegments.length > 8) recentSpeakerSegments.shift();
   }
 
-  async function handleSpeakerBinding(binding) {
+  async function handleSpeakerBinding(binding, current = null) {
     if (!speakerAvailable || !speakerTracker) {
       enqueueExternalSpeech('现在没有开说话人分离，绑不了声纹。');
       return true;
     }
-    const target = binding.speakerIndex
-      ? [...recentSpeakerSegments].reverse().find((s) => s.speakerId === `S${binding.speakerIndex}`
-        || s.label === `说话人${binding.speakerIndex}` || s.name === binding.name)
-      : recentSpeakerSegments.at(-1);
+    const isGroupCall = watcher?.lastCallInfo?.via === 'ocr-group';
+    let target = null;
+    if (binding.self) {
+      if (isGroupCall) {
+        enqueueExternalSpeech('群语音里我不知道“我”是谁。你可以说“说话人2是张三”，或者在私聊里让我记你的声线。');
+        return true;
+      }
+      if (!current?.speaker || !current?.samples) {
+        enqueueExternalSpeech('刚才那句没听出是谁，没存上声纹。');
+        return true;
+      }
+      const max = 16000 * 5;
+      const audio = current.samples.length > max ? current.samples.slice(current.samples.length - max) : current.samples.slice();
+      target = {
+        speakerId: current.speaker.id,
+        label: current.speaker.label,
+        name: current.speaker.name || null,
+        qq: callOwnerQQ,
+        samples: audio
+      };
+    } else {
+      target = binding.speakerIndex
+        ? [...recentSpeakerSegments].reverse().find((s) => s.speakerId === `S${binding.speakerIndex}`
+          || s.label === `说话人${binding.speakerIndex}` || s.name === binding.name)
+        : recentSpeakerSegments.at(-1);
+    }
     if (!target) {
       enqueueExternalSpeech('我没听出刚才谁在说话，等有人再说一句，你再告诉我。');
       return true;
@@ -1610,8 +1686,8 @@ async function main() {
       enqueueExternalSpeech('刚才那段声音不够清楚，没存上声纹。');
       return true;
     }
-    const isGroupCall = watcher?.lastCallInfo?.via === 'ocr-group';
-    const qq = target.qq || (isGroupCall ? '' : callOwnerQQ);
+    const qq = binding.self ? callOwnerQQ : (target.qq || (isGroupCall ? '' : callOwnerQQ));
+    const name = binding.self ? (String(cfg.ownerName || '').trim() || '主人') : binding.name;
     const token = readConsoleToken(ROOT);
     if (!token) {
       enqueueExternalSpeech('声纹没存上，控制台令牌不可用。');
@@ -1623,7 +1699,7 @@ async function main() {
         method: 'POST',
         headers: { 'content-type': 'application/json', 'x-console-token': token },
         body: JSON.stringify({
-          name: binding.name,
+          name,
           qq,
           centroid,
           samplePcmBase64: samplePcm.toString('base64'),
@@ -1637,7 +1713,9 @@ async function main() {
       speakerTracker.setName(target.speakerId, record.name, record.qq || '');
       callBindings.push({ name: record.name, qq: record.qq || '', speakerId: target.speakerId, at: Date.now() });
       log('speaker', `通话绑定：${target.speakerId} → ${record.name}${record.qq ? `（${record.qq}）` : ''}`);
-      enqueueExternalSpeech(`记住了，刚才说话的是${record.name}。`);
+      enqueueExternalSpeech(binding.self
+        ? '好，你的声线我记下了。'
+        : `记住了，刚才说话的是${record.name}。`);
     } catch (error) {
       log('speaker', `通话声纹注册失败：${String(error?.message ?? error).slice(0, 120)}`);
       enqueueExternalSpeech('声纹没存上，你再说一次试试。');
@@ -2014,7 +2092,23 @@ async function main() {
       bargeInContext = null;
     }
     const t1 = Date.now();
-    const reply = await brain.ask(promptText);
+    let reply;
+    let askTimer;
+    try {
+      const askPromise = brain.ask(promptText);
+      const hardTimeout = new Promise((_, reject) => {
+        askTimer = setTimeout(() => reject(new Error('通话回合硬超时（12s）')), 12000);
+      });
+      reply = await Promise.race([askPromise, hardTimeout]);
+    } catch (error) {
+      if (/硬超时/.test(String(error?.message ?? error))) {
+        brain.forceReset('回合硬超时');
+        enqueueExternalSpeech('我这边卡了一下，你再说一遍。');
+      }
+      throw error;
+    } finally {
+      clearTimeout(askTimer);
+    }
     log('brain', `${Date.now() - t1}ms → 「${String(reply).slice(0, 120)}」`);
     if (!reply?.trim()) return;
     if (epoch !== speechEpoch) { log('turn', '这轮已经被打断，不念了'); return; }
@@ -2132,7 +2226,7 @@ async function main() {
     // 这句话本身不进 brain、不写记忆；Yuki 会用语音确认。
     const binding = parseSpeakerBinding(heard);
     if (binding) {
-      await handleSpeakerBinding(binding);
+      await handleSpeakerBinding(binding, { speaker, samples });
       return;
     }
     // 通话里的用户原话按文字聊天的规则进记忆（候选/显式），不写 AI 自己的话。

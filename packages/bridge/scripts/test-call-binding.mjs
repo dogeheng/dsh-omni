@@ -9,6 +9,8 @@ const cases = [
   ['S3是王五', { name: '王五', speakerIndex: 3 }],
   ['记一下，说话人2是李四', { name: '李四', speakerIndex: 2 }],
   ['记一下，张三', { name: '张三' }],
+  ['记住我的声线', { self: true }],
+  ['记住我的声音', { self: true }],
   ['刚才说话的是谁', null],
   ['刚才说话的是不是张三', null],
   ['今天天气不错', null],

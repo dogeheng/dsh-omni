@@ -24,6 +24,11 @@ export function parseSpeakerBinding(text) {
   const t = String(text ?? '').replace(/\s+/g, '');
   if (!t) return null;
 
+  // 记住我的声线（通话内自注册）
+  if (/记住我的声线|记住我的声音|记一下我的声线|记一下我的声音/.test(t)) {
+    return { self: true };
+  }
+
   // 说话人2是张三 / S2 是张三
   let m = t.match(/(?:说话人|S)([1-8])(?:是|叫)([^，。！？、,.!?]{1,20})/i);
   if (m) {
