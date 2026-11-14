@@ -577,7 +577,8 @@
       "margin": 0.05
     },
     "fullDuplex": {
-      "softBarge": true
+      "softBarge": true,
+      "earlyBargeMs": 600
     }
   }
 }

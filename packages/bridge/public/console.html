@@ -2190,7 +2190,9 @@ button:active:not(:disabled) {
       <div class="row">
         <label style="flex:1">边听边判断（软打断）</label>
         <input type="checkbox" id="callSoftBarge" style="width:auto">
-        <span class="meta" style="flex:2">她说话时你只“嗯/对”就不打断；真正插话才停。全双工的前置，不是流式 ASR/TTS。</span>
+        <label style="flex:1">开口多久提前打断（ms，0=不提前）</label>
+        <input type="number" id="callEarlyBargeMs" min="0" max="2000" step="50" style="width:100px">
+        <span class="meta" style="flex:2">软打断下，超过这个时长仍未说完就提前停；应声通常更短。</span>
       </div>
       <div class="meta" id="callPresenceMsg">通话路由：未连接</div>
       <div class="meta" style="margin:14px 0 8px;border-top:1px solid var(--dsw-alias-border-l1,#e5e7eb);padding-top:12px">
@@ -4045,6 +4047,7 @@ async function loadCallConfig() {
     callEl('callMemoryEnabled').checked = c.memory?.enabled !== false;
     callEl('callMemoryRead').checked = c.memory?.read !== false;
     callEl('callSoftBarge').checked = c.fullDuplex?.softBarge !== false;
+    callEl('callEarlyBargeMs').value = c.fullDuplex?.earlyBargeMs ?? 600;
     const vp = c.voiceprints ?? {};
     callEl('vpEnabled').checked = vp.enabled !== false;
     callEl('vpThreshold').value = vp.threshold ?? 0.72;
@@ -4138,7 +4141,10 @@ async function saveCallConfig() {
         routeOwnerOnly: callEl('callTextBridgeOwnerOnly').checked,
         routeTtlMs: 600000
       },
-      fullDuplex: { softBarge: callEl('callSoftBarge').checked },
+      fullDuplex: {
+        softBarge: callEl('callSoftBarge').checked,
+        earlyBargeMs: Number(callEl('callEarlyBargeMs').value)
+      },
       memory: {
         enabled: callEl('callMemoryEnabled').checked,
         read: callEl('callMemoryRead').checked

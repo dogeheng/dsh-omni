@@ -1853,6 +1853,7 @@ async function main() {
         log('call', '通话结束：回收');
         speechEpoch++;                 // 作废在途的那一轮，回来也不念
         bargeInContext = null;
+        if (bargeCandidate?.earlyTimer) clearTimeout(bargeCandidate.earlyTimer);
         bargeCandidate = null;
         lastSpokenText = '';
         ttsActive = false;
@@ -2146,6 +2147,7 @@ async function main() {
   async function processBargeUtterance(pcm, seconds) {
     const candidate = bargeCandidate;
     bargeCandidate = null;
+    if (candidate?.earlyTimer) clearTimeout(candidate.earlyTimer);
     if (!candidate) return;
     const t0 = Date.now();
     const samples = pcm16ToFloat32(pcm);
@@ -2160,10 +2162,14 @@ async function main() {
       log('turn', `应声「${heard}」，继续说完`);
       return;
     }
-    const playing = mic.isSpeaking();
-    const speaking = playing || ttsActive;
-    const thinking = brain.isBusy();
-    if (speaking || thinking) doBargeIn(speaking, thinking, playing, candidate.heard);
+    if (!candidate.earlyFired) {
+      const playing = mic.isSpeaking();
+      const speaking = playing || ttsActive;
+      const thinking = brain.isBusy();
+      if (speaking || thinking) doBargeIn(speaking, thinking, playing, candidate.heard);
+    } else {
+      log('turn', '已按开口时长提前打断，继续处理这句');
+    }
     await handleHeard(pcm, seconds, samples, heard);
   }
 
@@ -2215,7 +2221,22 @@ async function main() {
       if (!speaking && !thinking) return;
       // 全双工软打断：她出声时用户开口，先不掐，等 ASR 听完再判断是应声还是真插话。
       if (speaking && fullDuplexCfg.softBarge) {
-        bargeCandidate = { heard: lastSpokenText, playing, ttsActive, thinking, at: Date.now() };
+        if (bargeCandidate?.earlyTimer) clearTimeout(bargeCandidate.earlyTimer);
+        bargeCandidate = { heard: lastSpokenText, playing, ttsActive, thinking, at: Date.now(), earlyFired: false, earlyTimer: null };
+        const earlyMs = Number(fullDuplexCfg.earlyBargeMs) || 0;
+        if (earlyMs > 0) {
+          bargeCandidate.earlyTimer = setTimeout(() => {
+            if (!bargeCandidate || bargeCandidate.earlyFired) return;
+            bargeCandidate.earlyFired = true;
+            const nowPlaying = mic.isSpeaking();
+            const nowSpeaking = nowPlaying || ttsActive;
+            const nowThinking = brain.isBusy();
+            if (!nowSpeaking && !nowThinking) return;
+            log('turn', `开口超过 ${earlyMs}ms，提前打断`);
+            doBargeIn(nowSpeaking, nowThinking, nowPlaying, bargeCandidate.heard);
+          }, earlyMs);
+          bargeCandidate.earlyTimer.unref?.();
+        }
         log('turn', '检测到用户开口：先听清是否应声');
         return;
       }

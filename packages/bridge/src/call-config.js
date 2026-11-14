@@ -34,7 +34,8 @@ export const CALL_DEFAULTS = Object.freeze({
     enabled: true
   },
   fullDuplex: {
-    softBarge: true
+    softBarge: true,
+    earlyBargeMs: 600
   },
   voiceprints: {
     enabled: true,
@@ -109,7 +110,11 @@ function toCoord(value) {
 
 function toFullDuplex(raw) {
   const r = (raw && typeof raw === 'object' && !Array.isArray(raw)) ? raw : {};
-  return { softBarge: r.softBarge !== false };
+  const early = Number(r.earlyBargeMs);
+  return {
+    softBarge: r.softBarge !== false,
+    earlyBargeMs: Number.isFinite(early) ? Math.min(2000, Math.max(0, Math.round(early))) : 600
+  };
 }
 
 function toVoiceprints(raw) {
