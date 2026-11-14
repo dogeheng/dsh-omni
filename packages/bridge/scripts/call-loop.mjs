@@ -1526,6 +1526,8 @@ async function main() {
 
   async function fetchCallMemory(text) {
     if (!callMemoryCfg.enabled || callMemoryCfg.read === false || !gateOnCall || !callOwnerQQ) return '';
+    // 先等本轮的写入落库：用户刚说“记住…”，下一轮读必须能看到。
+    try { await pendingMemoryWrite; } catch {}
     const token = readConsoleToken(ROOT);
     if (!token) return '';
     try {
@@ -1641,6 +1643,11 @@ async function main() {
     return true;
   }
 
+  async function flushCallMemory() {
+    try { await pendingMemoryWrite; } catch {}
+    await postCallBindings();
+  }
+
   async function postCallBindings() {
     if (callBindings.length === 0) return;
     const bindings = [...callBindings];
@@ -1676,6 +1683,7 @@ async function main() {
   let callMemoryPrelude = '';
   let callMemoryPreludeUsed = false;
   let memoryReadWarned = false;
+  let pendingMemoryWrite = Promise.resolve();
   let externalBusy = false;
   let presenceWarned = false;
 
@@ -1830,6 +1838,7 @@ async function main() {
         log('call', '通话接通：提前把识别进程拉起来');
         callBindings.length = 0;
         recentSpeakerSegments = [];
+        pendingMemoryWrite = Promise.resolve();
         loadCallMemoryPrelude().catch(() => {});
         asr.ensure().catch((e) => log('asr', `预加载失败：${String(e?.message ?? e).slice(0, 60)}`));
         // Smart Turn 的 Python worker 启动约 0.8s，趁用户还在说第一句先拉起来。
@@ -1852,8 +1861,9 @@ async function main() {
         try { vad?.reset(); } catch {}   // 不保留半句
         try { mic.flush(); } catch {}
         if (idleDropped) { log('call', `未通话期间丢弃了 ${idleDropped} 帧`); idleDropped = 0; }
-        postCallBindings().catch(() => {});
-        stopCallTextBridge('通话结束').catch(() => {});
+        flushCallMemory()
+          .catch(() => {})
+          .finally(() => stopCallTextBridge('通话结束').catch(() => {}));
         asr.unload('通话结束');
         brain.closeSession().catch(() => {});
       }
@@ -2115,7 +2125,10 @@ async function main() {
       return;
     }
     // 通话里的用户原话按文字聊天的规则进记忆（候选/显式），不写 AI 自己的话。
-    postCallMemory(heard);
+    // 用串行写队列：本轮显式写入完成后再查记忆，保证“刚记住就能问到”。
+    pendingMemoryWrite = pendingMemoryWrite
+      .then(() => postCallMemory(heard))
+      .catch(() => {});
     if (speaker) pushRecentSpeaker(speaker, samples);
     await feedTurn(pcm, heard, seconds, speaker);
   }
