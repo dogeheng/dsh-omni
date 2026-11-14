@@ -1518,6 +1518,52 @@ async function main() {
     }
   }
 
+  function callMemoryScopeKey() {
+    const info = watcher?.lastCallInfo;
+    if (info?.via === 'ocr-group' && info.groupId) return `group:${info.groupId}`;
+    return `private:${callOwnerQQ}`;
+  }
+
+  async function fetchCallMemory(text) {
+    if (!callMemoryCfg.enabled || callMemoryCfg.read === false || !gateOnCall || !callOwnerQQ) return '';
+    const token = readConsoleToken(ROOT);
+    if (!token) return '';
+    try {
+      const response = await fetch(`${bridgeBase}/api/call/memory/context`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json', 'x-console-token': token },
+        body: JSON.stringify({
+          key: callMemoryScopeKey(),
+          text: String(text ?? ''),
+          userId: callOwnerQQ,
+          speaker: '主人'
+        }),
+        signal: AbortSignal.timeout(3000)
+      });
+      const body = await response.json().catch(() => null);
+      if (!response.ok || body?.ok === false) throw new Error(body?.error || `HTTP ${response.status}`);
+      if (body.hits) log('memory', `通话记忆注入 ${body.hits} 条 / ${body.tokens} tokens`);
+      return body.block || '';
+    } catch (error) {
+      if (!memoryReadWarned) {
+        memoryReadWarned = true;
+        log('memory', `通话记忆读取失败（后续静默）：${String(error?.message ?? error).slice(0, 100)}`);
+      }
+      return '';
+    }
+  }
+
+  async function loadCallMemoryPrelude() {
+    callMemoryPrelude = '';
+    callMemoryPreludeUsed = false;
+    if (!callMemoryCfg.enabled || callMemoryCfg.read === false || !gateOnCall) return;
+    const block = await fetchCallMemory('主人最近有什么约定、偏好和重要的事情');
+    if (block) {
+      callMemoryPrelude = block;
+      log('memory', `通话记忆预热 ${block.length} 字符`);
+    }
+  }
+
   function floatToPcm16(samples) {
     const buf = Buffer.alloc(samples.length * 2);
     for (let i = 0; i < samples.length; i++) {
@@ -1627,6 +1673,9 @@ async function main() {
   let externalContextNotes = [];
   let recentSpeakerSegments = [];
   const callBindings = [];
+  let callMemoryPrelude = '';
+  let callMemoryPreludeUsed = false;
+  let memoryReadWarned = false;
   let externalBusy = false;
   let presenceWarned = false;
 
@@ -1781,6 +1830,7 @@ async function main() {
         log('call', '通话接通：提前把识别进程拉起来');
         callBindings.length = 0;
         recentSpeakerSegments = [];
+        loadCallMemoryPrelude().catch(() => {});
         asr.ensure().catch((e) => log('asr', `预加载失败：${String(e?.message ?? e).slice(0, 60)}`));
         // Smart Turn 的 Python worker 启动约 0.8s，趁用户还在说第一句先拉起来。
         getTurnDetector()?.ensure().catch((e) => log('turn', `Smart Turn 预加载失败：${String(e?.message ?? e).slice(0, 60)}`));
@@ -1929,8 +1979,12 @@ async function main() {
     if (speakerLabel) log('speaker', `本轮标签 ${speakerLabel}`);
     const crossChannelNote = externalContextNotes.length ? `${externalContextNotes.join('\n')}\n\n` : '';
     externalContextNotes = [];
+    const perTurnMemory = await fetchCallMemory(text);
+    const prelude = !callMemoryPreludeUsed ? callMemoryPrelude : '';
+    callMemoryPreludeUsed = true;
+    const memoryNote = [prelude, perTurnMemory].filter(Boolean).join('\n\n');
     const userText = speakerLabel ? `[${speakerLabel}] ${text}` : text;
-    let promptText = crossChannelNote + userText;
+    let promptText = memoryNote ? `${memoryNote}\n\n${crossChannelNote}${userText}` : crossChannelNote + userText;
     if (bargeInContext) {
       const { heard: spoken, playing, ttsActive: wasTts } = bargeInContext;
       let note = '【打断提示】用户刚才打断了你的上一句。';
@@ -1940,7 +1994,7 @@ async function main() {
       else note += '上一句还没有说出口。';
       note += '被打断的部分没有说完，也没有生效；不要以为用户听到了，也不要把它当成已经答应/已经记下。'
         + '以用户下面这句话为准，用户纠正过的以最新说法为准。';
-      promptText = `${crossChannelNote}${note}\n\n${userText}`;
+      promptText = `${memoryNote}${memoryNote ? '\n\n' : ''}${crossChannelNote}${note}\n\n${userText}`;
       bargeInContext = null;
     }
     const t1 = Date.now();

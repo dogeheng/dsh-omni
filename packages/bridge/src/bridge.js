@@ -33,6 +33,7 @@ import { createAsrService, formatVoiceText, normalizeAsrConfig } from './voice-a
 import { normalizeCallConfig } from './call-config.js';
 import { CallPresence } from './call-presence.js';
 import { recordCallTurn, recordVoiceprintBindings } from './call-memory.js';
+import { buildCallMemoryContext } from './call-memory-context.js';
 import { VoiceprintStore } from './voiceprints.js';
 import { autoSpeakable, createTtsService, normalizeSpeakConfig, redactSpeakConfig, SPEAK_EMOTIONS } from './voice-tts.js';
 import { createSingingService, normalizeSingingConfig, redactSingingConfig } from './singing.js';
@@ -9498,6 +9499,31 @@ async function main() {
             res.end(data);
           } catch (error) {
             sendJson({ ok: false, error: String(error?.message ?? error) }, 500);
+          }
+          return;
+        }
+        // ── 通话读取长期记忆（call-loop 每轮取一小段 prompt block；不写入） ──────
+        if (req.method === 'POST' && url.pathname === '/api/call/memory/context') {
+          const body = await readBody();
+          if (!memory || !cfg.memory?.enabled) {
+            sendJson({ ok: false, block: '', tokens: 0, hits: 0, error: '长期记忆未启用' }, 409);
+            return;
+          }
+          const key = String(body.key ?? '').trim();
+          if (!/^(private|group):\d+$/.test(key)) { sendJson({ ok: false, error: 'key 格式无效' }, 400); return; }
+          try {
+            const result = buildCallMemoryContext({
+              memory,
+              key,
+              text: body.text,
+              userId: body.userId ?? cfg.ownerQQ ?? '',
+              speaker: body.speaker ?? '',
+              ownerQQ: cfg.ownerQQ ?? ''
+            });
+            if (result.hits) log(`通话记忆读取 ${key}：${result.hits} 条 / ${result.tokens} tokens`);
+            sendJson(result);
+          } catch (error) {
+            sendJson({ ok: false, block: '', tokens: 0, hits: 0, error: String(error?.message ?? error) }, 500);
           }
           return;
         }

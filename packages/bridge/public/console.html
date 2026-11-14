@@ -2183,7 +2183,9 @@ button:active:not(:disabled) {
       <div class="row">
         <label style="flex:1">通话内容按文字规则进长期记忆</label>
         <input type="checkbox" id="callMemoryEnabled" style="width:auto">
-        <span class="meta" style="flex:2">只处理一对一；显式“记住…”直接写，普通句子走候选/批量提炼，保留 private/group scope。</span>
+        <label style="flex:1">通话时读取长期记忆</label>
+        <input type="checkbox" id="callMemoryRead" style="width:auto">
+        <span class="meta" style="flex:2">写：显式“记住…”直接写，普通句子走候选；读：每轮注入相关记忆（≤350 tokens）。</span>
       </div>
       <div class="meta" id="callPresenceMsg">通话路由：未连接</div>
       <div class="meta" style="margin:14px 0 8px;border-top:1px solid var(--dsw-alias-border-l1,#e5e7eb);padding-top:12px">
@@ -4036,6 +4038,7 @@ async function loadCallConfig() {
     callEl('callTextBridge').checked = tb.enabled !== false;
     callEl('callTextBridgeOwnerOnly').checked = tb.routeOwnerOnly !== false;
     callEl('callMemoryEnabled').checked = c.memory?.enabled !== false;
+    callEl('callMemoryRead').checked = c.memory?.read !== false;
     const vp = c.voiceprints ?? {};
     callEl('vpEnabled').checked = vp.enabled !== false;
     callEl('vpThreshold').value = vp.threshold ?? 0.72;
@@ -4129,7 +4132,10 @@ async function saveCallConfig() {
         routeOwnerOnly: callEl('callTextBridgeOwnerOnly').checked,
         routeTtlMs: 600000
       },
-      memory: { enabled: callEl('callMemoryEnabled').checked },
+      memory: {
+        enabled: callEl('callMemoryEnabled').checked,
+        read: callEl('callMemoryRead').checked
+      },
       voiceprints: {
         enabled: callEl('vpEnabled').checked,
         threshold: Number(callEl('vpThreshold').value),

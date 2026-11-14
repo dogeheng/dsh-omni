@@ -568,7 +568,8 @@
       "routeTtlMs": 600000
     },
     "memory": {
-      "enabled": true
+      "enabled": true,
+      "read": true
     },
     "voiceprints": {
       "enabled": true,

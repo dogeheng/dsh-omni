@@ -117,7 +117,7 @@ function toVoiceprints(raw) {
 
 function toCallMemory(raw) {
   const r = (raw && typeof raw === 'object' && !Array.isArray(raw)) ? raw : {};
-  return { enabled: r.enabled !== false };
+  return { enabled: r.enabled !== false, read: r.read !== false };
 }
 
 function toTextBridge(raw) {
