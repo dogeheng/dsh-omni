@@ -3849,15 +3849,22 @@ async function main() {
    */
   let lastConversationCompactAt = 0;
   function compactIdleConversationsV2({ idleMs = 7 * 24 * 60 * 60 * 1000, maxConversations = 200, now = Date.now() } = {}) {
-    // 瘦身只关心"还有没有未处理的状态"：挂着的定时器不影响历史能不能清
-    // （会话对象还在，定时器照常跑）。
-    const hasLiveState = (st) => Boolean(st.pendingSleep || (st.unread || []).length > 0);
+    // "还有没有未处理的状态"：有未读、有待生效潜水、正要投递的唤醒、或正在等
+    // 用户回答/审批时都不能清 —— 清掉历史会让那一轮的快照变空。
+    // 周期性的 proactive/replyCheck 定时器不影响：会话对象还在，它们照常跑。
+    const hasLiveState = (key, st) => Boolean(
+      st.pendingSleep
+      || (st.unread || []).length > 0
+      || st.pendingWakeTimer
+      || pendingWakeKeys.has(key)
+      || pending.get(key)
+    );
     const lastSeen = (st) => Math.max(Number(st.lastIncomingAt) || 0, Number(st.lastAiReplyAt) || 0, Number(st.lastActionAt) || 0);
     let compacted = 0;
     for (const [key, st] of socialV2.conversations) {
       const last = lastSeen(st);
       if (!last || now - last < idleMs) continue;
-      if (hasLiveState(st)) continue;
+      if (hasLiveState(key, st)) continue;
       const forwards = seenForwardIds.get(key);
       const hasHistory = (st.recentMessages || []).length > 0
         || (st.seenInbound || []).length > 0
@@ -3865,23 +3872,37 @@ async function main() {
       if (!hasHistory) continue;
       st.recentMessages = [];
       st.seenInbound = [];
-      st.wakeTimes = (st.wakeTimes || []).slice(-20);
-      st.sendTimes = (st.sendTimes || []).slice(-20);
-      st.stickerCollectTimes = Array.isArray(st.stickerCollectTimes) ? st.stickerCollectTimes.slice(-20) : [];
+      // 限频用的是"最近 1 分钟 / 1 小时"的时间戳窗口，所以按时间过滤而不是只留 N 条：
+      // 只留 20 条会在限频值 >20 时把窗口截短，等于放宽了上限。
+      const hourAgo = now - 60 * 60 * 1000;
+      st.wakeTimes = (st.wakeTimes || []).filter((t) => Number(t) >= hourAgo);
+      st.sendTimes = (st.sendTimes || []).filter((t) => Number(t) >= hourAgo);
+      st.stickerCollectTimes = Array.isArray(st.stickerCollectTimes)
+        ? st.stickerCollectTimes.filter((t) => Number(t) >= hourAgo)
+        : [];
       seenForwardIds.set(key, new Set());
       compacted += 1;
     }
     let dropped = 0;
     if (socialV2.conversations.size > maxConversations) {
       const spare = [...socialV2.conversations.entries()]
-        .filter(([, st]) => !(st.recentMessages || []).length && !hasLiveState(st))
+        .filter(([key, st]) => !(st.recentMessages || []).length
+          && !hasLiveState(key, st)
+          // 还握着 DSH 会话映射的不能删：删了下次会拿新 agentToken，
+          // 旧会话里的 MCP 工具全变 403 —— 表现为"能唤醒但发不出任何消息"。
+          && !state.sessions[key])
         .map(([key, st]) => ({ key, last: lastSeen(st) }))
         .sort((a, b) => a.last - b.last);
       for (const item of spare) {
         if (socialV2.conversations.size <= maxConversations) break;
-        // 淘汰前必须把这一个会话的定时器全停掉，否则它们会对着新造的会话空转。
+        // 淘汰前把这一个会话的定时器和索引一起清掉，别留下对着空气的引用。
         try { clearSocialV2Timers(item.key); } catch { /* 没定时器也无所谓 */ }
         pendingWakeKeys.delete(item.key);
+        wakeConfigUpdatedKeys.delete(item.key);
+        markReadCalledKeys.delete(item.key);
+        wakeConfigMissCount.delete(item.key);
+        seenForwardIds.delete(item.key);
+        try { forgetAgentToken(item.key); } catch { /* 索引里没有也无所谓 */ }
         socialV2.conversations.delete(item.key);
         dropped += 1;
       }

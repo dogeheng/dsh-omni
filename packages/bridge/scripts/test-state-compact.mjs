@@ -27,6 +27,9 @@ try {
     st.lastIncomingAt = Date.now() - idleDays * DAY;
     st.lastAiReplyAt = 0;
     st.lastActionAt = 0;
+    // 限频窗口按时间过滤：3 小时前的应当被丢掉，10 分钟前的必须留着
+    st.wakeTimes = [Date.now() - 3 * 60 * 60 * 1000, Date.now() - 10 * 60 * 1000];
+    st.sendTimes = [Date.now() - 3 * 60 * 60 * 1000, Date.now() - 5 * 60 * 1000];
     st.wakeConfig = { ...st.wakeConfig, mode: 'diving', infinite: true, triggers: { ...st.wakeConfig.triggers, keywords: ['在吗'] } };
     return st;
   };
@@ -44,6 +47,8 @@ try {
   assert.deepEqual([...cold.wakeConfig.triggers.keywords], ['在吗'], '唤醒配置必须保留');
   assert.equal(cold.wakeConfig.mode, 'diving', '潜水状态不能被瘦身弄丢');
   assert.ok(cold.lastReadThroughSeq >= 0, '水位字段还在');
+  assert.equal([...cold.wakeTimes].length, 1, '限频窗口只保留最近 1 小时的时间戳');
+  assert.ok(cold.wakeTimes[0] > Date.now() - 60 * 60 * 1000);
 
   assert.ok(withUnread.recentMessages.length > 0, '有未读的会话不动');
   assert.ok(withUnread.unread.length > 0);
@@ -61,10 +66,16 @@ try {
       st.unread = [];
       st.lastIncomingAt = Date.now() - 60 * DAY;
     }
-    const r = h2.compactIdleConversationsV2({ maxConversations: 2 });
-    assert.equal(r.compacted, 3);
-    assert.equal(r.dropped, 1, '超过上限时淘汰最久没动的一个');
-    assert.equal(h2.socialV2.conversations.size, 2, '会话数回到上限');
+    // 一个挂着待投递唤醒 → 不瘦身；一个还握着 DSH 会话映射 → 不能淘汰
+    h2.getSocialV2State('group:456').pendingWakeTimer = { fake: true };
+    h2.state.sessions['group:789'] = 'session-old';
+
+    const r = h2.compactIdleConversationsV2({ maxConversations: 1 });
+    // 挂着待投递唤醒的不瘦身（历史还要用来拼快照）；另外两个照常瘦身
+    assert.equal(r.compacted, 2, '挂着待投递唤醒的那个不能瘦身');
+    assert.equal(r.dropped, 1, '只淘汰既没状态、也没有 DSH 会话映射的那个');
+    assert.equal(h2.socialV2.conversations.has('group:789'), true, '还握着 DSH 会话的不能被淘汰');
+    assert.equal(h2.socialV2.conversations.has('group:111'), false, '其余按上限淘汰');
   } finally {
     await h2.close();
   }
