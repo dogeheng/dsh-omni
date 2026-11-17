@@ -30,6 +30,7 @@ import { startSayServer } from '../src/call-say-server.js';
 import { buildCrossChannelNote } from '../src/call-context.js';
 import { parseSpeakerBinding } from '../src/call-voice-binding.js';
 import { isBackchannel, decideSpeechStartBarge } from '../src/call-barge.js';
+import { createPcmConverter, createScratchJanitor } from '../src/call-audio.js';
 import { parseWindows, pickNewWindow } from '../src/x11-windows.js';
 import {
   normalizeCallConfig, matchCaller, friendNameIndex, CALL_GROUP_GEOMETRY_DEFAULTS
@@ -688,6 +689,7 @@ function execP(cmd, args) {
 class CallWatcher {
   constructor({ container, mode, accept, log, geometry = null, groupGeometry = null, allowIds = [], allowGroups = [], allowNames = [], oneBotUrl = '', oneBotToken = '' }) {
     this.container = container;
+    this.shots = createScratchJanitor();
     this.mode = mode;
     this.accept = accept;
     this.log = log;
@@ -907,6 +909,9 @@ class CallWatcher {
     } catch (error) {
       this.log('call', `群邀请 OCR 失败：${String(error?.message ?? error).slice(0, 120)}`);
       return null;
+    } finally {
+      // 裁剪图只给 OCR 用一次，留着就是往 os.tmpdir() 里扔垃圾。
+      try { fs.unlinkSync(crop); } catch { /* 已不在 */ }
     }
   }
 
@@ -916,10 +921,14 @@ class CallWatcher {
     try {
       const bin = await this._ensureOcr();
       const tmp = path.join(os.tmpdir(), 'qq-ocr-warm.png');
-      await execP('ffmpeg', ['-hide_banner', '-loglevel', 'error', '-y', '-f', 'lavfi', '-i', 'color=c=black:s=16x16', '-frames:v', '1', tmp]);
-      await new Promise((resolve, reject) => {
-        execFile(bin, [tmp], { timeout: 30000 }, (error) => (error ? reject(error) : resolve()));
-      });
+      try {
+        await execP('ffmpeg', ['-hide_banner', '-loglevel', 'error', '-y', '-f', 'lavfi', '-i', 'color=c=black:s=16x16', '-frames:v', '1', tmp]);
+        await new Promise((resolve, reject) => {
+          execFile(bin, [tmp], { timeout: 30000 }, (error) => (error ? reject(error) : resolve()));
+        });
+      } finally {
+        try { fs.unlinkSync(tmp); } catch { /* 已不在 */ }
+      }
       this.log('call', 'OCR 预热完成（群语音自动接听可用）');
     } catch (error) {
       this.ocrDisabled = true;
@@ -971,6 +980,8 @@ class CallWatcher {
   }
 
   async _capture(win, frames = 1) {
+    // 上一批截图（只有本轮识别用得到）先删掉，避免 os.tmpdir() 里越堆越多。
+    this.shots?.dropAll();
     let firstHost = null;
     const inner = `/tmp/call-window-${Date.now()}.png`;
     const x = Math.max(0, win.x);
@@ -980,11 +991,13 @@ class CallWatcher {
       const file = frames > 1 ? inner.replace(/\.png$/, `-${i + 1}.png`) : inner;
       try {
         await execP('docker', ['exec', this.container, 'sh', '-c',
-          `DISPLAY=:1 ffmpeg -hide_banner -loglevel error -y -f x11grab `
+          // 同一条 exec 里顺手清掉容器 /tmp 的旧截图：不额外起进程，也不占容器内存。
+          `rm -f /tmp/call-window-*.png; DISPLAY=:1 ffmpeg -hide_banner -loglevel error -y -f x11grab `
           + `-video_size ${win.width}x${win.height} -i :1+${x},${y} -frames:v 1 ${file}`]);
         const host = path.join(os.tmpdir(), path.basename(file));
         await execP('docker', ['cp', `${this.container}:${file}`, host]);
         this.log('call', `截图 ${host}`);
+        this.shots?.remember(host);
         if (!firstHost) firstHost = host;
       } catch (error) {
         this.log('call', `截图失败：${String(error?.message ?? error).slice(0, 80)}`);
@@ -995,6 +1008,7 @@ class CallWatcher {
 
   close() {
     clearInterval(this.timer);
+    this.shots?.dropAll();
   }
 }
 
@@ -2007,18 +2021,12 @@ async function main() {
     return chunks.length ? chunks : [String(text)];
   }
 
-  /** 任意格式 → 48k 单声道 s16le */
-  function toPcm48(buffer) {
-    return new Promise((resolve, reject) => {
-      const ff = spawn('ffmpeg', ['-hide_banner', '-loglevel', 'error', '-i', 'pipe:0', '-ar', '48000', '-ac', '1', '-f', 's16le', 'pipe:1'], { stdio: ['pipe', 'pipe', 'pipe'] });
-      const chunks = [];
-      let err = '';
-      ff.stdout.on('data', (c) => chunks.push(c));
-      ff.stderr.on('data', (c) => { err += c; });
-      ff.on('close', (code) => (code === 0 ? resolve(Buffer.concat(chunks)) : reject(new Error(`ffmpeg 转码失败：${err.slice(0, 160)}`))));
-      ff.stdin.end(buffer);
-    });
-  }
+  /**
+   * 任意格式 → 48k 单声道 s16le。
+   * 实现见 src/call-audio.js：带 error / stdin EPIPE / 超时处理 —— 以前这里裸写
+   * `ff.stdin.end()`，ffmpeg 提前退出时的 EPIPE 会把整个通话进程打死。
+   */
+  const toPcm48 = createPcmConverter({ timeoutMs: 8000 });
 
   /**
    * 说话。
@@ -2049,6 +2057,7 @@ async function main() {
     lastSpokenText = '';
     const t0 = Date.now();
     let first = true;
+    let spokenParts = 0;
     // 流水线而不是并行：并行请求会在服务端排队，实测第一个包反而更晚
     // （并行 2.2–3.1s vs 串行 1.8–2.0s）。串行的同时 mic 已经在放上一句，
     // 所以第二句的合成和第一句的播放是重叠的。
@@ -2061,11 +2070,25 @@ async function main() {
         log('tts', `「${part}」合成失败：${String(error?.message ?? error).slice(0, 80)}`);
         continue;
       }
-      const pcm = await toPcm48(synth.buffer);
+      let pcm;
+      try {
+        pcm = await toPcm48(synth.buffer);
+      } catch (error) {
+        // 单句转码失败只跳过这一句：以前它在 try 之外，一句失败就把后面所有句子一起丢了，
+        // 用户只听到前半句然后沉默。
+        log('tts', `「${part}」转码失败，跳过：${String(error?.message ?? error).slice(0, 80)}`);
+        continue;
+      }
       if (epoch !== speechEpoch) return;
       await mic.speak(pcm);
+      spokenParts += 1;
       lastSpokenText += part;
       if (first) { log('tts', `首句开口 ${Date.now() - t0}ms（共 ${parts.length} 句）：「${part}」`); first = false; }
+    }
+    if (spokenParts === 0) {
+      // TTS 全挂 / ffmpeg 不可用：这一轮用户只会听到沉默。至少要让人在通话日志里看得到，
+      // 而不是"她没反应"去猜。
+      log('tts', '⚠️ 本轮一句都没能出声（TTS 或 ffmpeg 不可用），用户听到的是沉默');
     }
   }
 
