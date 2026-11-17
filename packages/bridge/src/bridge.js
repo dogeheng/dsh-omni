@@ -1948,11 +1948,11 @@ async function main() {
     let resolveSend;
     let rejectSend;
     const sendPromise = new Promise((resolve, reject) => { resolveSend = resolve; rejectSend = reject; });
-    sendChain = sendChain.then(async () => {
+    enqueueSendLane(key, async () => {
       try {
         if (assertSendAllowed) assertSendAllowed();
-        // 语音条比图片大、要过一次 SILK 转码，给 60s 预算（文本/图片共用同一 sendChain，
-        // 所以这条语音发完之前后面的文本会自然排队，不会插队到语音前面）。
+        // 语音条比图片大、要过一次 SILK 转码，给 60s 预算；同一会话的文字/图片/语音排在同一条
+        // lane 里，所以这条语音发完之前后面的消息会自然排队；别的会话不再陪它一起等。
         const httpUrl = String(cfg.snowluma?.httpUrl || 'http://127.0.0.1:3000').replace(/\/+$/, '');
         const action = kind === 'private' ? 'send_private_msg' : 'send_group_msg';
         const params = kind === 'private'
@@ -2235,7 +2235,7 @@ async function main() {
   /**
    * 把合成好的音频当语音条发出去。走 base64:// 而不是本地路径：SnowLuma 常跑在 Docker 里，
    * 宿主机路径在容器内不可见；而合成结果是我们自己生成的音频，不存在「借语音外发本机文件」的风险。
-   * 与文本/图片共用 sendChain，保证顺序不乱。
+   * 与文本/图片共用同一会话的发送 lane，保证顺序不乱。
    */
   async function sendSynthVoiceV2(key, synth) {
     const assertSendAllowed = captureSendGuard(key);
@@ -2461,14 +2461,15 @@ async function main() {
       segments.push({ type: 'image', data: { file: 'base64://' + image.buffer.toString('base64'), sub_type: 1, summary: '[动画表情]' } });
       return postOneBot(kind === 'private' ? 'send_private_msg' : 'send_group_msg', { ...target, message: segments });
     };
-    // 与文本发送共用 sendChain，保证“先文字后表情”的真人顺序不被并发工具调用打乱。
+    // 与文本发送共用**同一会话**的发送 lane：先文字后表情的真人顺序不会被并发工具调用打乱，
+    // 而别的会话也不会被这条表情（以及它前面 0.8~2s 的真人停顿）排在后面。
     let sendResolve;
     let sendReject;
     const sendResult = new Promise((resolve, reject) => {
       sendResolve = resolve;
       sendReject = reject;
     });
-    sendChain = sendChain.then(async () => {
+    enqueueSendLane(key, async () => {
       try {
         // 真人发表情前通常会有短暂停顿，避免“文字刚发完表情立刻跟上”的机械感。
         await sleep(randInt(800, 2000));
@@ -9685,10 +9686,10 @@ async function main() {
   // 待应答的提问/审批：convKey -> pending
   const pending = new Map(); // key -> { kind, rpcId, sessionId, ... }
 
-  // QQ 发送队列（顺序发送 + 间隔，避免触发频率限制）
-  let sendChain = Promise.resolve();
-  // 按会话分 lane：群内顺序固定，群间不再互相队头阻塞。仅用于文本和合成语音；
-  // 图片/表情等旧路径仍走全局 sendChain，后续可逐步迁移。
+  // QQ 发送队列：**按会话分 lane**。会话内严格顺序（文字 / 图片 / 语音 / 分条都排同一条
+  // lane，既保证"先文字后图片"的真人顺序，也避免频率限制）；会话之间互不队头阻塞。
+  // 旧实现共用一条全局链：某个群发一条要转码 60s 的语音、或一串带 5~10s 间隔的分条，
+  // 会让其它所有群的回复一起排队（日志里表现为"别的群也突然哑了"）。
   const sendLanes = new Map();
   function enqueueSendLane(key, task) {
     const k = String(key || '');
@@ -9740,15 +9741,15 @@ async function main() {
    *
    * 为什么不在 OneBot 侧直接传 URL：那等于让 QQ/OneBot 进程去拉任意地址，
    * 绕开桥接的 SSRF/体积/格式校验。这里只接受已经过 safeFetchBuffer + 图片魔数校验的
-   * Buffer；和文字消息共用 sendChain，保证同一条回复里的文字/图片顺序不乱。
+   * Buffer；和文字消息共用同一会话的发送 lane，保证同一条回复里的文字/图片顺序不乱。
    */
   function sendImageToQQ(key, buffer, replyToMessageId, atUserId) {
     const assertSendAllowed = captureSendGuard(key);
     const [kind, id] = key.split(':');
     const file = 'base64://' + buffer.toString('base64');
     lastSendFailed.delete(key);
-    sendChain = sendChain
-      .then(async () => {
+    return enqueueSendLane(key, async () => {
+      try {
         assertSendAllowed();
         const message = [];
         if (replyToMessageId !== undefined && replyToMessageId !== null && String(replyToMessageId).trim() !== '') {
@@ -9761,13 +9762,12 @@ async function main() {
           ? { user_id: Number(id), message }
           : { group_id: Number(id), message };
         await withTimeout(bot.request(action, payload), SEND_TIMEOUT_MS, `QQ图片 ${kind}:${id}`);
-      })
-      .catch((error) => {
+      } catch (error) {
         lastSendFailed.set(key, true);
         log(`QQ 图片发送失败 (${key}):`, error?.message ?? error);
-      })
-      .then(() => sleep(cfg.sendDelayMs));
-    return sendChain;
+      }
+      await sleep(cfg.sendDelayMs);
+    });
   }
 
   /** 上一批发往该会话的消息是否全部成功。 */
@@ -9925,8 +9925,9 @@ async function main() {
     return { main: main.filter(Boolean), followUp: null };
   }
 
-  // 分条发送：与 sendToQQ 共用同一 sendChain，严格顺序；条间随机间隔，
+  // 分条发送：与 sendToQQ 共用同一会话的发送 lane，严格顺序；条间随机间隔，
   // 有概率使用长间隔（错落感）；最后一条后不再 sleep。
+  // 间隔必须留在 lane 内部：否则别的会话会插进这串消息的间隔里，顺序全乱。
   function sendBurstToQQ(key, messages, socialCfgOrMin, maybeMax) {
     const assertSendAllowed = captureSendGuard(key);
     const [kind, id] = key.split(':');
@@ -9944,30 +9945,29 @@ async function main() {
     }
 
     const sent = [];
+    let tail = Promise.resolve();
     for (let i = 0; i < messages.length; i++) {
       const msg = redactKnownTokensOnly(messages[i]);
       const isLast = i === messages.length - 1;
-      sendChain = sendChain
-        .then(async () => {
+      const useLong = longProb > 0 && Math.random() < longProb;
+      const delay = isLast ? 0 : (useLong ? randInt(longMin, longMax) : randInt(min, max));
+      tail = enqueueSendLane(key, async () => {
+        try {
           assertSendAllowed();
           if (kind === 'private') await withTimeout(bot.sendPrivateMessage(Number(id), text(escapeCqText(msg))), SEND_TIMEOUT_MS, `QQ发送 ${kind}:${id}`);
           else await withTimeout(bot.sendGroupMessage(Number(id), text(escapeCqText(msg))), SEND_TIMEOUT_MS, `QQ发送 ${kind}:${id}`);
           sent.push(msg);
-        })
-        .catch((error) => {
+        } catch (error) {
           log(`QQ 发送失败 (${key}):`, error?.message ?? error);
           // 与 sendToQQ 同样的失败记账。少了这一步，调用方 `lastSendSucceeded(key)`
           // 会把「一条都没发出去」当成「我已经说过话了」：刷新 lastActiveMessageAt /
           // lastAiReplyAt 并抑制后续接话，而群里什么都没收到 —— 静默丢回复。
           lastSendFailed.set(key, true);
-        });
-      if (!isLast) {
-        const useLong = longProb > 0 && Math.random() < longProb;
-        const delay = useLong ? randInt(longMin, longMax) : randInt(min, max);
-        sendChain = sendChain.then(() => sleep(delay));
-      }
+        }
+        if (!isLast) await sleep(delay);
+      });
     }
-    return sendChain.then(() => sent);
+    return tail.then(() => sent);
   }
 
 
@@ -10467,28 +10467,27 @@ async function main() {
     const sent = [];
     const failed = [];
     const results = messages.map((msg, index) => ({ index, ok: false, text: msg }));
+    let tail = Promise.resolve();
     for (let i = 0; i < messages.length; i++) {
       const msg = messages[i];
       const useReply = i === 0 ? replyToMessageId : null;
       const useAt = i === 0 ? atUserId : null;
-      sendChain = sendChain
-        .then(async () => {
+      const gap = i < delays.length ? delays[i] : 0;
+      tail = enqueueSendLane(key, async () => {
+        try {
           assertSendAllowed();
           await onebotSend(kind, id, msg, useReply, useAt);
           sent.push(msg);
           results[i].ok = true;
-        })
-        .catch((error) => {
+        } catch (error) {
           log(`QQ 发送失败 (${key}):`, error?.message ?? error);
           failed.push(error);
           results[i].error = String(error?.message ?? error).slice(0, 160);
-        });
-      if (i < delays.length) {
-        const d = delays[i];
-        sendChain = sendChain.then(() => sleep(d));
-      }
+        }
+        if (gap) await sleep(gap);
+      });
     }
-    return sendChain.then(() => {
+    return tail.then(() => {
       if (failed.length > 0) {
         const err = new Error(`QQ 发送失败 ${failed.length}/${messages.length} 条：${failed[0]?.message ?? '未知错误'}`);
         err.sent = sent.slice();

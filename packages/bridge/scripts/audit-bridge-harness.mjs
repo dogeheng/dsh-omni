@@ -148,7 +148,7 @@ export async function bridgeHarness({ config = {}, savedState, files = {}, globa
   source = source.replace('  bot.onPrivateMessage(async (event) => {', `
   return {
     ensureSession, ensureSlangLearnerSession, resolvePresetName, deliverPrompt, drainPromptQueue,
-    sendToQQ, sendStickerV2, handleIncoming, startConsoleServer, cfg, state, api, promptQueues,
+    sendToQQ, sendStickerV2, sendBurstToQQ, sendMessagesV2, sendImageToQQ, handleIncoming, startConsoleServer, cfg, state, api, promptQueues,
     getSocialV2State, appendSocialV2Message, recordSentMessagesV2,
     buildWakePromptV2, buildWakeSnapshotV2, sendWakePromptV2, socialV2,
     roleHintForMode, readPresetPromptText,
