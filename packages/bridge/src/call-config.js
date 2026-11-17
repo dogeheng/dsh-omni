@@ -6,6 +6,8 @@
  * （fail-closed）。白名单可以写 QQ 号，运行时用 OneBot 的 get_friend_list 把号码换成昵称/备注。
  */
 
+import { DEFAULT_EARLY_BARGE_MS, resolveEarlyBargeMs } from './call-barge.js';
+
 /** 来电浮层的几何。默认值是 800x600 窗口实测量的；QQ 换界面才需要改。 */
 export const CALL_GEOMETRY_DEFAULTS = Object.freeze({
   avatarSize: 116,      // 头像直径
@@ -35,7 +37,7 @@ export const CALL_DEFAULTS = Object.freeze({
   },
   fullDuplex: {
     softBarge: true,
-    earlyBargeMs: 600
+    earlyBargeMs: DEFAULT_EARLY_BARGE_MS
   },
   voiceprints: {
     enabled: true,
@@ -113,7 +115,8 @@ function toFullDuplex(raw) {
   const early = Number(r.earlyBargeMs);
   return {
     softBarge: r.softBarge !== false,
-    earlyBargeMs: Number.isFinite(early) ? Math.min(2000, Math.max(0, Math.round(early))) : 600
+    // resolveEarlyBargeMs 会把"低到 ASR 来不及出结果"的值抬到下限（0 = 关闭）。
+    earlyBargeMs: Math.min(2000, resolveEarlyBargeMs(early))
   };
 }
 

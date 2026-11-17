@@ -578,7 +578,7 @@
     },
     "fullDuplex": {
       "softBarge": true,
-      "earlyBargeMs": 600
+      "earlyBargeMs": 1200
     }
   }
 }

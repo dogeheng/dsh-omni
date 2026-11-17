@@ -29,7 +29,7 @@ import { readConsoleToken } from '../src/call-presence.js';
 import { startSayServer } from '../src/call-say-server.js';
 import { buildCrossChannelNote } from '../src/call-context.js';
 import { parseSpeakerBinding } from '../src/call-voice-binding.js';
-import { isBackchannel } from '../src/call-barge.js';
+import { isBackchannel, decideSpeechStartBarge } from '../src/call-barge.js';
 import { parseWindows, pickNewWindow } from '../src/x11-windows.js';
 import {
   normalizeCallConfig, matchCaller, friendNameIndex, CALL_GROUP_GEOMETRY_DEFAULTS
@@ -215,9 +215,10 @@ function rms(frame) {
 
 /** 能量 VAD：自适应噪声底 + 起始/收尾滞回。够用来切人声，不追求抗噪。 */
 class Vad {
-  constructor({ onUtterance, onSpeechStart, log }) {
+  constructor({ onUtterance, onSpeechStart, onDiscard, log }) {
     this.onUtterance = onUtterance;
     this.onSpeechStart = onSpeechStart || (() => {});
+    this.onDiscard = onDiscard || (() => {});
     this.log = log;
     this.state = 'idle';
     this.noise = 0.002;
@@ -280,6 +281,9 @@ class Vad {
     this.silenceRun = 0;
     if (seconds < 0.45) {
       this.log('vad', `丢弃过短片段 ${seconds.toFixed(2)}s`);
+      // 咳嗽/关门/碰麦：没有 ASR 结果，不构成插话。挂着的提前打断定时器必须在这里清掉，
+      // 否则到了阈值照样把她掐断（日志里就是"提前打断"之后什么都没有）。
+      this.onDiscard(seconds);
       return;
     }
     this.log('vad', `一句话 ${seconds.toFixed(2)}s（${reason}）`);
@@ -2312,9 +2316,16 @@ async function main() {
       const playing = mic.isSpeaking();
       const speaking = playing || ttsActive;
       const thinking = brain.isBusy();
-      if (!speaking && !thinking) return;
+      const decision = decideSpeechStartBarge({ speaking, thinking, softBarge: fullDuplexCfg.softBarge !== false });
+      if (decision === 'none') return;
+      if (decision === 'queue') {
+        // 她还在想（没出声）：取消整轮 = 用户问完只听到沉默（线上 109 次取消 / 21 次完
+        // 整回合）。让这一轮答完，用户这句按普通语音入队，下一轮再答。
+        log('turn', '思考中用户开口：不取消这一轮，这句排到下一轮');
+        return;
+      }
       // 全双工软打断：她出声时用户开口，先不掐，等 ASR 听完再判断是应声还是真插话。
-      if (speaking && fullDuplexCfg.softBarge) {
+      if (decision === 'wait') {
         if (bargeCandidate?.earlyTimer) clearTimeout(bargeCandidate.earlyTimer);
         bargeCandidate = { heard: lastSpokenText, playing, ttsActive, thinking, at: Date.now(), earlyFired: false, earlyTimer: null };
         const earlyMs = Number(fullDuplexCfg.earlyBargeMs) || 0;
@@ -2335,6 +2346,10 @@ async function main() {
         return;
       }
       doBargeIn(speaking, thinking, playing);
+    },
+    onDiscard: () => {
+      if (bargeCandidate?.earlyTimer) clearTimeout(bargeCandidate.earlyTimer);
+      bargeCandidate = null;
     },
     onUtterance: (pcm, seconds) => {
       if (bargeCandidate) {
