@@ -9790,6 +9790,21 @@ async function main() {
   }
 
   /**
+   * 事件流循环里的"通知类"发送：不等它发完。
+   *
+   * 这些消息（拦截提示、出错提示、停止提示、提问/审批提示）不影响回合记账，
+   * 而 sendToQQ 内部还要 sleep(sendDelayMs) + 一次 OneBot 往返（最长 SEND_TIMEOUT_MS）。
+   * 在 for await 循环里 await 它们，会让所有会话的 turn/end 一起排队 —— 这正是
+   * "某个群一直发语音/慢发送，别的群也跟着卡"的放大因子。
+   * 顺序仍然由每会话 lane 保证，失败只记日志。
+   */
+  function sendNotice(key, message, label = '通知') {
+    void sendToQQ(key, message).catch((error) => {
+      log(`${label}发送失败 (${key}):`, error?.message ?? error);
+    });
+  }
+
+  /**
    * 发一张图片（网络图片被桥接下载并校验后以 base64 交给 OneBot）。
    *
    * 为什么不在 OneBot 侧直接传 URL：那等于让 QQ/OneBot 进程去拉任意地址，
@@ -14755,7 +14770,7 @@ async function main() {
                   log(`⚠️ 回复被安全策略拦截 (${key})，疑似包含敏感信息${hasKnownToken ? '（含会话令牌）' : ''}`);
                   appendActivity(`${key} agent 回复被拦截（疑似敏感信息${hasKnownToken ? '/会话令牌' : ''}）`);
                   if (cfg.security?.interceptNotify !== false) {
-                    await sendToQQ(key, '⚠️ 本条回复因疑似包含敏感信息（路径/凭据/会话令牌）被安全策略拦截，已记录并通知管理员。');
+                    sendNotice(key, '⚠️ 本条回复因疑似包含敏感信息（路径/凭据/会话令牌）被安全策略拦截，已记录并通知管理员。', '拦截提示');
                   }
                   if (isFarewell) {
                     const st = socialState(key);
@@ -14836,7 +14851,7 @@ async function main() {
                 log(`⚠️ agent 处理出错 (${key})：${safeMsg}`);
                 appendActivity(`${key} agent 处理出错：${safeMsg.slice(0, 80)}`);
                 // 不把内部报错原文发到群里（含 provider/协议措辞）；私聊只给一句人话。
-                if (key.startsWith('private:')) await sendToQQ(key, '⚠️ 刚才处理出错了，稍后再试一次。');
+                if (key.startsWith('private:')) sendNotice(key, '⚠️ 刚才处理出错了，稍后再试一次。', '出错提示');
                 if (isFarewell) {
                   const st = socialState(key);
                   if (st.phase === 'exiting') {
@@ -14848,7 +14863,7 @@ async function main() {
                 }
               } else if (ended.reason.kind === 'aborted') {
                 log(`⏹️ 回合被中止 (${key})`);
-                await sendToQQ(key, '⏹️ 已停止');
+                sendNotice(key, '⏹️ 已停止', '停止提示');
                 if (isFarewell) {
                   const st = socialState(key);
                   if (st.phase === 'exiting') {
@@ -14913,7 +14928,7 @@ async function main() {
               }
               return s;
             });
-            await sendToQQ(key, '❓ agent 需要你回答：\n' + lines.join('\n') + '\n（直接回复选项文字或输入你的回答）');
+            sendNotice(key, '❓ agent 需要你回答：\n' + lines.join('\n') + '\n（直接回复选项文字或输入你的回答）', '提问提示');
             await registerPending(key, { kind: 'question', rpcId: envelope.rpcId, sessionId: frame.sessionId, clientId: frame.clientId, eventId: frame.eventId, questions: frame.questions });
           } else if (frame.type === 'approval/requested') {
             const key = reverse.get(frame.sessionId);
@@ -14928,7 +14943,7 @@ async function main() {
             const sensitiveTool = shouldAuditKey(key) && SENSITIVE_RE.test(rawToolName);
             if (sensitiveTool) log(`⚠️ 审批工具名含敏感信息，已隐藏 (${key})`);
             const safeToolName = sensitiveTool ? '（含敏感信息，已隐藏）' : rawToolName;
-            await sendToQQ(key, `🔐 agent 请求审批：${safeToolName}${reason}\n回复「通过」或「拒绝」`);
+            sendNotice(key, `🔐 agent 请求审批：${safeToolName}${reason}\n回复「通过」或「拒绝」`, '审批提示');
             await registerPending(key, { kind: 'approval', rpcId: envelope.rpcId, sessionId: frame.sessionId, clientId: frame.clientId, eventId: frame.eventId, toolName: frame.toolName });
           } else if (frame.type === 'stream/error') {
             log('事件流错误:', frame.error);

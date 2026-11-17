@@ -14,6 +14,10 @@ import path from 'node:path';
 import { createHash, createHmac, randomUUID } from 'node:crypto';
 import YAML from 'js-yaml';
 import { AbstractApiClient } from '@deepseek-ai/dsh-host-apiproxy/client';
+import { createBoundedQueue } from './bounded-queue.js';
+
+/** mux 事件中转队列的上限：超过就丢最旧（正常情况下远达不到）。 */
+const MUX_INBOX_MAX = 10000;
 
 /** DSH home：凭据文件与（历史）启动日志都在这里。 */
 export function resolveDshHome() {
@@ -696,7 +700,17 @@ export class NodeApiClient extends AbstractApiClient {
     const url = new URL('/api/remote.mux', this.baseUrl);
     url.protocol = url.protocol === 'https:' ? 'wss:' : 'ws:';
     const socket = new WebSocket(url, { headers: { cookie: this.cookie } });
-    const inbox = [];
+    // 有界：消费端（bridge 的 for await 循环）会 await QQ 发送，一次慢发送就能让这里
+    // 堆积。旧实现是无上限数组，长连接跑久了就是慢性内存增长。
+    let inboxWarned = false;
+    const inbox = createBoundedQueue({
+      max: MUX_INBOX_MAX,
+      onDrop: (item, dropped) => {
+        if (inboxWarned) return;
+        inboxWarned = true;
+        console.warn(`[mux] 事件积压超过 ${MUX_INBOX_MAX} 条，开始丢弃最旧事件（kind=${item?.kind ?? '?'}）；消费端可能被慢发送阻塞`);
+      }
+    });
     let wake;
     let socketOpen = false;
     let eventStreamId = null;
