@@ -1699,6 +1699,19 @@ async function main() {
       enqueueExternalSpeech('我没听出刚才谁在说话，等有人再说一句，你再告诉我。');
       return true;
     }
+    // 认错了：把这一通话里的绑定取消掉。注意**不动**声纹库里的记录 ——
+    // 那个名字可能是之前正常注册过的真人，删掉就再也认不回来了。
+    if (binding.action === 'unbind') {
+      const before = speakerTracker.setName(target.speakerId, '', '');
+      for (let i = callBindings.length - 1; i >= 0; i--) {
+        if (callBindings[i].speakerId === target.speakerId) callBindings.splice(i, 1);
+      }
+      log('speaker', `通话绑定取消：${target.speakerId} 不再是「${binding.name}」`);
+      enqueueExternalSpeech(before
+        ? `好，刚才那位不算${binding.name}，这通电话里我不认这个名字了。`
+        : `刚才那位本来就没有名字，不用改。`);
+      return true;
+    }
     const centroid = speakerTracker.getCentroid(target.speakerId);
     if (!centroid) {
       enqueueExternalSpeech('刚才那段声音不够清楚，没存上声纹。');
@@ -1721,7 +1734,9 @@ async function main() {
           qq,
           centroid,
           samplePcmBase64: samplePcm.toString('base64'),
-          source: 'call'
+          source: 'call',
+          // 改口（"不是X，是Y"）是使用者明确的更正：允许覆盖"更像另一个人"的冲突检查。
+          force: binding.action === 'rebind'
         }),
         signal: AbortSignal.timeout(10000)
       });
@@ -1733,10 +1748,14 @@ async function main() {
       log('speaker', `通话绑定：${target.speakerId} → ${record.name}${record.qq ? `（${record.qq}）` : ''}`);
       enqueueExternalSpeech(binding.self
         ? '好，你的声线我记下了。'
-        : `记住了，刚才说话的是${record.name}。`);
+        : binding.action === 'rebind'
+          ? `改过来了：刚才说话的是${record.name}，不是${binding.from}。`
+          : `记住了，刚才说话的是${record.name}。`);
     } catch (error) {
-      log('speaker', `通话声纹注册失败：${String(error?.message ?? error).slice(0, 120)}`);
-      enqueueExternalSpeech('声纹没存上，你再说一次试试。');
+      const detail = String(error?.message ?? error);
+      log('speaker', `通话声纹注册失败：${detail.slice(0, 120)}`);
+      // 冲突（这段声音更像另一个已注册的人）要把原因说清楚，否则用户只会反复重试。
+      enqueueExternalSpeech(/更像/.test(detail) ? detail.slice(0, 120) : '声纹没存上，你再说一次试试。');
     }
     return true;
   }

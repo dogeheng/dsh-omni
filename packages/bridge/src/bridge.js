@@ -9727,8 +9727,14 @@ async function main() {
               centroid,
               samples: 1,
               source: 'call',
-              samplePcm
+              samplePcm,
+              // 用户在通话里明确改口（"不是X，是Y"）时带 force；普通注册仍走冲突检查。
+              force: body.force === true
             });
+            if (record.conflict) {
+              sendJson({ ok: false, conflict: true, error: record.error, voiceprint: { name: record.voiceprint?.name ?? '' } }, 409);
+              return;
+            }
             log(`通话声纹：注册 ${record.name}（${record.id}）`);
             sendJson({
               ok: true,

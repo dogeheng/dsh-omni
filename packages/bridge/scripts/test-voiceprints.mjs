@@ -56,6 +56,21 @@ try {
   assert.equal(store.list().length, 1);
   console.log('  ✅ voiceprints：注册/试听样本/匹配/合并/重命名/删除');
 
+  // 冲突检查：这段声音已经很确定地是「李四」的，不能再按「王五」混进另一个质心。
+  // 旧实现会按 1/(N+1) 加权平均，越注册越偏，最后两个人都认错。
+  const conflict = store.enroll({ name: '王五', centroid: li, samples: 1 });
+  assert.equal(conflict.conflict, true, '同一段声音换名字注册要拒绝');
+  assert.match(String(conflict.error), /更像「李四」/);
+  assert.equal(store.findByName('王五'), null, '冲突时不能落库');
+  assert.equal(store.list().length, 1);
+
+  // 用户明确改口/确认时 force 才允许写入
+  const forced = store.enroll({ name: '王五', centroid: li, samples: 1, force: true });
+  assert.equal(forced.conflict, undefined);
+  assert.equal(forced.name, '王五');
+  assert.equal(store.list().length, 2);
+  console.log('  ✅ 声纹冲突检查：默认拒绝换名注册，force 才允许');
+
   console.log('\nPASS');
 } finally {
   fs.rmSync(root, { recursive: true, force: true });

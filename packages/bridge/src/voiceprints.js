@@ -158,12 +158,20 @@ export class VoiceprintStore {
   /**
    * 注册/追加一条声纹。已有同 QQ 或同名记录时做加权平均（few-shot）。
    */
-  enroll({ name, qq = '', centroid, samples = 1, source = 'manual', samplePcm = null, sampleRate = 16000 } = {}) {
+  enroll({ name, qq = '', centroid, samples = 1, source = 'manual', samplePcm = null, sampleRate = 16000, force = false } = {}) {
     const cleanN = cleanName(name);
     const cleanQ = cleanQq(qq);
     if (!Array.isArray(centroid) || centroid.length < 32) throw new Error('centroid 维度无效');
     const vec = normalize(centroid);
     const existing = (cleanQ && this.findByQq(cleanQ)) || this.findByName(cleanN);
+    // 冲突检查：这段声音已经很确定地属于**另一个名字**时，默认拒绝，避免把陌生人的
+    // 矢量按 1/(N+1) 混进既有质心（越注册越偏，最后两个人都认错）。force=true 才合并。
+    if (!existing && !force) {
+      const hit = this.match(vec);
+      if (hit && hit.name && hit.name !== cleanN) {
+        return { conflict: true, voiceprint: hit, error: `这段声音更像「${hit.name}」（相似度 ${hit.score.toFixed(2)}），没有写入；确认是同一个人请用 force 或先删掉旧记录` };
+      }
+    }
     const id = existing?.id || voiceprintId({ name: cleanN, qq: cleanQ });
     const now = Date.now();
     let record;
@@ -237,7 +245,10 @@ export class VoiceprintStore {
 
   /** 与声纹库比，返回最佳命中（阈值 + 与第二名的间隔）。 */
   match(centroid, { threshold = DEFAULT_THRESHOLD, margin = DEFAULT_MARGIN } = {}) {
-    if (!Array.isArray(centroid) || centroid.length < 32) return null;
+    // 归一化后是 Float32Array：这里既接受普通数组也接受 typed array，
+    // 否则"注册前查重"会静默查不到（enroll 内部传的就是 Float32Array）。
+    const isVector = Array.isArray(centroid) || ArrayBuffer.isView(centroid);
+    if (!isVector || centroid.length < 32) return null;
     const vec = normalize(centroid);
     const scored = [];
     for (const record of this.all()) {
