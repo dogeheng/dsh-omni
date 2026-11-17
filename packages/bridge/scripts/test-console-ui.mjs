@@ -265,9 +265,15 @@ try {
     for (const request of actual) {
       if (request.path === '/api/social') delete request.body.enabled;
       if (request.path === '/api/socialV2/config') {
-        for (const key of ['voice', 'asr', 'speak', 'singing']) delete request.body[key];
-        for (const key of ['sendProbability', 'nudgeAfterSend', 'nudgeMinChars']) delete request.body.sticker[key];
-        for (const key of ['sendVoice', 'sendImage', 'addSticker', 'speak', 'sing']) delete request.body.tools[key];
+        // Project out everything this fixture/baseline predates (voice IO, singing, sticker
+        // probability, sandbox/media/session/reminders/alerts, context wake & catch-up,
+        // initial prompt cap and the two new tool switches). Their payloads are covered by
+        // test-console-config-fields.mjs against the real bridge endpoint.
+        for (const key of ['voice', 'asr', 'speak', 'singing', 'sandbox', 'media', 'session', 'reminders', 'alerts', 'initialPromptMaxChars']) delete request.body[key];
+        if (request.body.sticker) for (const key of ['sendProbability', 'nudgeAfterSend', 'nudgeMinChars']) delete request.body.sticker[key];
+        if (request.body.tools) for (const key of ['sendVoice', 'sendImage', 'addSticker', 'speak', 'sing', 'getBalance', 'fileIssue']) delete request.body.tools[key];
+        if (request.body.wake) for (const key of ['mediaProbability', 'mediaCooldownMs', 'skipEmptyReplyCheck', 'forceAnyMessage']) delete request.body.wake[key];
+        if (request.body.context) for (const key of ['inlineWakeMessages', 'wakeMessageLimit', 'wakeRecentLimit', 'wakeMaxChars', 'catchUp']) delete request.body.context[key];
       }
     }
     assert.equal(actual.length, expected.length, 'Contract request count changed');

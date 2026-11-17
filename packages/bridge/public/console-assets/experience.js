@@ -93,6 +93,7 @@ window.createConsoleExperience = function ({ navigate, refreshVoice }) {
   const featureActions = make('div', 'row'); featureActions.append(featureSaveProxy, featureStatus); vision.append(featureActions);
   new MutationObserver(() => { featureStatus.textContent = $('featureMsg').textContent; }).observe($('featureMsg'), { childList: true, subtree: true });
   vision.append(jumpButton('查看相关工具权限', 'reference', 'v2Tools'));
+  moveDetail('v2MediaMaxMb', vision, '图片与视频上限', '单条消息里图片 / 表情的体积、像素与数量上限');
 
   const hearing = section('section-hearing', 'hearing', '语音识别 · ASR');
   const voice = section('section-voice', 'voice', '语音合成 · TTS', '试听使用已保存的参数。调整音色后，请先保存，再试听。');
@@ -133,16 +134,18 @@ window.createConsoleExperience = function ({ navigate, refreshVoice }) {
   const diagnostics = section('section-ai-diagnostics', 'operations', 'AI 反馈与工具日志');
   moveDetail('v2FeedbackMaxLength', diagnostics, '反馈设置', '查看她遇到的问题');
   moveDetail('v2ToolLogLoad', diagnostics, '工具调用日志', '查看调用参数及成功或失败原因');
+  moveDetail('v2RemindersEnabled', diagnostics, '提醒事项', '把群友反馈的处理项写进 macOS 提醒事项');
+  moveDetail('v2AlertsEnabled', diagnostics, '站外告警', 'QQ 发不出消息时，用系统通知或 webhook 通知你');
 
   // Four shallow sections replace the long list of unrelated disclosures.
   const behavior = $('section-social-v2');
   const behaviorNav = make('div', 'segmented behavior-nav');
   behaviorNav.setAttribute('role', 'tablist'); behaviorNav.setAttribute('aria-label', '聊天习惯分区');
   const paneDefs = [
-    ['daily', '日常参与', [['v2ProactiveEnabled', '冷场时主动冒泡', '群里安静下来时，偶尔找点话题', true], ['v2RecSleepMin', '默认参与方式', '给 AI 的推荐值，AI 可以自主调整', false]]],
+    ['daily', '日常参与', [['v2ProactiveEnabled', '冷场时主动冒泡', '群里安静下来时，偶尔找点话题', true], ['v2RecSleepMin', '默认参与方式', '给 AI 的推荐值，AI 可以自主调整', false], ['v2WakeMediaProbability', '媒体唤醒与兜底', '纯图片 / 表情消息的唤醒概率，以及空回合与强制唤醒开关', false]]],
     ['rhythm', '回复节奏', [['v2BurstEnabled', '消息与分条', '控制消息长度、条数与发送间隔', true], ['v2WaitDefaultMs', '等对方说完', '减少抢话，并在发言后检查回复', false]]],
-    ['rules', '边界与资源', [['v2SleepMinMs', '唤醒硬限制', '桥接强制执行，AI 不能绕过', true], ['v2ContextRecentLimit', '上下文用量', '决定每次能读取多少最近消息', false]]],
-    ['conversations', '会话设置', [['v2SessionSelect', '选择会话', '选择后自动带入下面的会话输入框', true], ['v2InitPromptKey', '首次见面的背景', '只在该会话首次唤醒时提供', false], ['v2StateKey', '当前会话状态', '查看状态或立即唤醒', false], ['v2WakeKey', '下次唤醒条件', '查看倒计时和触发条件', false]]],
+    ['rules', '边界与资源', [['v2SleepMinMs', '唤醒硬限制', '桥接强制执行，AI 不能绕过', true], ['v2ContextRecentLimit', '上下文用量', '决定每次能读取多少最近消息', false], ['v2SandboxEnabled', '受限文件工作区', '给 AI 一个只能读写固定目录的文件工作区', false]]],
+    ['conversations', '会话设置', [['v2SessionSelect', '选择会话', '选择后自动带入下面的会话输入框', true], ['v2SessionHotReloadPersona', '会话生命周期', '人格热重载、每轮新会话与空闲退役', false], ['v2InitPromptKey', '首次见面的背景', '只在该会话首次唤醒时提供', false], ['v2StateKey', '当前会话状态', '查看状态或立即唤醒', false], ['v2WakeKey', '下次唤醒条件', '查看倒计时和触发条件', false]]],
   ];
   const paneButtons = new Map();
   const panes = new Map();
@@ -195,7 +198,7 @@ window.createConsoleExperience = function ({ navigate, refreshVoice }) {
   v2Pages.add('memory');
   const dirty = new Set();
   let selectedPage = 'overview';
-  const tracked = new Set([...document.querySelectorAll('input[id^="v2"],select[id^="v2"],textarea[id^="v2"],[data-v2-tool]')].filter(input => !['v2InitPromptKey', 'v2InitPromptText', 'v2MemoryKey', 'v2WakeKey', 'v2StateKey', 'v2SessionSelect'].includes(input.id)));
+  const tracked = new Set([...document.querySelectorAll('input[id^="v2"],select[id^="v2"],textarea[id^="v2"],[data-v2-tool]')].filter(input => !['v2InitPromptKey', 'v2InitPromptText', 'v2MemoryKey', 'v2WakeKey', 'v2StateKey', 'v2SessionSelect', 'v2CallRouteTtlSec', 'v2CallTurnMode', 'v2CallTurnThreshold', 'v2CallTurnContinuationMs', 'v2CallTurnMaxWaitMs'].includes(input.id)));
   const valueOf = input => input.type === 'checkbox' ? String(input.checked) : input.value;
   let savedValues = new Map();
   const snapshotValues = () => { savedValues = new Map([...tracked].map(input => [input, valueOf(input)])); };
@@ -347,7 +350,7 @@ window.createConsoleExperience = function ({ navigate, refreshVoice }) {
   grid.append(homeStatus);
 
   // Human-readable tool names; technical names remain searchable in their own captions.
-  const toolNames = { getPrompt: '读取角色与规则', getUnread: '查看未读消息', getRecent: '回看聊天记录', socialState: '了解当前状态', sendGroup: '发群消息', sendPrivate: '发私聊消息', reply: '引用回复', sendBurst: '分条发送', sendMessage: '发送消息', sendPoke: '拍一拍', waitMessages: '等待新消息', feedback: '报告问题', wakeConfig: '安排下次唤醒', getImages: '理解聊天图片', getMessageImages: '理解聊天图片', getStickerImage: '看懂收藏表情', sendSticker: '发送收藏表情', sendImage: '发送网络图片', collectSticker: '收藏群友表情', addSticker: '收藏网络图片', getSelfImage: '查看自己的形象', stickerNote: '记录表情含义', setStickerRemark: '修改表情备注', sendVoice: '发送语音库音频', speak: '合成语音' };
+  const toolNames = { getPrompt: '读取角色与规则', getBalance: '查看账户余额', fileIssue: '反馈问题到提醒事项', getUnread: '查看未读消息', getRecent: '回看聊天记录', socialState: '了解当前状态', sendGroup: '发群消息', sendPrivate: '发私聊消息', reply: '引用回复', sendBurst: '分条发送', sendMessage: '发送消息', sendPoke: '拍一拍', waitMessages: '等待新消息', feedback: '报告问题', wakeConfig: '安排下次唤醒', getImages: '理解聊天图片', getMessageImages: '理解聊天图片', getStickerImage: '看懂收藏表情', sendSticker: '发送收藏表情', sendImage: '发送网络图片', collectSticker: '收藏群友表情', addSticker: '收藏网络图片', getSelfImage: '查看自己的形象', stickerNote: '记录表情含义', setStickerRemark: '修改表情备注', sendVoice: '发送语音库音频', speak: '合成语音' };
   const toolList = $('v2Tools');
   const toolSections = new Map();
   for (const label of [...toolList.children]) {

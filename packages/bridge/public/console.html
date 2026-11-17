@@ -2089,6 +2089,8 @@ button:active:not(:disabled) {
         <label class="v2-tool-item"><input type="checkbox" data-v2-tool="getUnread"> <span><b>qq_get_unread_messages</b><span class="meta">查看未读消息，不自动标记已读</span></span></label>
         <label class="v2-tool-item"><input type="checkbox" data-v2-tool="getRecent"> <span><b>qq_get_recent_messages</b><span class="meta">查看最近消息，支持 offset 扩大范围</span></span></label>
         <label class="v2-tool-item"><input type="checkbox" data-v2-tool="socialState"> <span><b>qq_social_state</b><span class="meta">查看当前 WakeConfig、未读数、上次唤醒原因等</span></span></label>
+        <label class="v2-tool-item"><input type="checkbox" data-v2-tool="getBalance"> <span><b>qq_get_balance</b><span class="meta">查询主人的 DeepSeek 账户余额（只读，仅主人私聊可用）</span></span></label>
+        <label class="v2-tool-item"><input type="checkbox" data-v2-tool="fileIssue"> <span><b>qq_file_issue</b><span class="meta">把群友反馈的 bug / 建议归档成 macOS 提醒事项</span></span></label>
         <label class="v2-tool-item"><input type="checkbox" data-v2-tool="sendGroup"> <span><b>qq_send_group_message</b><span class="meta">向指定群发送一条纯文本消息</span></span></label>
         <label class="v2-tool-item"><input type="checkbox" data-v2-tool="sendPrivate"> <span><b>qq_send_private_message</b><span class="meta">向指定好友发送一条纯文本消息</span></span></label>
         <label class="v2-tool-item"><input type="checkbox" data-v2-tool="reply"> <span><b>qq_reply</b><span class="meta">引用/回复某条群消息并发送文本</span></span></label>
@@ -2130,6 +2132,17 @@ button:active:not(:disabled) {
       <div class="row" style="margin-bottom:8px">
         <label style="flex:1">允许 AI 发送语音（总开关）</label><input type="checkbox" id="v2VoiceEnabled" style="width:auto">
         <label style="flex:1">发完语音自动读回</label><input type="checkbox" id="v2VoiceAutoReadback" style="width:auto">
+      </div>
+      <div class="row">
+        <label style="flex:1">单条最长（秒）</label><input type="number" id="v2VoiceMaxSeconds" min="1" max="600" style="width:80px">
+        <label style="flex:1">单条体积上限（MB）</label><input type="number" id="v2VoiceMaxBytesMb" min="0.001" max="64" step="0.5" style="width:90px">
+        <label style="flex:1">每分钟最多（条）</label><input type="number" id="v2VoiceMaxPerMinute" min="0" max="60" style="width:80px">
+        <label style="flex:1">每小时最多（条）</label><input type="number" id="v2VoiceMaxPerHour" min="0" max="1000" style="width:80px">
+      </div>
+      <div class="row">
+        <label style="flex:1">允许绝对路径（AI 通道已不再放宽，仅保留兼容）</label>
+        <input type="checkbox" id="v2VoiceAllowAbsolutePath" style="width:auto">
+        <span class="meta" style="flex:2">AI 发出的语音始终只能来自语音库；库外文件请用 CLI / 控制台「试发」通道。</span>
       </div>
       <div class="meta" style="margin-bottom:8px">还需在工具权限中启用 <code>qq_send_voice</code>；能力总开关中的「语音发送」会把两者一起打开。</div>
       <div class="row" style="flex-wrap:wrap;gap:8px;align-items:center">
@@ -2181,6 +2194,11 @@ button:active:not(:disabled) {
         <input type="checkbox" id="callTextBridgeOwnerOnly" style="width:auto">
       </div>
       <div class="row">
+        <label style="flex:1">通话路由保留时长（秒，60–1800）</label>
+        <input type="number" id="v2CallRouteTtlSec" min="60" max="1800" step="30" style="width:100px">
+        <span class="meta" style="flex:2">通话结束后，主人在群里发的文字还会按“通话回复”路由这么久；调小更快回到普通群聊。</span>
+      </div>
+      <div class="row">
         <label style="flex:1">通话内容按文字规则进长期记忆</label>
         <input type="checkbox" id="callMemoryEnabled" style="width:auto">
         <label style="flex:1">通话时读取长期记忆</label>
@@ -2216,6 +2234,26 @@ button:active:not(:disabled) {
         <label style="flex:1">新人最短（ms）</label>
         <input type="number" id="callDiarMinNewClusterMs" min="600" max="4000" step="50" style="width:100px">
         <span class="meta" style="flex:2">短于「新人最短」的片段不会新建说话人，避免“嗯/对”造人。</span>
+      </div>
+      <div class="meta" style="margin:14px 0 8px;border-top:1px solid var(--dsw-alias-border-l1,#e5e7eb);padding-top:12px">
+        <b>通话断句（turnDetection）</b>：判断对方一句话有没有说完。调大窗口更不容易抢话，但响应会变慢。
+      </div>
+      <div class="row">
+        <label style="flex:1">断句模式</label>
+        <select id="v2CallTurnMode" style="width:150px">
+          <option value="smart">智能（静音检测 + 标点）</option>
+          <option value="punctuation">只看标点</option>
+          <option value="vad">只看静音检测</option>
+        </select>
+        <label style="flex:1">断句阈值（0.05–0.95）</label>
+        <input type="number" id="v2CallTurnThreshold" min="0.05" max="0.95" step="0.01" style="width:90px">
+      </div>
+      <div class="row">
+        <label style="flex:1">续接窗口（毫秒，300–3000）</label>
+        <input type="number" id="v2CallTurnContinuationMs" min="300" max="3000" step="50" style="width:100px">
+        <label style="flex:1">最长等待（毫秒，1000–8000）</label>
+        <input type="number" id="v2CallTurnMaxWaitMs" min="1000" max="8000" step="50" style="width:100px">
+        <span class="meta" style="flex:2">对方停顿超过「续接窗口」才认为说完了；「最长等待」是强制收尾的上限。</span>
       </div>
       <div class="row" style="gap:8px;align-items:center">
         <button id="callSaveBtn" type="button" class="btn-secondary">保存通话设置并重启</button>
@@ -2341,6 +2379,11 @@ button:active:not(:disabled) {
         <label style="flex:1">只转换至多多少字</label><input type="number" id="v2SpeakAutoMaxChars" min="2" max="500" style="width:80px">
         <label style="flex:1">只在私聊里随机转换</label><input type="checkbox" id="v2SpeakAutoPrivateOnly" style="width:auto">
       </div>
+      <div class="row" style="align-items:flex-start">
+        <label style="flex:1">发音替换（JSON，可选）</label>
+        <textarea id="v2SpeakPronunciations" rows="3" style="flex:3;font-family:monospace" placeholder='{"Yuki": "优key"}'></textarea>
+      </div>
+      <div class="meta" style="margin:-4px 0 8px">合成前把文本里的词替换成指定读法；格式为 JSON 对象，留空 = 不额外替换（示例见输入框占位符）。</div>
 
       <div id="v2SpeakMimoBox" data-speak-provider="mimo">
         <div class="meta" style="margin:8px 0 4px"><b>小米 MiMo 参数</b>：预置音色有冰糖、茉莉（女声），苏打、白桦（男声），以及英文 Mia、Chloe、Milo、Dean。填了参考音频或音色描述后会自动改用音色克隆，保证每次是同一个声音。</div>
@@ -2648,6 +2691,24 @@ button:active:not(:disabled) {
         <label style="flex:1">未读上限</label><input type="number" id="v2ContextUnreadLimit" min="1" style="width:80px">
         <label style="flex:1">上下文窗口</label><input type="number" id="v2ContextWindow" min="1" style="width:80px">
       </div>
+      <div class="row">
+        <label style="flex:1">唤醒时附带未读 / 最近消息</label><input type="checkbox" id="v2ContextInlineWakeMessages" style="width:auto">
+        <label style="flex:1">唤醒未读上限（条）</label><input type="number" id="v2ContextWakeMessageLimit" min="1" max="100" style="width:80px">
+        <label style="flex:1">唤醒最近消息上限（条）</label><input type="number" id="v2ContextWakeRecentLimit" min="0" max="20" style="width:80px">
+      </div>
+      <div class="row">
+        <label style="flex:1">唤醒上下文总字数上限</label><input type="number" id="v2ContextWakeMaxChars" min="500" max="20000" style="width:100px">
+        <span class="meta" style="flex:2">关闭「附带未读 / 最近消息」后，唤醒提示里不再带消息内容，只留状态与唤醒原因。</span>
+      </div>
+      <div class="meta" style="margin:10px 0 4px;border-top:1px solid var(--dsw-alias-border-l1,#e5e7eb);padding-top:10px"><b>补课摘要（catchUp）</b>：离开一段时间后再醒来，先给一段“你不在时发生了什么”的确定性摘要（不调模型、不多花钱）。</div>
+      <div class="row">
+        <label style="flex:1">启用补课摘要</label><input type="checkbox" id="v2CatchUpEnabled" style="width:auto">
+        <label style="flex:1">离开超过多久算需要补课（分钟）</label><input type="number" id="v2CatchUpGapMin" min="1" style="width:90px">
+      </div>
+      <div class="row">
+        <label style="flex:1">最多补几条</label><input type="number" id="v2CatchUpMaxMessages" min="1" max="30" style="width:80px">
+        <label style="flex:1">摘要字数上限</label><input type="number" id="v2CatchUpMaxChars" min="200" max="2000" style="width:90px">
+      </div>
 
       </div></details>
 <details class="settings-group"><summary>反馈工具参数（qq_report_feedback）</summary><div class="settings-content">
@@ -2710,6 +2771,11 @@ button:active:not(:disabled) {
         当前 <span id="v2InitPromptCount">0</span> / <span id="v2InitPromptMax">2000</span> 字符（上限可在 config.json 的
         <code>socialV2.initialPromptMaxChars</code> 调整）。
       </div>
+      <div class="row">
+        <label style="flex:1">单条初始提示词字数上限</label>
+        <input type="number" id="v2InitPromptMaxChars" min="100" max="8000" style="width:90px">
+        <span class="meta" style="flex:2">防止误粘贴长文把首次唤醒的 prompt 撑爆；范围 100–8000。</span>
+      </div>
       <div id="v2InitPromptList" class="tool-log-table">（点「加载」且 key 留空时，列出所有已设置的会话）</div>
 
 </div></details>
@@ -2730,6 +2796,93 @@ button:active:not(:disabled) {
       <pre id="v2StateOutput">（空）</pre>
       <pre id="v2AllStatesOutput" style="margin-top:6px">（全部会话状态：空）</pre>
     </div></details>
+<details class="settings-group"><summary>受限文件工作区（sandbox：只给文件工具，不给 shell）</summary><div class="settings-content">
+      <div class="meta" style="margin-bottom:8px">
+        给 AI 一个只能读写的固定目录（默认 <code>~/dsh-sandbox/workspace</code>），只注册 <code>sandbox_*</code> 文件工具，不提供 shell、网络或宿主文件访问。
+        <b>保存后需要重启 DSH</b>，工具清单才会按新开关重新注册。
+      </div>
+      <div class="row">
+        <label style="flex:1">启用受限文件工作区</label><input type="checkbox" id="v2SandboxEnabled" style="width:auto">
+        <label style="flex:1">目录条目上限</label><input type="number" id="v2SandboxMaxEntries" min="1" max="5000" style="width:90px">
+      </div>
+      <div class="row">
+        <label style="flex:1">单次读取上限（MB）</label><input type="number" id="v2SandboxMaxReadMb" min="0.001" max="16" step="0.5" style="width:90px">
+        <label style="flex:1">单次写入上限（MB）</label><input type="number" id="v2SandboxMaxWriteMb" min="0.001" max="16" step="0.5" style="width:90px">
+        <span class="meta" style="flex:2">超过上限的读/写会被拒绝；范围 1KB–16MB。</span>
+      </div>
+</div></details>
+<details class="settings-group"><summary>图片与视频上限（media）</summary><div class="settings-content">
+      <div class="row">
+        <label style="flex:1">单条媒体总大小上限（MB）</label><input type="number" id="v2MediaMaxMb" min="0.001" max="16" step="0.5" style="width:90px">
+        <label style="flex:1">单张像素上限（百万像素）</label><input type="number" id="v2MediaMaxPixelsM" min="1" max="1000" step="1" style="width:90px">
+        <label style="flex:1">单条最多几张</label><input type="number" id="v2MediaMaxCount" min="1" max="20" style="width:80px">
+      </div>
+      <div class="meta">超过上限的图片 / 表情会被拒绝理解。范围：1KB–16MB、1–1000 百万像素、1–20 张。</div>
+</div></details>
+<details class="settings-group"><summary>会话生命周期（session）</summary><div class="settings-content">
+      <div class="row">
+        <label style="flex:1">人格热重载（换人格卡后下一轮生效）</label><input type="checkbox" id="v2SessionHotReloadPersona" style="width:auto">
+        <label style="flex:1">每轮都开新会话（不带上下文）</label><input type="checkbox" id="v2SessionFreshEveryTurn" style="width:auto">
+        <label style="flex:1">空闲时退役会话</label><input type="checkbox" id="v2SessionRetireWhenIdle" style="width:auto">
+      </div>
+      <div class="row">
+        <label style="flex:1">空闲多久退役（小时，0 = 默认 12 小时）</label><input type="number" id="v2SessionIdleRetireHours" min="0" step="0.5" style="width:100px">
+        <span class="meta" style="flex:2">退役只是下次唤醒时重建 DSH 会话，长期记忆保留；调小省 token，但会失去热缓存。</span>
+      </div>
+</div></details>
+<details class="settings-group"><summary>媒体唤醒与兜底（wake）</summary><div class="settings-content">
+      <div class="row">
+        <label style="flex:1">纯图片 / 表情消息的额外唤醒概率（%）</label><input type="number" id="v2WakeMediaProbability" min="0" max="100" step="1" style="width:80px">
+        <label style="flex:1">媒体唤醒冷却（分钟）</label><input type="number" id="v2WakeMediaCooldownMin" min="0" step="1" style="width:80px">
+        <span class="meta" style="flex:2">0% = 关闭。文字消息仍按各会话自己的唤醒概率走。</span>
+      </div>
+      <div class="row">
+        <label style="flex:1">跳过空回复检查</label><input type="checkbox" id="v2WakeSkipEmptyReplyCheck" style="width:auto">
+        <label style="flex:1">任意消息都强制唤醒</label><input type="checkbox" id="v2WakeForceAnyMessage" style="width:auto">
+      </div>
+      <div class="meta" style="margin-top:6px;border-left:3px solid #f59e0b;padding-left:10px;color:#b45309">
+        ⚠️ 「任意消息都强制唤醒」打开后，群里每一条消息都会唤醒她（仍受合并窗口与发送限流约束），非常吵、非常费 token；只建议调试时短时打开。
+      </div>
+</div></details>
+<details class="settings-group"><summary>提醒事项（Reminders.app）</summary><div class="settings-content">
+      <div class="meta" style="margin-bottom:8px">群友反馈 bug / 建议时，AI 可以把一条处理项写进 macOS 提醒事项，并在稍后提醒你。</div>
+      <div class="row">
+        <label style="flex:1">启用提醒事项归档</label><input type="checkbox" id="v2RemindersEnabled" style="width:auto">
+        <label style="flex:1">列表名称</label><input type="text" id="v2RemindersListName" maxlength="40" style="width:150px" placeholder="Yuki">
+        <label style="flex:1">多久后提醒（分钟）</label><input type="number" id="v2RemindersDueMinutes" min="1" max="1440" style="width:90px">
+        <label style="flex:1">失败时私聊通知主人</label><input type="checkbox" id="v2RemindersNotifyOwner" style="width:auto">
+      </div>
+</div></details>
+<details class="settings-group"><summary>站外告警（alerts：QQ 发不出消息时用什么通知你）</summary><div class="settings-content">
+      <div class="meta" style="margin-bottom:8px">
+        QQ 掉线 / 网关卡死 / 合盖休眠时，QQ 本身就是失效的通道。这里改用 macOS 系统通知或 webhook（ntfy / Bark / 自建服务）把故障发出来。
+        <b>保存后需要重启桥接才生效。</b>
+      </div>
+      <div class="row">
+        <label style="flex:1">启用站外告警</label><input type="checkbox" id="v2AlertsEnabled" style="width:auto">
+        <label style="flex:1">macOS 系统通知</label><input type="checkbox" id="v2AlertsChannelsMacos" style="width:auto">
+        <label style="flex:1">Webhook</label><input type="checkbox" id="v2AlertsChannelsWebhook" style="width:auto">
+      </div>
+      <div class="row">
+        <label style="flex:1">Webhook 地址（POST JSON）</label><input type="text" id="v2AlertsWebhookUrl" placeholder="https://ntfy.sh/your-topic 或自建地址" style="flex:2">
+      </div>
+      <div class="row">
+        <label style="flex:1">同一事件最小间隔（分钟）</label><input type="number" id="v2AlertsMinIntervalMin" min="0" max="1440" style="width:80px">
+        <label style="flex:1">每小时最多（条）</label><input type="number" id="v2AlertsMaxPerHour" min="1" max="100" style="width:80px">
+        <span class="meta" style="flex:2">防止同一个故障反复轰炸；至少选一个通道，都不选会回退成 macOS 通知。</span>
+      </div>
+      <div class="meta" style="margin:8px 0 2px">要通知这些事件：</div>
+      <div class="row">
+        <label style="flex:1">每次启动</label><input type="checkbox" id="v2AlertsEventStartup" style="width:auto">
+        <label style="flex:1">网关掉线</label><input type="checkbox" id="v2AlertsEventGatewayDown" style="width:auto">
+        <label style="flex:1">QQ 掉线</label><input type="checkbox" id="v2AlertsEventQqOffline" style="width:auto">
+      </div>
+      <div class="row">
+        <label style="flex:1">上游卡死</label><input type="checkbox" id="v2AlertsEventUpstreamDegraded" style="width:auto">
+        <label style="flex:1">合盖休眠</label><input type="checkbox" id="v2AlertsEventSleep" style="width:auto">
+        <label style="flex:1">DSH 长时间不可用</label><input type="checkbox" id="v2AlertsEventDshDown" style="width:auto">
+      </div>
+</div></details>
 <div class="save-bar">      <div class="row" style="margin-top:10px">
         <button id="v2ConfigSave" style="font-weight:bold;padding:8px 16px">保存当前参数（写入 config.json）</button>
         <span class="meta" id="v2ConfigMsg"></span>
@@ -3843,6 +3996,10 @@ async function loadV2Config() {
       el.checked = (c.tools && c.tools[el.dataset.v2Tool] !== false);
     });
     const w = c.wake || {};
+    document.getElementById('v2WakeMediaProbability').value = Math.round((w.mediaProbability ?? 0) * 100);
+    document.getElementById('v2WakeMediaCooldownMin').value = Math.round((w.mediaCooldownMs ?? 600000) / 60000);
+    document.getElementById('v2WakeSkipEmptyReplyCheck').checked = w.skipEmptyReplyCheck !== false;
+    document.getElementById('v2WakeForceAnyMessage').checked = w.forceAnyMessage === true;
     document.getElementById('v2WakeDefaultMode').value = w.defaultMode === 'active' ? 'active' : 'diving';
     document.getElementById('v2RecDefaultInfinite').checked = w.recommendedDefaultInfinite !== false;
     document.getElementById('v2RecSleepMin').value = Math.round((w.recommendedSleepMinMs || 300000) / 60000);
@@ -3908,12 +4065,62 @@ async function loadV2Config() {
     const v = c.voice || {};
     document.getElementById('v2VoiceEnabled').checked = v.enabled === true;
     document.getElementById('v2VoiceAutoReadback').checked = v.autoReadback !== false;
+    document.getElementById('v2VoiceMaxSeconds').value = v.maxSeconds ?? 300;
+    document.getElementById('v2VoiceMaxBytesMb').value = round1((v.maxBytes ?? 20971520) / 1048576);
+    document.getElementById('v2VoiceMaxPerMinute').value = v.maxPerMinute ?? 2;
+    document.getElementById('v2VoiceMaxPerHour').value = v.maxPerHour ?? 10;
+    document.getElementById('v2VoiceAllowAbsolutePath').checked = v.allowAbsolutePath === true;
     fillVoiceIoForm(c.asr || {}, { ...(c.speak || {}), singing: c.singing || {} });
     refreshSingingStatus();
     const ctx = c.context || {};
     document.getElementById('v2ContextRecentLimit').value = ctx.recentLimit ?? 100;
     document.getElementById('v2ContextUnreadLimit').value = ctx.unreadLimit ?? 30;
     document.getElementById('v2ContextWindow').value = ctx.contextWindow ?? 20;
+    document.getElementById('v2ContextInlineWakeMessages').checked = ctx.inlineWakeMessages !== false;
+    document.getElementById('v2ContextWakeMessageLimit').value = ctx.wakeMessageLimit ?? 12;
+    document.getElementById('v2ContextWakeRecentLimit').value = ctx.wakeRecentLimit ?? 4;
+    document.getElementById('v2ContextWakeMaxChars').value = ctx.wakeMaxChars ?? 6000;
+    const cu = ctx.catchUp || {};
+    document.getElementById('v2CatchUpEnabled').checked = cu.enabled !== false;
+    document.getElementById('v2CatchUpGapMin').value = round1((cu.gapMs ?? 1800000) / 60000);
+    document.getElementById('v2CatchUpMaxMessages').value = cu.maxMessages ?? 12;
+    document.getElementById('v2CatchUpMaxChars').value = cu.maxChars ?? 800;
+    const sbx = c.sandbox || {};
+    document.getElementById('v2SandboxEnabled').checked = sbx.enabled === true;
+    document.getElementById('v2SandboxMaxReadMb').value = round1((sbx.maxReadBytes ?? 1048576) / 1048576);
+    document.getElementById('v2SandboxMaxWriteMb').value = round1((sbx.maxWriteBytes ?? 1048576) / 1048576);
+    document.getElementById('v2SandboxMaxEntries').value = sbx.maxEntries ?? 500;
+    const md = c.media || {};
+    document.getElementById('v2MediaMaxMb').value = round1((md.maxBytes ?? 8388608) / 1048576);
+    document.getElementById('v2MediaMaxPixelsM').value = round1((md.maxPixels ?? 64000000) / 1000000);
+    document.getElementById('v2MediaMaxCount').value = md.maxCount ?? 5;
+    const ses = c.session || {};
+    document.getElementById('v2SessionHotReloadPersona').checked = ses.hotReloadPersona !== false;
+    document.getElementById('v2SessionFreshEveryTurn').checked = ses.freshEveryTurn === true;
+    document.getElementById('v2SessionRetireWhenIdle').checked = ses.retireWhenIdle !== false;
+    document.getElementById('v2SessionIdleRetireHours').value = round1((Number.isFinite(Number(ses.idleRetireMs)) && Number(ses.idleRetireMs) > 0 ? Number(ses.idleRetireMs) : 43200000) / 3600000);
+    const rem = c.reminders || {};
+    document.getElementById('v2RemindersEnabled').checked = rem.enabled === true;
+    document.getElementById('v2RemindersListName').value = rem.listName || 'Yuki';
+    document.getElementById('v2RemindersDueMinutes').value = rem.dueMinutes ?? 10;
+    document.getElementById('v2RemindersNotifyOwner').checked = rem.notifyOwner !== false;
+    const al = c.alerts || {};
+    document.getElementById('v2AlertsEnabled').checked = al.enabled === true;
+    const alertChannels = Array.isArray(al.channels) ? al.channels : ['macos'];
+    document.getElementById('v2AlertsChannelsMacos').checked = alertChannels.includes('macos');
+    document.getElementById('v2AlertsChannelsWebhook').checked = alertChannels.includes('webhook');
+    document.getElementById('v2AlertsWebhookUrl').value = al.webhook?.url || '';
+    document.getElementById('v2AlertsMinIntervalMin').value = round1((al.minIntervalMs ?? 600000) / 60000);
+    document.getElementById('v2AlertsMaxPerHour').value = al.maxPerHour ?? 12;
+    const alertEvents = al.events || {};
+    document.getElementById('v2AlertsEventStartup').checked = alertEvents.startup === true;
+    document.getElementById('v2AlertsEventGatewayDown').checked = alertEvents.gatewayDown !== false;
+    document.getElementById('v2AlertsEventQqOffline').checked = alertEvents.qqOffline !== false;
+    document.getElementById('v2AlertsEventUpstreamDegraded').checked = alertEvents.upstreamDegraded !== false;
+    document.getElementById('v2AlertsEventSleep').checked = alertEvents.sleep !== false;
+    document.getElementById('v2AlertsEventDshDown').checked = alertEvents.dshDown !== false;
+    document.getElementById('v2InitPromptMaxChars').value = c.initialPromptMaxChars ?? 2000;
+    if (typeof applyV2InitPromptMax === 'function') applyV2InitPromptMax(c.initialPromptMaxChars ?? 2000);
     const fb = c.feedback || {};
     document.getElementById('v2FeedbackMaxLength').value = fb.maxLength ?? 500;
     document.getElementById('v2FeedbackNotifyOwner').checked = fb.notifyOwnerOnError === true;
@@ -3957,7 +4164,11 @@ async function saveV2Config() {
       maxWakePerHour: Math.round(Number(document.getElementById('v2MaxWakeHour').value) || 0),
       batchWindowMs: Math.round(Number(document.getElementById('v2BatchWindowMs').value) || 8000),
       noActionLimit: Math.round(Number(document.getElementById('v2NoActionLimit').value) || 3),
-      maxWakeConfigReminders: Math.round(Number(document.getElementById('v2MaxWakeConfigReminders').value) || 2)
+      maxWakeConfigReminders: Math.round(Number(document.getElementById('v2MaxWakeConfigReminders').value) || 2),
+      mediaProbability: Math.min(100, Math.max(0, Math.round(Number(document.getElementById('v2WakeMediaProbability').value) || 0))) / 100,
+      mediaCooldownMs: Math.min(86400000, Math.max(0, Math.round((Number(document.getElementById('v2WakeMediaCooldownMin').value) || 0) * 60000))),
+      skipEmptyReplyCheck: document.getElementById('v2WakeSkipEmptyReplyCheck').checked,
+      forceAnyMessage: document.getElementById('v2WakeForceAnyMessage').checked
     },
     send: {
       burstEnabled: document.getElementById('v2BurstEnabled').checked,
@@ -3991,7 +4202,12 @@ async function saveV2Config() {
     },
     voice: {
       enabled: document.getElementById('v2VoiceEnabled').checked,
-      autoReadback: document.getElementById('v2VoiceAutoReadback').checked
+      autoReadback: document.getElementById('v2VoiceAutoReadback').checked,
+      maxSeconds: Math.min(600, Math.max(1, Math.round(Number(document.getElementById('v2VoiceMaxSeconds').value) || 300))),
+      maxBytes: Math.round(Math.min(64, Math.max(0.001, Number(document.getElementById('v2VoiceMaxBytesMb').value) || 20)) * 1048576),
+      maxPerMinute: Math.min(60, Math.max(0, Math.round(Number(document.getElementById('v2VoiceMaxPerMinute').value) || 0))),
+      maxPerHour: Math.min(1000, Math.max(0, Math.round(Number(document.getElementById('v2VoiceMaxPerHour').value) || 0))),
+      allowAbsolutePath: document.getElementById('v2VoiceAllowAbsolutePath').checked
     },
     asr: voiceIo.asr,
     speak: voiceIo.speak,
@@ -4015,16 +4231,70 @@ async function saveV2Config() {
     context: {
       recentLimit: Math.round(Number(document.getElementById('v2ContextRecentLimit').value) || 100),
       unreadLimit: Math.round(Number(document.getElementById('v2ContextUnreadLimit').value) || 30),
-      contextWindow: Math.round(Number(document.getElementById('v2ContextWindow').value) || 20)
+      contextWindow: Math.round(Number(document.getElementById('v2ContextWindow').value) || 20),
+      inlineWakeMessages: document.getElementById('v2ContextInlineWakeMessages').checked,
+      wakeMessageLimit: Math.min(100, Math.max(1, Math.round(Number(document.getElementById('v2ContextWakeMessageLimit').value) || 12))),
+      wakeRecentLimit: Math.min(20, Math.max(0, Math.round(Number(document.getElementById('v2ContextWakeRecentLimit').value) || 0))),
+      wakeMaxChars: Math.min(20000, Math.max(500, Math.round(Number(document.getElementById('v2ContextWakeMaxChars').value) || 6000))),
+      catchUp: {
+        enabled: document.getElementById('v2CatchUpEnabled').checked,
+        gapMs: Math.max(60000, Math.round(Number(document.getElementById('v2CatchUpGapMin').value) || 30) * 60000),
+        maxMessages: Math.min(30, Math.max(1, Math.round(Number(document.getElementById('v2CatchUpMaxMessages').value) || 12))),
+        maxChars: Math.min(2000, Math.max(200, Math.round(Number(document.getElementById('v2CatchUpMaxChars').value) || 800)))
+      }
     },
     feedback: {
       maxLength: Math.round(Number(document.getElementById('v2FeedbackMaxLength').value) || 500),
       notifyOwnerOnError: document.getElementById('v2FeedbackNotifyOwner').checked
+    },
+    sandbox: {
+      enabled: document.getElementById('v2SandboxEnabled').checked,
+      maxReadBytes: Math.round(Math.min(16, Math.max(0.001, Number(document.getElementById('v2SandboxMaxReadMb').value) || 1)) * 1048576),
+      maxWriteBytes: Math.round(Math.min(16, Math.max(0.001, Number(document.getElementById('v2SandboxMaxWriteMb').value) || 1)) * 1048576),
+      maxEntries: Math.min(5000, Math.max(1, Math.round(Number(document.getElementById('v2SandboxMaxEntries').value) || 500)))
+    },
+    media: {
+      maxBytes: Math.round(Math.min(16, Math.max(0.001, Number(document.getElementById('v2MediaMaxMb').value) || 8)) * 1048576),
+      maxPixels: Math.round(Math.min(1000, Math.max(1, Number(document.getElementById('v2MediaMaxPixelsM').value) || 64)) * 1000000),
+      maxCount: Math.min(20, Math.max(1, Math.round(Number(document.getElementById('v2MediaMaxCount').value) || 5)))
+    },
+    session: {
+      hotReloadPersona: document.getElementById('v2SessionHotReloadPersona').checked,
+      freshEveryTurn: document.getElementById('v2SessionFreshEveryTurn').checked,
+      retireWhenIdle: document.getElementById('v2SessionRetireWhenIdle').checked,
+      idleRetireMs: Math.max(0, Math.round((Number(document.getElementById('v2SessionIdleRetireHours').value) || 0) * 3600000))
+    },
+    reminders: {
+      enabled: document.getElementById('v2RemindersEnabled').checked,
+      listName: document.getElementById('v2RemindersListName').value.trim(),
+      dueMinutes: Math.min(1440, Math.max(1, Math.round(Number(document.getElementById('v2RemindersDueMinutes').value) || 10))),
+      notifyOwner: document.getElementById('v2RemindersNotifyOwner').checked
+    },
+    initialPromptMaxChars: Math.min(8000, Math.max(100, Math.round(Number(document.getElementById('v2InitPromptMaxChars').value) || 2000))),
+    alerts: {
+      enabled: document.getElementById('v2AlertsEnabled').checked,
+      channels: [
+        ...(document.getElementById('v2AlertsChannelsMacos').checked ? ['macos'] : []),
+        ...(document.getElementById('v2AlertsChannelsWebhook').checked ? ['webhook'] : [])
+      ],
+      webhook: { url: document.getElementById('v2AlertsWebhookUrl').value.trim() },
+      minIntervalMs: Math.min(86400000, Math.max(0, Math.round((Number(document.getElementById('v2AlertsMinIntervalMin').value) || 0) * 60000))),
+      maxPerHour: Math.min(100, Math.max(1, Math.round(Number(document.getElementById('v2AlertsMaxPerHour').value) || 12))),
+      events: {
+        startup: document.getElementById('v2AlertsEventStartup').checked,
+        gatewayDown: document.getElementById('v2AlertsEventGatewayDown').checked,
+        qqOffline: document.getElementById('v2AlertsEventQqOffline').checked,
+        upstreamDegraded: document.getElementById('v2AlertsEventUpstreamDegraded').checked,
+        sleep: document.getElementById('v2AlertsEventSleep').checked,
+        dshDown: document.getElementById('v2AlertsEventDshDown').checked
+      }
     }
   };
   const r = await api('/api/socialV2/config', 'POST', body);
   const msg = document.getElementById('v2ConfigMsg');
-  msg.textContent = r.ok ? '✅ 已保存' : ('❌ ' + (r.error || '失败'));
+  msg.textContent = r.ok
+    ? ('✅ 已保存' + (r.alertsRestartRequired ? '（站外告警已写入，重启桥接后生效）' : ''))
+    : ('❌ ' + (r.error || '失败'));
   msg.className = r.ok ? 'meta ok' : 'meta err';
   if (r.ok) { loadV2Config(); loadFeatures(); }
 }
@@ -4044,6 +4314,7 @@ async function loadCallConfig() {
     const tb = c.textBridge ?? {};
     callEl('callTextBridge').checked = tb.enabled !== false;
     callEl('callTextBridgeOwnerOnly').checked = tb.routeOwnerOnly !== false;
+    callEl('v2CallRouteTtlSec').value = Math.round((Number(tb.routeTtlMs) > 0 ? Number(tb.routeTtlMs) : 600000) / 1000);
     callEl('callMemoryEnabled').checked = c.memory?.enabled !== false;
     callEl('callMemoryRead').checked = c.memory?.read !== false;
     callEl('callSoftBarge').checked = c.fullDuplex?.softBarge !== false;
@@ -4059,6 +4330,11 @@ async function loadCallConfig() {
     callEl('callDiarMaxSpeakers').value = d.maxSpeakers ?? 8;
     callEl('callDiarMinSegmentMs').value = d.minSegmentMs ?? 600;
     callEl('callDiarMinNewClusterMs').value = d.minNewClusterMs ?? 1500;
+    const td = c.turnDetection ?? {};
+    callEl('v2CallTurnMode').value = ['smart', 'punctuation', 'vad'].includes(td.mode) ? td.mode : 'smart';
+    callEl('v2CallTurnThreshold').value = td.threshold ?? 0.5;
+    callEl('v2CallTurnContinuationMs').value = td.continuationWindowMs ?? 1200;
+    callEl('v2CallTurnMaxWaitMs').value = td.maxWaitMs ?? 2500;
   } catch (error) {
     callEl('callMsg').textContent = '读取失败：' + (error?.message ?? error);
   }
@@ -4139,7 +4415,8 @@ async function saveCallConfig() {
       textBridge: {
         enabled: callEl('callTextBridge').checked,
         routeOwnerOnly: callEl('callTextBridgeOwnerOnly').checked,
-        routeTtlMs: 600000
+        // 必须读控件：旧代码硬编码 600000，会把用户在控制台改过的值每次保存都覆盖回去。
+        routeTtlMs: Math.round((Number(callEl('v2CallRouteTtlSec').value) || 600) * 1000)
       },
       fullDuplex: {
         softBarge: callEl('callSoftBarge').checked,
@@ -4160,6 +4437,12 @@ async function saveCallConfig() {
         maxSpeakers: Number(callEl('callDiarMaxSpeakers').value),
         minSegmentMs: Number(callEl('callDiarMinSegmentMs').value),
         minNewClusterMs: Number(callEl('callDiarMinNewClusterMs').value)
+      },
+      turnDetection: {
+        mode: callEl('v2CallTurnMode').value,
+        threshold: Number(callEl('v2CallTurnThreshold').value),
+        continuationWindowMs: Number(callEl('v2CallTurnContinuationMs').value),
+        maxWaitMs: Number(callEl('v2CallTurnMaxWaitMs').value)
       }
     }
   });
@@ -4259,6 +4542,8 @@ function fillVoiceIoForm(a, s) {
   vioEl('v2SpeakAutoMinChars').value = ac.minChars ?? 2;
   vioEl('v2SpeakAutoMaxChars').value = ac.maxChars ?? 40;
   vioEl('v2SpeakAutoPrivateOnly').checked = ac.privateOnly === true;
+  const pron = (s.pronunciations && typeof s.pronunciations === 'object' && !Array.isArray(s.pronunciations)) ? s.pronunciations : {};
+  vioEl('v2SpeakPronunciations').value = Object.keys(pron).length ? JSON.stringify(pron, null, 2) : '';
   const m = s.mimo || {};
   vioEl('v2MimoBaseUrl').value = m.baseUrl || '';
   vioEl('v2MimoModel').value = m.model || '';
@@ -4333,6 +4618,16 @@ function collectVoiceIoForm() {
       return { error: 'GPT-SoVITS 参考音频不是合法 JSON：' + e.message };
     }
   }
+  let pronunciations = {};
+  const pronRaw = vioStr('v2SpeakPronunciations');
+  if (pronRaw) {
+    try {
+      pronunciations = JSON.parse(pronRaw);
+      if (!pronunciations || typeof pronunciations !== 'object' || Array.isArray(pronunciations)) throw new Error('需要是 {"Yuki": "优key"} 这样的对象');
+    } catch (e) {
+      return { error: '发音替换不是合法 JSON：' + e.message };
+    }
+  }
   const pct = (id, fb) => Math.min(100, Math.max(0, vioNum(id, fb))) / 100;
   const ms = (id, unit, fb) => Math.max(0, Math.round(vioNum(id, fb) * unit));
   const asr = {
@@ -4365,6 +4660,7 @@ function collectVoiceIoForm() {
     dailyCharBudget: vioNum('v2SpeakDailyBudget', 0),
     trimSilence: vioEl('v2SpeakTrim').checked,
     allowEmotion: vioEl('v2SpeakAllowEmotion').checked,
+    pronunciations,
     autoConvert: {
       enabled: vioEl('v2SpeakAutoEnabled').checked,
       probability: pct('v2SpeakAutoProb', 5),

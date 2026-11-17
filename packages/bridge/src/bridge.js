@@ -37,7 +37,7 @@ import { buildCallMemoryContext } from './call-memory-context.js';
 import { VoiceprintStore } from './voiceprints.js';
 import { pruneStaleUnread } from './unread-freshness.js';
 import { createCoalescedWriter } from './state-writer.js';
-import { createAlertDispatcher } from './alerts.js';
+import { createAlertDispatcher, normalizeAlertConfig } from './alerts.js';
 import { autoSpeakable, createTtsService, normalizeSpeakConfig, redactSpeakConfig, SPEAK_EMOTIONS } from './voice-tts.js';
 import { createSingingService, normalizeSingingConfig, redactSingingConfig } from './singing.js';
 import { createShortCoverService } from './short-cover/manager-v2.js';
@@ -6078,7 +6078,72 @@ async function main() {
               asr: normalizeAsrConfig(v2.asr),
               call: normalizeCallConfig(cfg.call),
               speak: redactSpeakConfig(normalizeSpeakConfig(v2.speak)),
-              singing: redactSingingConfig(v2.singing, ROOT)
+              singing: redactSingingConfig(v2.singing, ROOT),
+              // 补全控制台要回填的「归一化后的生效值」：文件里可能缺字段，也可能被手改成字符串/超大值。
+              // 注意 sandbox.enabled 用严格 true：MCP 只在 `=== true` 时注册 sandbox_* 工具，
+              // 这里报 false 才是「当前真的可用」；其余数值与运行期 clamp 同口径。
+              sandbox: (() => {
+                const s = (v2.sandbox && typeof v2.sandbox === 'object' && !Array.isArray(v2.sandbox)) ? v2.sandbox : {};
+                const num = (value, fallback, min, max) => {
+                  const n = Number(value);
+                  return Number.isFinite(n) ? Math.min(max, Math.max(min, Math.round(n))) : fallback;
+                };
+                return {
+                  enabled: s.enabled === true,
+                  maxReadBytes: num(s.maxReadBytes, 1024 * 1024, 1024, 16 * 1024 * 1024),
+                  maxWriteBytes: num(s.maxWriteBytes, 1024 * 1024, 1024, 16 * 1024 * 1024),
+                  maxEntries: num(s.maxEntries, 500, 1, 5000)
+                };
+              })(),
+              media: (() => {
+                const m = (v2.media && typeof v2.media === 'object' && !Array.isArray(v2.media)) ? v2.media : {};
+                const num = (value, fallback, min, max) => {
+                  const n = Number(value);
+                  return Number.isFinite(n) ? Math.min(max, Math.max(min, Math.round(n))) : fallback;
+                };
+                return {
+                  maxBytes: num(m.maxBytes, 8 * 1024 * 1024, 1024, 16 * 1024 * 1024),
+                  maxPixels: num(m.maxPixels, 64_000_000, 1_000_000, 1_000_000_000),
+                  maxCount: num(m.maxCount, 5, 1, 20)
+                };
+              })(),
+              session: (() => {
+                const s = (v2.session && typeof v2.session === 'object' && !Array.isArray(v2.session)) ? v2.session : {};
+                const idle = Number(s.idleRetireMs);
+                return {
+                  hotReloadPersona: s.hotReloadPersona !== false,
+                  freshEveryTurn: s.freshEveryTurn === true,
+                  retireWhenIdle: s.retireWhenIdle !== false,
+                  idleRetireMs: Number.isFinite(idle) && idle >= 60_000 ? Math.round(idle) : 12 * 60 * 60 * 1000
+                };
+              })(),
+              reminders: normalizeRemindersConfig(v2.reminders),
+              // context.catchUp 是后加的字段：旧 config.json 的 context 段会整体覆盖默认值，
+              // 这里显式补全，面板才能显示真正生效的补课参数。
+              context: (() => {
+                const ctx = (v2.context && typeof v2.context === 'object' && !Array.isArray(v2.context)) ? v2.context : {};
+                const cu = (ctx.catchUp && typeof ctx.catchUp === 'object' && !Array.isArray(ctx.catchUp)) ? ctx.catchUp : {};
+                const num = (value, fallback, min, max) => {
+                  const n = Number(value);
+                  return Number.isFinite(n) ? Math.min(max, Math.max(min, Math.round(n))) : fallback;
+                };
+                return {
+                  ...ctx,
+                  catchUp: {
+                    enabled: cu.enabled !== false,
+                    gapMs: num(cu.gapMs, 30 * 60 * 1000, 60_000, 24 * 60 * 60 * 1000),
+                    maxMessages: num(cu.maxMessages, 12, 1, 30),
+                    maxChars: num(cu.maxChars, 800, 200, 2000)
+                  }
+                };
+              })(),
+              // 顶层 alerts（站外告警）：运行期用的是启动时那份 cfg.alerts，控制台编辑的是
+              // 落盘值；这里优先回读 config.json，这样「保存 → 刷新」能看到刚改的内容，
+              // 同时面板会提示重启桥接后才真正生效。
+              alerts: (() => {
+                try { return normalizeAlertConfig(readConfigObject(path.join(ROOT, 'config.json')).alerts); }
+                catch { return normalizeAlertConfig(cfg.alerts); }
+              })()
             }
           });
           return;
@@ -6101,8 +6166,10 @@ async function main() {
             : null;
           const current = fileV2 ?? ((cfg.socialV2 && typeof cfg.socialV2 === 'object') ? cfg.socialV2 : {});
           const merged = { ...current, ...body };
+          // 顶层 alerts 不在 socialV2 下：先摘掉，避免被下面的 file.socialV2 = merged 落进 socialV2。
+          delete merged.alerts;
           // 子对象必须是非 null 对象；null/数组/基本类型会覆盖默认值导致工具开关被绕过，这里直接保留当前值。
-          for (const sub of ['tools', 'wake', 'send', 'wait', 'proactive', 'sticker', 'voice', 'feedback', 'context', 'asr', 'speak']) {
+          for (const sub of ['tools', 'wake', 'send', 'wait', 'proactive', 'sticker', 'voice', 'feedback', 'context', 'asr', 'speak', 'sandbox', 'media', 'session', 'reminders']) {
             if (body[sub] !== undefined && (body[sub] === null || typeof body[sub] !== 'object' || Array.isArray(body[sub]))) {
               merged[sub] = current[sub] ?? {};
             }
@@ -6140,6 +6207,14 @@ async function main() {
             }
             if (merged.wake.defaultMode !== 'active') merged.wake.defaultMode = 'diving';
             if (merged.wake.recommendedHint !== undefined) merged.wake.recommendedHint = String(merged.wake.recommendedHint ?? '');
+            // 空回合检查 / 任意消息强制唤醒：默认值语义分别是「开启（仅显式 false 关闭）」与「关闭」。
+            // 非法类型（字符串等）回退当前值，不把坏值落盘。
+            merged.wake.skipEmptyReplyCheck = typeof body.wake.skipEmptyReplyCheck === 'boolean'
+              ? body.wake.skipEmptyReplyCheck
+              : (current.wake?.skipEmptyReplyCheck !== false);
+            merged.wake.forceAnyMessage = typeof body.wake.forceAnyMessage === 'boolean'
+              ? body.wake.forceAnyMessage
+              : (current.wake?.forceAnyMessage === true);
           }
           // send：数值归一化
           if (body.send && typeof body.send === 'object') {
@@ -6204,11 +6279,75 @@ async function main() {
               }
             }
           }
-          // voice：语音总开关与自动读回。只接受布尔值，其余参数（目录/时长/音量）沿用当前配置。
+          // voice：语音发送（语音库）参数。布尔只接受 true/false，数值按运行期口径 clamp；
+          // 控制台没暴露的目录/音量/ffmpeg 等字段沿用当前配置。
           if (body.voice && typeof body.voice === 'object' && !Array.isArray(body.voice)) {
-            merged.voice = { ...(current.voice ?? {}), ...body.voice };
+            const curVoice = (current.voice && typeof current.voice === 'object' && !Array.isArray(current.voice)) ? current.voice : {};
+            const clampInt = (value, fallback, min, max) => {
+              const n = Number(value);
+              if (Number.isFinite(n)) return Math.min(max, Math.max(min, Math.round(n)));
+              const c = Number(fallback);
+              return Number.isFinite(c) ? Math.min(max, Math.max(min, Math.round(c))) : min;
+            };
+            merged.voice = { ...curVoice, ...body.voice };
             if (merged.voice.enabled !== undefined) merged.voice.enabled = merged.voice.enabled === true;
             if (merged.voice.autoReadback !== undefined) merged.voice.autoReadback = merged.voice.autoReadback === true;
+            merged.voice.maxSeconds = clampInt(merged.voice.maxSeconds, curVoice.maxSeconds ?? 300, 1, 600);
+            merged.voice.maxBytes = clampInt(merged.voice.maxBytes, curVoice.maxBytes ?? 20 * 1024 * 1024, 1024, 64 * 1024 * 1024);
+            merged.voice.maxPerMinute = clampInt(merged.voice.maxPerMinute, curVoice.maxPerMinute ?? 2, 0, 60);
+            merged.voice.maxPerHour = clampInt(merged.voice.maxPerHour, curVoice.maxPerHour ?? 10, 0, 1000);
+            merged.voice.allowAbsolutePath = typeof body.voice.allowAbsolutePath === 'boolean'
+              ? body.voice.allowAbsolutePath
+              : (curVoice.allowAbsolutePath === true);
+          }
+          // sandbox：受限文件工作区。数值 clamp 与 src/sandbox.js 的 normalizeConfig 同口径
+          // （1024..16MB、1..5000）；不对 null/数组之外的值抛错，非法值回退当前值。
+          if (body.sandbox && typeof body.sandbox === 'object' && !Array.isArray(body.sandbox)) {
+            const curSandbox = (current.sandbox && typeof current.sandbox === 'object' && !Array.isArray(current.sandbox)) ? current.sandbox : {};
+            const clampInt = (value, fallback, min, max, def) => {
+              const n = Number(value);
+              if (Number.isFinite(n)) return Math.min(max, Math.max(min, Math.round(n)));
+              const c = Number(fallback);
+              return Number.isFinite(c) ? Math.min(max, Math.max(min, Math.round(c))) : def;
+            };
+            merged.sandbox = {
+              ...curSandbox,
+              enabled: typeof body.sandbox.enabled === 'boolean' ? body.sandbox.enabled : curSandbox.enabled === true,
+              maxReadBytes: clampInt(body.sandbox.maxReadBytes, curSandbox.maxReadBytes, 1024, 16 * 1024 * 1024, 1024 * 1024),
+              maxWriteBytes: clampInt(body.sandbox.maxWriteBytes, curSandbox.maxWriteBytes, 1024, 16 * 1024 * 1024, 1024 * 1024),
+              maxEntries: clampInt(body.sandbox.maxEntries, curSandbox.maxEntries, 1, 5000, 500)
+            };
+          }
+          // media：图片/表情的数量、像素与体积上限（与 src/bridge.js 启动时的 media 默认值同口径）。
+          if (body.media && typeof body.media === 'object' && !Array.isArray(body.media)) {
+            const curMedia = (current.media && typeof current.media === 'object' && !Array.isArray(current.media)) ? current.media : {};
+            const clampInt = (value, fallback, min, max, def) => {
+              const n = Number(value);
+              if (Number.isFinite(n)) return Math.min(max, Math.max(min, Math.round(n)));
+              const c = Number(fallback);
+              return Number.isFinite(c) ? Math.min(max, Math.max(min, Math.round(c))) : def;
+            };
+            merged.media = {
+              ...curMedia,
+              maxBytes: clampInt(body.media.maxBytes, curMedia.maxBytes, 1024, 16 * 1024 * 1024, 8 * 1024 * 1024),
+              maxPixels: clampInt(body.media.maxPixels, curMedia.maxPixels, 1_000_000, 1_000_000_000, 64_000_000),
+              maxCount: clampInt(body.media.maxCount, curMedia.maxCount, 1, 20, 5)
+            };
+          }
+          // session：会话生命周期（人格热重载 / 每轮新会话 / 空闲退役）。
+          if (body.session && typeof body.session === 'object' && !Array.isArray(body.session)) {
+            const curSession = (current.session && typeof current.session === 'object' && !Array.isArray(current.session)) ? current.session : {};
+            const nextSession = { ...curSession, ...body.session };
+            const idleRaw = Number(nextSession.idleRetireMs);
+            const curIdle = Number(curSession.idleRetireMs);
+            const idleValid = (value) => Number.isFinite(value) && value >= 60_000;
+            merged.session = {
+              hotReloadPersona: typeof nextSession.hotReloadPersona === 'boolean' ? nextSession.hotReloadPersona : curSession.hotReloadPersona !== false,
+              freshEveryTurn: typeof nextSession.freshEveryTurn === 'boolean' ? nextSession.freshEveryTurn : curSession.freshEveryTurn === true,
+              retireWhenIdle: typeof nextSession.retireWhenIdle === 'boolean' ? nextSession.retireWhenIdle : curSession.retireWhenIdle !== false,
+              // 0 = 用运行期默认（12 小时）；非法值回退当前值。
+              idleRetireMs: idleValid(idleRaw) ? Math.round(idleRaw) : (idleRaw === 0 ? 0 : (idleValid(curIdle) ? Math.round(curIdle) : 0))
+            };
           }
           // asr / speak：逐层合并后交给各自的 normalize 收敛类型。
           if (body.asr && typeof body.asr === 'object' && !Array.isArray(body.asr)) {
@@ -6216,6 +6355,26 @@ async function main() {
           }
           if (body.reminders && typeof body.reminders === 'object' && !Array.isArray(body.reminders)) {
             merged.reminders = normalizeRemindersConfig({ ...(current.reminders ?? {}), ...body.reminders });
+          }
+          // 顶层 alerts（站外告警）：不在 socialV2 下，单独落盘到 file.alerts。
+          // 运行期使用的是启动时那份 cfg.alerts，所以这里**不做热替换**，只有内容真的变了
+          // 才在响应里提示「重启桥接生效」（否则每次保存任何设置都会弹这句）。
+          // 未在控制台暴露的 webhook.headers / timeoutMs 通过深合并保留。
+          let alertsChanged = false;
+          if (body.alerts && typeof body.alerts === 'object' && !Array.isArray(body.alerts)) {
+            const curAlerts = (file.alerts && typeof file.alerts === 'object' && !Array.isArray(file.alerts))
+              ? file.alerts
+              : ((cfg.alerts && typeof cfg.alerts === 'object' && !Array.isArray(cfg.alerts)) ? cfg.alerts : {});
+            const patchAlerts = body.alerts;
+            const asObject = (value) => (value && typeof value === 'object' && !Array.isArray(value)) ? value : {};
+            const nextAlerts = normalizeAlertConfig({
+              ...curAlerts,
+              ...patchAlerts,
+              webhook: { ...asObject(curAlerts.webhook), ...asObject(patchAlerts.webhook) },
+              events: { ...asObject(curAlerts.events), ...asObject(patchAlerts.events) }
+            });
+            alertsChanged = JSON.stringify(normalizeAlertConfig(curAlerts)) !== JSON.stringify(nextAlerts);
+            file.alerts = nextAlerts;
           }
           if (body.speak && typeof body.speak === 'object' && !Array.isArray(body.speak)) {
             const nextSpeak = { ...(current.speak ?? {}), ...body.speak };
@@ -6259,6 +6418,28 @@ async function main() {
               merged.context[name] = Number.isFinite(n) ? Math.min(max, Math.max(min, Math.round(n))) : fallback;
             }
             if (merged.context.inlineWakeMessages !== undefined) merged.context.inlineWakeMessages = merged.context.inlineWakeMessages === true;
+            // 补课摘要（catchUp）：旧 config.json 的 context 段没有子项，必须显式归一并补默认值。
+            const curCatchUp = (current.context?.catchUp && typeof current.context.catchUp === 'object' && !Array.isArray(current.context.catchUp)) ? current.context.catchUp : {};
+            const patchCatchUp = (body.context?.catchUp && typeof body.context.catchUp === 'object' && !Array.isArray(body.context.catchUp)) ? body.context.catchUp : {};
+            const nextCatchUp = { ...curCatchUp, ...patchCatchUp };
+            const clampInt = (value, fallback, min, max) => {
+              const n = Number(value);
+              return Number.isFinite(n) ? Math.min(max, Math.max(min, Math.round(n))) : fallback;
+            };
+            merged.context.catchUp = {
+              enabled: typeof nextCatchUp.enabled === 'boolean' ? nextCatchUp.enabled : curCatchUp.enabled !== false,
+              gapMs: clampInt(nextCatchUp.gapMs, clampInt(curCatchUp.gapMs, 30 * 60 * 1000, 60_000, 24 * 60 * 60 * 1000), 60_000, 24 * 60 * 60 * 1000),
+              maxMessages: clampInt(nextCatchUp.maxMessages, clampInt(curCatchUp.maxMessages, 12, 1, 30), 1, 30),
+              maxChars: clampInt(nextCatchUp.maxChars, clampInt(curCatchUp.maxChars, 800, 200, 2000), 200, 2000)
+            };
+          }
+          // 初始提示词字数上限：与启动时的归一化同口径（100..8000），非法值回退当前值。
+          {
+            const n = Number(merged.initialPromptMaxChars);
+            const cur = Number(current.initialPromptMaxChars);
+            merged.initialPromptMaxChars = Number.isFinite(n) && n > 0
+              ? Math.min(8000, Math.max(100, Math.round(n)))
+              : (Number.isFinite(cur) && cur > 0 ? Math.min(8000, Math.max(100, Math.round(cur))) : 2000);
           }
           if (merged.enabled !== undefined) merged.enabled = merged.enabled === true;
           if (merged.provideRecommendations !== undefined) merged.provideRecommendations = merged.provideRecommendations === true;
@@ -6303,11 +6484,14 @@ async function main() {
           log('控制台：二代仿真配置已更新');
           sendJson({
             ok: true,
+            // 顶层 alerts 只在落盘后生效：内容有变化时控制台据此提示「重启桥接生效」。
+            alertsRestartRequired: alertsChanged,
             config: {
               ...cfg.socialV2,
               asr: normalizeAsrConfig(cfg.socialV2.asr),
               speak: redactSpeakConfig(normalizeSpeakConfig(cfg.socialV2.speak)),
-              singing: redactSingingConfig(cfg.socialV2.singing, ROOT)
+              singing: redactSingingConfig(cfg.socialV2.singing, ROOT),
+              alerts: normalizeAlertConfig(file.alerts ?? cfg.alerts)
             }
           });
           return;

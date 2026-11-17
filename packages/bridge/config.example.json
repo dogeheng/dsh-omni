@@ -274,7 +274,9 @@
       "maxWakePerMinute": 1,
       "maxWakePerHour": 12,
       "noActionLimit": 3,
-      "maxWakeConfigReminders": 2
+      "maxWakeConfigReminders": 2,
+      "skipEmptyReplyCheck": true,
+      "forceAnyMessage": false
     },
     "send": {
       "burstEnabled": true,
@@ -524,6 +526,8 @@
       "maxCount": 5
     },
     "session": {
+      "retireWhenIdle": true,
+      "idleRetireMs": 43200000,
       "freshEveryTurn": false,
       "hotReloadPersona": true
     },
