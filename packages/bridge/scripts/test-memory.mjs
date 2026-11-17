@@ -644,7 +644,8 @@ test('18. 删除墓碑：自动路径不能复活，显式重记可以覆盖', (
     assert.equal(s.countTombstones({ personaId: 'default' }), 1);
 
     // 迁移/提炼/候选都不能把删掉的内容写回来
-    for (const origin of ['legacy:social-v2', 'extraction', 'candidate']) {
+    // 'model' 是 qq_memory_append（模型自己写）的 origin：它同样不是「用户明确要求」。
+    for (const origin of ['legacy:social-v2', 'extraction', 'candidate', 'model']) {
       const blocked = s.addMemory({
         personaId: 'default', scope: 'group', scopeKey: A_GROUP, kind: 'state',
         subjectId: XIAOMING, subjectLabel: '小明', content, origin
@@ -653,6 +654,12 @@ test('18. 删除墓碑：自动路径不能复活，显式重记可以覆盖', (
       assert.equal(blocked.blocked, true);
     }
     assert.equal(m.recall({ ctx, text: '门禁口令', limit: 5 }).rows.length, 0);
+
+    // 模型（origin='model'）走同一入口也必须被墓碑拦下，并且明确回 ok:false。
+    const modelAgain = m.remember({ ctx, kind: 'state', content, subjectId: XIAOMING, subjectLabel: '小明', origin: 'model' });
+    assert.equal(modelAgain.ok, false, '模型写回已遗忘内容必须被拒绝');
+    assert.match(String(modelAgain.reason), /遗忘/, '拒绝理由要说明是"被遗忘过"');
+    assert.equal(s.countTombstones({ personaId: 'default' }), 1, '模型写入不能清掉墓碑');
 
     // 用户再次明确要求记住 → 允许，并覆盖墓碑
     const again = m.remember({ ctx, kind: 'state', content, subjectId: XIAOMING, subjectLabel: '小明' });

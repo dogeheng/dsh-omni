@@ -179,7 +179,7 @@ export async function bridgeHarness({ config = {}, savedState, files = {}, globa
     memory, memorySystem: () => memorySystem,
     memoryContextForV2, memoryPromptBlockV2, resolveMemorySubjectV2,
     memoryActorForV2, noteMemoryActorV2, maybeReconcileTombstonesV2, scrubLegacyForTombstonesV2,
-    appendMemoryV2, saveSocialV2State,
+    appendMemoryV2, formatMemoryV2, saveSocialV2State,
     getCfg() { return cfg; },
     inbox, outbox, get relay() { return relay; },
     enqueueDelivery, restoreOutboxDeliveries,

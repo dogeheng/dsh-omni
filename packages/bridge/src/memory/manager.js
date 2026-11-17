@@ -311,6 +311,10 @@ export function createMemoryManager({
           personaId, scope: auth.scope, scopeKey: auth.scopeKey, keep: 1
         }), 0, '群风历史压缩');
       }
+      if (result.blocked) {
+        // store.addMemory 命中墓碑：这条内容被使用者明确遗忘过，只有操作者能重记。
+        return { ok: false, reason: '这条内容之前被明确遗忘过；如果确实要重新记住，需要操作者在控制台重新添加' };
+      }
       return { ok: true, id: result.id, created: result.created, duplicate: !!result.duplicate, scope: auth.scope, kind: finalKind, superseded: result.superseded ?? [] };
     }, { ok: false, reason: '记忆写入异常（已降级）' }, '显式记忆写入');
   }

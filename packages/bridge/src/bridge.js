@@ -92,7 +92,8 @@ import {
   MEMORY_KINDS,
   createMemoryManager,
   normalizeForDedupe,
-  normalizeMemoryConfig
+  normalizeMemoryConfig,
+  sanitizePromptLine
 } from './memory/index.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -8779,7 +8780,10 @@ async function main() {
               expiresAt: extra.expiresAt ?? null,
               scope: personShared ? 'person_shared' : null,
               sourceMessageId: extra.messageId ?? null,
-              origin: 'explicit'
+              // 只有操作者（控制台/CLI，不带 agent token）才算"用户明确要求"。
+              // 模型自己写的必须留成 'model' —— 否则它能把一条已遗忘的记忆
+              // 连同删除墓碑一起写回来（墓碑只允许 explicit 覆盖）。
+              origin: req.headers['x-agent-token'] ? 'model' : 'explicit'
             });
             // 兼容旧工具清单还没有 qq_file_issue 的 DSH：允许用已有的
             // qq_memory_append(category="state", content="BUG: ...") 触发提醒事项归档。
@@ -11292,6 +11296,9 @@ async function main() {
 
   function formatMemoryV2(st) {
     if (!st) return '';
+    // 记忆内容是**数据**，不是指令。历史数据（写入清洗之前存下的）也可能带换行，
+    // 而 `- ${text}` 一旦带上换行，就能凭空多出一段【】标题。渲染时再压一次单行。
+    const oneLine = (value, maxChars = 200) => sanitizePromptLine(value, { maxChars });
     const lines = [];
     const topics = Array.isArray(st.activeTopics) ? st.activeTopics.filter((t) => t && t.text) : [];
     if (topics.length) {
@@ -11299,14 +11306,14 @@ async function main() {
       for (const t of topics.slice(-10)) {
         const ago = t.lastMentionAt ? Math.round((Date.now() - t.lastMentionAt) / 60000) : 0;
         const stale = t.lastMentionAt && Date.now() - Number(t.lastMentionAt) > 2 * 60 * 60 * 1000 ? '（已搁置）' : '';
-        lines.push(`- ${t.text}${stale}（${ago > 0 ? ago + '分钟前' : '刚刚'}）${t.pendingQuestion ? `；待追问：${t.pendingQuestion}` : ''}`);
+        lines.push(`- ${oneLine(t.text)}${stale}（${ago > 0 ? ago + '分钟前' : '刚刚'}）${t.pendingQuestion ? `；待追问：${oneLine(t.pendingQuestion)}` : ''}`);
       }
     }
     const thoughts = Array.isArray(st.pendingThoughts) ? st.pendingThoughts.filter((t) => t && t.text && (!t.expiresAt || Date.now() < t.expiresAt)) : [];
     if (thoughts.length) {
       lines.push('【你想说但还没说的】');
       for (const t of thoughts.slice(-10)) {
-        lines.push(`- ${t.text}${t.motivation ? `（${t.motivation}）` : ''}`);
+        lines.push(`- ${oneLine(t.text)}${t.motivation ? `（${oneLine(t.motivation, 50)}）` : ''}`);
       }
     }
     const impressions = st.memberImpressions && typeof st.memberImpressions === 'object' ? st.memberImpressions : {};
@@ -11316,7 +11323,7 @@ async function main() {
       for (const name of names.slice(-10)) {
         const im = impressions[name] || {};
         const traits = Array.isArray(im.traits) ? im.traits : [];
-        lines.push(`- ${name}：${traits.length ? traits.join('、') : '暂无记录'}（互动 ${Number(im.interactionCount) || 0} 次）`);
+        lines.push(`- ${oneLine(name, 64)}：${traits.length ? traits.map((trait) => oneLine(trait, 80)).join('、') : '暂无记录'}（互动 ${Number(im.interactionCount) || 0} 次）`);
       }
     }
     return lines.join('\n');
@@ -11324,7 +11331,10 @@ async function main() {
 
   function appendMemoryV2(st, category, content, extra = {}) {
     if (!st) return;
-    const text = redactKnownTokensOnly(String(content ?? '')).trim();
+    // 轻量记忆（话题/想法/印象）是模型自己写的内容，进的是**系统提示词**。
+    // 先压成单行再落盘：换行会让 `- ${text}` 在渲染时多出一段伪造的【】标题，
+    // 而这段内容此后每一轮都会注入，重启也在。
+    const text = sanitizePromptLine(redactKnownTokensOnly(String(content ?? '')).trim(), { maxChars: 200 });
     const cat = String(category || '').trim();
     // 轻量清理：过期想法移除；超过 24h 未提起的话题移除（避免无限膨胀）。
     if (Array.isArray(st.pendingThoughts)) {
@@ -11339,16 +11349,16 @@ async function main() {
       if (existing) {
         existing.lastMentionAt = Date.now();
         if (Array.isArray(extra.participants)) {
-          const set = new Set([...(existing.participants || []), ...extra.participants.map((p) => redactKnownTokensOnly(String(p)))]);
+          const set = new Set([...(existing.participants || []), ...extra.participants.map((p) => sanitizePromptLine(redactKnownTokensOnly(String(p)), { maxChars: 40 }))]);
           existing.participants = [...set].slice(0, 10);
         }
-        if (extra.pendingQuestion) existing.pendingQuestion = truncateText(redactKnownTokensOnly(String(extra.pendingQuestion)), 200);
+        if (extra.pendingQuestion) existing.pendingQuestion = truncateText(sanitizePromptLine(redactKnownTokensOnly(String(extra.pendingQuestion)), { maxChars: 200 }), 200);
       } else {
         st.activeTopics.push({
           text: truncateText(text, 200),
           lastMentionAt: Date.now(),
-          participants: Array.isArray(extra.participants) ? extra.participants.map((p) => redactKnownTokensOnly(String(p))).slice(0, 10) : [],
-          pendingQuestion: redactKnownTokensOnly(String(extra.pendingQuestion || '')).slice(0, 200)
+          participants: Array.isArray(extra.participants) ? extra.participants.map((p) => sanitizePromptLine(redactKnownTokensOnly(String(p)), { maxChars: 40 })).slice(0, 10) : [],
+          pendingQuestion: sanitizePromptLine(redactKnownTokensOnly(String(extra.pendingQuestion || '')), { maxChars: 200 }).slice(0, 200)
         });
       }
       if (st.activeTopics.length > 20) st.activeTopics.splice(0, st.activeTopics.length - 20);
@@ -11358,18 +11368,19 @@ async function main() {
       if (existing) {
         existing.createdAt = Date.now();
         existing.expiresAt = Date.now() + (Number(extra.expiresAtMs) || 2 * 60 * 60 * 1000);
-        if (extra.motivation) existing.motivation = redactKnownTokensOnly(String(extra.motivation)).slice(0, 50);
+        if (extra.motivation) existing.motivation = sanitizePromptLine(redactKnownTokensOnly(String(extra.motivation)), { maxChars: 50 }).slice(0, 50);
       } else {
         st.pendingThoughts.push({
           text: text.slice(0, 200),
           createdAt: Date.now(),
           expiresAt: Date.now() + (Number(extra.expiresAtMs) || 2 * 60 * 60 * 1000),
-          motivation: redactKnownTokensOnly(String(extra.motivation || 'curiosity')).slice(0, 50)
+          motivation: sanitizePromptLine(redactKnownTokensOnly(String(extra.motivation || 'curiosity')), { maxChars: 50 }).slice(0, 50)
         });
       }
       if (st.pendingThoughts.length > 20) st.pendingThoughts.splice(0, st.pendingThoughts.length - 20);
     } else if (cat === 'memberImpression') {
-      const target = String(extra.target || '').trim();
+      // 名字会作为对象键、并渲染成 "- 名字：…"，同样不能带换行/结构符号。
+      const target = sanitizePromptLine(String(extra.target || '').trim(), { maxChars: 64 });
       if (!target || ['__proto__', 'constructor', 'prototype'].includes(target)) return;
       if (!st.memberImpressions || typeof st.memberImpressions !== 'object') st.memberImpressions = {};
       const old = st.memberImpressions[target] || {};
