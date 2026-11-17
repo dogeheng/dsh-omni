@@ -752,7 +752,7 @@ server.tool(
 
 server.tool(
   'qq_send_message',
-  '统一发送工具：字符串=一条，数组=多条（直接传数组，不要把数组序列化成 JSON 字符串；文本里避免英文双引号和换行）。每条读起来完整，不要用空格拆中文短句，不要把一句话拆成两条。只有指向更早的消息、或连续几句面向不同人时才用 replyToMessageId / qq_reply；普通接最新一句不用引用。返回 partial=true 时，只重发 results 里 ok=false 的项，不要整批重发。',
+  '统一发送工具：字符串=一条，数组=多条（直接传数组，不要把数组序列化成 JSON 字符串；文本里避免英文双引号和换行）。每条读起来完整，不要用空格拆中文短句，不要把一句话拆成两条。只有指向更早的消息、或连续几句面向不同人时才用 replyToMessageId / qq_reply；普通接最新一句不用引用。返回 partial=true 时：uncertain=true（或 results 里带 uncertain 的项）表示**超时/断连、可能已经发出去了**，先用 qq_get_recent_messages 核对再决定补不补；只有确定的失败项才直接重发，不要整批重发。',
   {
     key: z.string().describe('会话 key，格式 group:群号 或 private:QQ号'),
     token: z.string().describe('会话令牌（见唤醒提示中的【会话令牌】）'),

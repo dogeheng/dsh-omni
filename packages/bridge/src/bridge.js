@@ -38,6 +38,7 @@ import { VoiceprintStore } from './voiceprints.js';
 import { pruneStaleUnread } from './unread-freshness.js';
 import { createCoalescedWriter } from './state-writer.js';
 import { createAlertDispatcher, normalizeAlertConfig } from './alerts.js';
+import { classifySendFailure } from './send-failure.js';
 import { autoSpeakable, createTtsService, normalizeSpeakConfig, redactSpeakConfig, SPEAK_EMOTIONS } from './voice-tts.js';
 import { createSingingService, normalizeSingingConfig, redactSingingConfig } from './singing.js';
 import { createShortCoverService } from './short-cover/manager-v2.js';
@@ -1366,6 +1367,10 @@ const socialV2Saver = createCoalescedWriter({ delayMs: 250, log: (...args) => lo
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 const convKey = (kind, id) => `${kind}:${id}`;
 const SEND_TIMEOUT_MS = 15000;
+// SDK 自己也有请求超时（默认 30s）。把它调成和桥接一致之后，外层的 withTimeout 只是
+// 看门狗：留 3s 余量让 SDK 先报错（它是"请求确实失败/超时"的权威来源），避免出现
+// "桥接判失败、底层还在跑"的 15–30s 窗口（那段时间消息可能已经送达）。
+const SEND_WATCHDOG_MS = SEND_TIMEOUT_MS + 3000;
 // DSH 控制类调用（停任务/归档会话）的超时。这些 await 以前是裸的：DSH 接受了连接但
 // 不返回响应时，HTTP handler 永不返回，控制台与群消息一起失去响应（issue #32）。
 // 超时后走各自的 catch 记日志，最坏情况只是「这一次重置没做成」，而不是整体挂死。
@@ -7398,17 +7403,29 @@ async function main() {
                 sentIndexes: results.filter((r) => r.ok).map((r) => r.index),
                 at: Date.now()
               });
+              const uncertainIndexes = results.filter((r) => !r.ok && r.uncertain).map((r) => r.index);
+              const hint = uncertainIndexes.length
+                ? `results 里 ${uncertainIndexes.join(',')} 是超时/断连 —— 这几条**可能已经发出去了**：先用 qq_get_recent_messages 核对，确认没有再说补发；其余失败项可以只补发。不要整批重发。`
+                : '只重发 results 里 ok=false 的项，不要重发已成功的；messages 直接传数组，不要传 JSON 字符串。';
               sendJson({
                 ok: false,
                 partial: true,
                 key,
                 sent: sentCount + retrySkipped,
                 failed: failedCount,
+                ...(uncertainIndexes.length ? { uncertainIndexes, uncertain: true } : {}),
                 results,
-                hint: '只重发 results 里 ok=false 的项，不要重发已成功的；messages 直接传数组，不要传 JSON 字符串。'
+                hint
               }, 200);
             } else {
-              sendJson({ ok: false, error: error?.message ?? String(error), results }, 500);
+              const verdict = classifySendFailure(error);
+              sendJson({
+                ok: false,
+                error: error?.message ?? String(error),
+                ...(verdict.uncertain ? { uncertain: true } : {}),
+                hint: verdict.hint,
+                results
+              }, 500);
             }
           }
           return;
@@ -10054,8 +10071,8 @@ async function main() {
       last = enqueueSendLane(key, async () => {
         try {
           assertSendAllowed();
-          if (kind === 'private') await withTimeout(bot.sendPrivateMessage(Number(id), text(escapeCqText(part))), SEND_TIMEOUT_MS, `QQ发送 ${kind}:${id}`);
-          else await withTimeout(bot.sendGroupMessage(Number(id), text(escapeCqText(part))), SEND_TIMEOUT_MS, `QQ发送 ${kind}:${id}`);
+          if (kind === 'private') await withTimeout(bot.sendPrivateMessage(Number(id), text(escapeCqText(part))), SEND_WATCHDOG_MS, `QQ发送 ${kind}:${id}`);
+          else await withTimeout(bot.sendGroupMessage(Number(id), text(escapeCqText(part))), SEND_WATCHDOG_MS, `QQ发送 ${kind}:${id}`);
         } catch (error) {
           lastSendFailed.set(key, true);
           log(`QQ 发送失败 (${key}):`, error?.message ?? error);
@@ -10106,7 +10123,7 @@ async function main() {
         const payload = kind === 'private'
           ? { user_id: Number(id), message }
           : { group_id: Number(id), message };
-        await withTimeout(bot.request(action, payload), SEND_TIMEOUT_MS, `QQ图片 ${kind}:${id}`);
+        await withTimeout(bot.request(action, payload), SEND_WATCHDOG_MS, `QQ图片 ${kind}:${id}`);
       } catch (error) {
         lastSendFailed.set(key, true);
         log(`QQ 图片发送失败 (${key}):`, error?.message ?? error);
@@ -10299,8 +10316,8 @@ async function main() {
       tail = enqueueSendLane(key, async () => {
         try {
           assertSendAllowed();
-          if (kind === 'private') await withTimeout(bot.sendPrivateMessage(Number(id), text(escapeCqText(msg))), SEND_TIMEOUT_MS, `QQ发送 ${kind}:${id}`);
-          else await withTimeout(bot.sendGroupMessage(Number(id), text(escapeCqText(msg))), SEND_TIMEOUT_MS, `QQ发送 ${kind}:${id}`);
+          if (kind === 'private') await withTimeout(bot.sendPrivateMessage(Number(id), text(escapeCqText(msg))), SEND_WATCHDOG_MS, `QQ发送 ${kind}:${id}`);
+          else await withTimeout(bot.sendGroupMessage(Number(id), text(escapeCqText(msg))), SEND_WATCHDOG_MS, `QQ发送 ${kind}:${id}`);
           sent.push(msg);
         } catch (error) {
           log(`QQ 发送失败 (${key}):`, error?.message ?? error);
@@ -10828,6 +10845,8 @@ async function main() {
           log(`QQ 发送失败 (${key}):`, error?.message ?? error);
           failed.push(error);
           results[i].error = String(error?.message ?? error).slice(0, 160);
+          // 超时/断连和"对方明确拒绝"不是一回事：前者可能已经送达，模型不能直接重发。
+          if (classifySendFailure(error).uncertain) results[i].uncertain = true;
         }
         if (gap) await sleep(gap);
       });
@@ -15316,7 +15335,10 @@ async function main() {
   const bot = new SnowLumaWebSocketClient({
     url: cfg.snowluma.wsUrl,
     accessToken: cfg.snowluma.accessToken || undefined,
-    reconnect: true
+    reconnect: true,
+    // 与 SEND_TIMEOUT_MS 对齐：SDK 先超时 → 桥接拿到的是"请求确定失败"，而不是
+    // "race 判失败、底层其实还在发"。见 src/send-failure.js 的说明。
+    requestTimeoutMs: SEND_TIMEOUT_MS
   });
 
   // ── 外部应用中继 ────────────────────────────────────────────────────────────

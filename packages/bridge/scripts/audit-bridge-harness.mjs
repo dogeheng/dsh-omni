@@ -45,6 +45,7 @@ import * as voiceprintsModule from '../src/voiceprints.js';
 import * as unreadFreshness from '../src/unread-freshness.js';
 import * as stateWriter from '../src/state-writer.js';
 import * as alertsModule from '../src/alerts.js';
+import * as sendFailure from '../src/send-failure.js';
 import { unwrap, createTurnCollector } from '../src/dsh-client.js';
 
 const root = fileURLToPath(new URL('..', import.meta.url));
@@ -220,6 +221,7 @@ export async function bridgeHarness({ config = {}, savedState, files = {}, globa
     ...callMemoryContext, ...voiceprintsModule, ...unreadFreshness,
     ...stateWriter,
     ...alertsModule,
+    ...sendFailure,
     // 连接发现/写回会碰真实 homeDir 与 config.json，harness 里必须离线；
     // 需要真实行为的用例用 bridgeHarness({ globals: { … } }) 覆盖（…globals 最后展开）。
     discoverSnowLumaConnection: async () => ({ ok: false, error: 'harness stub' }),
