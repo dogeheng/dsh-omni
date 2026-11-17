@@ -1088,3 +1088,26 @@ test('31. 候选缓冲同样脱敏：候选表里不留明文路径/凭据', () 
     fs.rmSync(root, { recursive: true, force: true });
   }
 });
+
+test('32. 角色标签不当人名：私聊的「私聊/主人」不能把别人从检索里挤掉', () => {
+  const root = tempRoot();
+  const m = makeManager(root);
+  try {
+    const ctxA = groupCtx(m, A_GROUP, [[XIAOMING, '小明'], [OWNER, '主人']]);
+    remember(m, ctxA, { kind: 'fact', content: '小明在学做饭', subjectId: XIAOMING, subjectLabel: '小明' });
+    // 私聊里桥接给 sender 的标签就是「私聊」：它会作为 subjectLabel 落进 people
+    remember(m, privateCtx(m, OWNER), { kind: 'fact', content: '主人在写代码', subjectId: OWNER, subjectLabel: '私聊' });
+
+    const s = m.store();
+    const owner = s.getPerson('default', OWNER);
+    assert.ok(!(owner.aliases || []).some((a) => a.name === '私聊'), '「私聊」这种角色标签不能进 aliases');
+
+    // 群正文里出现这些词时，不能当成"点名"（否则 retrieve 会硬过滤掉其他人的记忆）
+    assert.deepEqual(s.findPeopleMentioned({ personaId: 'default', text: '刚才有人在私聊里说什么' }), []);
+    assert.deepEqual(s.findPeopleMentioned({ personaId: 'default', text: '主人今天在吗' }), []);
+    assert.deepEqual(s.findPeopleMentioned({ personaId: 'default', text: '小明最近在学什么' }), [XIAOMING], '真名字仍要认出来');
+  } finally {
+    m.close();
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});

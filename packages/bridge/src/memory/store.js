@@ -314,7 +314,12 @@ export class MemoryStore {
   upsertPerson({ personaId = 'default', qqId, name = '', seenIn = '', at = this.now() } = {}) {
     const qq = String(qqId ?? '').trim();
     if (!/^\d+$/.test(qq)) throw new Error('人物身份必须是数字 QQ 号');
-    const display = String(name ?? '').trim().slice(0, 64) || null;
+    const rawName = String(name ?? '').trim();
+    // 角色标签（私聊/主人/我…）不是名字：桥接给私聊消息的 sender 就是「私聊」，
+    // 这类标签一旦进 aliases，群聊正文里出现同样的词就会被当成"点名"，
+    // 把其他群友的记忆从检索里硬过滤掉。只把它们用作展示兜底，不作为匹配依据。
+    const GENERIC = new Set(['私聊', '群聊', '主人', '我', '本人', '对方', '这位', '消息']);
+    const display = (rawName && !GENERIC.has(rawName) ? rawName : '').slice(0, 64) || null;
     const existing = this._stmt('SELECT * FROM people WHERE persona_id = ? AND qq_id = ?').get(personaId, qq);
     if (!existing) {
       const aliases = display ? JSON.stringify([{ name: display, at, seenIn: String(seenIn || '') }]) : '[]';
@@ -368,7 +373,9 @@ export class MemoryStore {
     // 检索把正确的人全过滤掉——这里直接不把这类名字作为过滤依据。
     const COMMON = new Set(['可以', '知道', '现在', '什么', '大家', '有人', '明天', '今天',
       '没有', '不是', '怎么', '这样', '那个', '这个', '他们', '我们', '你们', '自己',
-      '一个', '一下', '哈哈', '好的', '收到', '晚安']);
+      '一个', '一下', '哈哈', '好的', '收到', '晚安',
+      // 桥接自己的占位标签：历史数据里可能已经写进 aliases
+      '私聊', '群聊', '主人', '本人', '对方', '这位']);
     const out = [];
     for (const person of this.listPeople(personaId, { limit: 500 })) {
       const names = [person.displayName, ...(person.aliases ?? []).map((a) => a?.name)]
@@ -381,8 +388,10 @@ export class MemoryStore {
   }
 
   listPeople(personaId, { limit = 50 } = {}) {
+    // 上限与调用方对齐（findPeopleMentioned / manager.peopleByQq 都按 500 取）：
+    // 旧上限 200 会在人多于 200 时静默匹配不到旧名字。
     return this._stmt('SELECT * FROM people WHERE persona_id = ? ORDER BY last_seen_at DESC LIMIT ?')
-      .all(personaId, Math.min(200, Math.max(1, limit)))
+      .all(personaId, Math.min(500, Math.max(1, limit)))
       .map((row) => {
         // aliases 必须带出去：findPeopleMentioned 与提示词渲染都靠它认"曾用名"。
         // 旧实现把它丢了，于是「按旧名提问」永远匹配不到人、渲染也永远只有最新那个名字。

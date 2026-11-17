@@ -258,7 +258,9 @@ export function renderMemoryBlock({
         ? aliases.filter((a) => a?.name && (!a.seenIn || String(a.seenIn) === ctxKey))
         : aliases;
       const localName = (scoped.find((a) => String(a.seenIn ?? '') === ctxKey) ?? {}).name;
-      const names = [localName || person.displayName, ...scoped.map((a) => a?.name)]
+      // 兜底顺序：本会话见过的名字 → 这条记忆自己记的名字 → 全局最近名。
+      // 直接跳到全局名会把别的群的名字带过来（跨群改名时最常见）。
+      const names = [localName || String(row.subjectLabel ?? '').trim() || person.displayName, ...scoped.map((a) => a?.name)]
         .map((n) => String(n ?? '').trim())
         .filter(Boolean);
       const unique = [...new Set(names)];
