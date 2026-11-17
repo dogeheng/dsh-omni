@@ -3837,6 +3837,62 @@ async function main() {
   // 启动时先把磁盘上没投出去的消息装回内存；DSH 就绪后由 checkDsh 里的 flushQueue 补投。
   restoreOutboxDeliveries();
 
+  /**
+   * 冷会话瘦身：进过的每个群/私聊都会**永久**留在 social-v2.json 里，而每个会话最多
+   * 存 200 条 recentMessages —— 那才是文件体积的大头（实测 6 个会话已 370KB）。
+   *
+   * 只做"安全瘦身"，不删会话：
+   *   · 有未读 / 有待生效的潜水 / 还挂着任何定时器 → 一律不动（这些状态还有用）
+   *   · 静默超过 idleMs（默认 7 天）→ 清掉历史数组，保留唤醒配置、水位、令牌
+   *   · 会话数超过 maxConversations 时，才淘汰"已经瘦身过、最久没动"的
+   * 复用的是已有的 DSH 检查循环（6 小时节流），不新增常驻定时器。
+   */
+  let lastConversationCompactAt = 0;
+  function compactIdleConversationsV2({ idleMs = 7 * 24 * 60 * 60 * 1000, maxConversations = 200, now = Date.now() } = {}) {
+    // 瘦身只关心"还有没有未处理的状态"：挂着的定时器不影响历史能不能清
+    // （会话对象还在，定时器照常跑）。
+    const hasLiveState = (st) => Boolean(st.pendingSleep || (st.unread || []).length > 0);
+    const lastSeen = (st) => Math.max(Number(st.lastIncomingAt) || 0, Number(st.lastAiReplyAt) || 0, Number(st.lastActionAt) || 0);
+    let compacted = 0;
+    for (const [key, st] of socialV2.conversations) {
+      const last = lastSeen(st);
+      if (!last || now - last < idleMs) continue;
+      if (hasLiveState(st)) continue;
+      const forwards = seenForwardIds.get(key);
+      const hasHistory = (st.recentMessages || []).length > 0
+        || (st.seenInbound || []).length > 0
+        || (forwards?.size ?? 0) > 0;
+      if (!hasHistory) continue;
+      st.recentMessages = [];
+      st.seenInbound = [];
+      st.wakeTimes = (st.wakeTimes || []).slice(-20);
+      st.sendTimes = (st.sendTimes || []).slice(-20);
+      st.stickerCollectTimes = Array.isArray(st.stickerCollectTimes) ? st.stickerCollectTimes.slice(-20) : [];
+      seenForwardIds.set(key, new Set());
+      compacted += 1;
+    }
+    let dropped = 0;
+    if (socialV2.conversations.size > maxConversations) {
+      const spare = [...socialV2.conversations.entries()]
+        .filter(([, st]) => !(st.recentMessages || []).length && !hasLiveState(st))
+        .map(([key, st]) => ({ key, last: lastSeen(st) }))
+        .sort((a, b) => a.last - b.last);
+      for (const item of spare) {
+        if (socialV2.conversations.size <= maxConversations) break;
+        // 淘汰前必须把这一个会话的定时器全停掉，否则它们会对着新造的会话空转。
+        try { clearSocialV2Timers(item.key); } catch { /* 没定时器也无所谓 */ }
+        pendingWakeKeys.delete(item.key);
+        socialV2.conversations.delete(item.key);
+        dropped += 1;
+      }
+    }
+    if (compacted || dropped) {
+      saveSocialV2State();
+      log(`[state] 冷会话瘦身：压缩 ${compacted} 个、淘汰 ${dropped} 个（现存 ${socialV2.conversations.size} 个）`);
+    }
+    return { compacted, dropped };
+  }
+
   const checkDsh = async () => {
     let ok = false;
     try {
@@ -3889,6 +3945,11 @@ async function main() {
     } else if (dshReady) {
       dshReady = false;
       log('⚠️ DSH 不可用（重启中？），QQ 消息将入队等待');
+    }
+    // 冷会话瘦身：挂在已有的 5 秒检查循环上，靠 6 小时节流保证它几乎不做事。
+    if (Date.now() - lastConversationCompactAt > 6 * 60 * 60 * 1000) {
+      lastConversationCompactAt = Date.now();
+      try { compactIdleConversationsV2(); } catch (error) { log('冷会话瘦身失败：', error?.message ?? error); }
     }
   };
   function startDshWatch() {
