@@ -249,7 +249,16 @@ export function renderMemoryBlock({
     if (person?.displayName) {
       // 展示「本轮问题里用的名字（曾用名）」：同一个人换过群名片后，
       // 问「小明」就给 小明（明仔）—— 模型才不会把两个名字当成两个人。
-      const names = [person.displayName, ...(person.aliases ?? []).map((a) => a?.name)]
+      // 同一个 QQ 在不同群可能用不同群名片：优先用**本会话里见过的名字**，
+      // 且别的群才用的名字不回显（A 群的记忆不该出现 B 群才用的名字）。
+      // 没有来源标记的旧数据仍然带上，别把「曾用名」这条功能弄丢。
+      const ctxKey = String(ctx?.conversationKey ?? '');
+      const aliases = Array.isArray(person.aliases) ? person.aliases : [];
+      const scoped = ctxKey
+        ? aliases.filter((a) => a?.name && (!a.seenIn || String(a.seenIn) === ctxKey))
+        : aliases;
+      const localName = (scoped.find((a) => String(a.seenIn ?? '') === ctxKey) ?? {}).name;
+      const names = [localName || person.displayName, ...scoped.map((a) => a?.name)]
         .map((n) => String(n ?? '').trim())
         .filter(Boolean);
       const unique = [...new Set(names)];

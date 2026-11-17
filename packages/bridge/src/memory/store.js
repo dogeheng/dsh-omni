@@ -383,12 +383,22 @@ export class MemoryStore {
   listPeople(personaId, { limit = 50 } = {}) {
     return this._stmt('SELECT * FROM people WHERE persona_id = ? ORDER BY last_seen_at DESC LIMIT ?')
       .all(personaId, Math.min(200, Math.max(1, limit)))
-      .map((row) => ({
-        personaId: row.persona_id,
-        qqId: row.qq_id,
-        displayName: row.display_name,
-        lastSeenAt: row.last_seen_at
-      }));
+      .map((row) => {
+        // aliases 必须带出去：findPeopleMentioned 与提示词渲染都靠它认"曾用名"。
+        // 旧实现把它丢了，于是「按旧名提问」永远匹配不到人、渲染也永远只有最新那个名字。
+        let aliases = [];
+        try {
+          const parsed = JSON.parse(row.aliases || '[]');
+          aliases = Array.isArray(parsed) ? parsed : [];
+        } catch { aliases = []; }
+        return {
+          personaId: row.persona_id,
+          qqId: row.qq_id,
+          displayName: row.display_name,
+          aliases,
+          lastSeenAt: row.last_seen_at
+        };
+      });
   }
 
   // ── 记忆 ─────────────────────────────────────────────────────────────────
@@ -559,7 +569,10 @@ export class MemoryStore {
   queryStructured({ ctx, kinds = null, subjectIds = null, limit = 10, now = this.now(), includeSession = true } = {}) {
     if (!ctx) return [];
     const vis = visibleScopeClause(ctx);
-    const params = [ctx.personaId, now];
+    // 参数顺序必须和 SQL 里的占位符顺序一致：persona_id → activeFilter(now) → vis.sql
+    // → kinds → subjectIds → LIMIT。旧实现把 vis.params 放到最后，一旦传 kinds/subjectIds
+    // 就整体错行：不报错、静默返回空（因为占位符数量还是对的）。
+    const params = [ctx.personaId, now, ...vis.params];
     let sql = `SELECT * FROM memories WHERE persona_id = ? AND ${this._activeFilter()} AND ${vis.sql}`;
     if (kinds?.length) {
       sql += ` AND kind IN (${kinds.map(() => '?').join(',')})`;
@@ -570,7 +583,6 @@ export class MemoryStore {
       params.push(...subjectIds);
     }
     if (!includeSession) sql += ` AND scope <> 'session'`;
-    params.push(...vis.params);
     sql += ' ORDER BY updated_at DESC LIMIT ?';
     params.push(Math.min(200, Math.max(1, limit)));
     return this._stmt(sql).all(...params).map(rowToMemory);

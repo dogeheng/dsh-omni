@@ -960,3 +960,65 @@ test('27. 备份保留策略：只留最近几份，且不碰别人的文件', (
     fs.rmSync(root, { recursive: true, force: true });
   }
 });
+
+test('28. 曾用名：按旧名能认人，提示词里只用本会话的名字', () => {
+  const root = tempRoot();
+  const m = makeManager(root);
+  try {
+    const ctxA = groupCtx(m, A_GROUP, [[XIAOMING, '小明']]);
+    remember(m, ctxA, { kind: 'fact', content: '小明在学做饭', subjectId: XIAOMING, subjectLabel: '小明' });
+    // 同一个人在另一个群叫「明仔」：全局 display_name 会被最后说话的人覆盖
+    const ctxB = groupCtx(m, B_GROUP, [[XIAOMING, '明仔']]);
+    remember(m, ctxB, { kind: 'fact', content: '明仔最近出差', subjectId: XIAOMING, subjectLabel: '明仔' });
+
+    const s = m.store();
+    const people = s.listPeople('default');
+    assert.ok(people.length >= 1);
+    assert.ok(people.every((p) => Array.isArray(p.aliases)), 'listPeople 必须带出 aliases（以前被丢掉了）');
+    const person = people.find((p) => String(p.qqId) === XIAOMING);
+    assert.deepEqual([...person.aliases.map((a) => a.name)].sort(), ['明仔', '小明'].sort());
+
+    // 旧名提问必须能认人：旧实现 aliases 被丢掉 → 这条分支永远匹配不到
+    assert.deepEqual(s.findPeopleMentioned({ personaId: 'default', text: '小明最近在学什么' }), [XIAOMING]);
+
+    // A 群的提示词用 A 群的名字；B 群的名字不该出现在这里
+    // （buildPromptBlock 只在"需要记忆"时注入，所以用问句，别用两个字的关键词）
+    const blockA = m.buildPromptBlock({ ctx: ctxA, text: '小明最近在学什么？', reason: 'wake', key: `group:${A_GROUP}` });
+    assert.ok(blockA.text.includes('小明'), '本群的名字要在');
+    assert.ok(!blockA.text.includes('明仔'), '别的群才用的名字不该回显到 A 群');
+
+    const blockB = m.buildPromptBlock({ ctx: ctxB, text: '明仔出差去哪了？', reason: 'wake', key: `group:${B_GROUP}` });
+    assert.ok(blockB.text.includes('明仔'), 'B 群用自己的名字');
+    assert.ok(!blockB.text.includes('小明'), 'B 群不该看到 A 群的名字');
+  } finally {
+    m.close();
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('29. queryStructured：带 kinds/subjectIds 时参数不错行，且仍按作用域隔离', () => {
+  const root = tempRoot();
+  const m = makeManager(root);
+  try {
+    const ctxA = groupCtx(m, A_GROUP, [[XIAOMING, '小明']]);
+    remember(m, ctxA, { kind: 'fact', content: '小明在学做饭', subjectId: XIAOMING, subjectLabel: '小明' });
+    remember(m, ctxA, { kind: 'episode', content: '小明昨天去爬山', subjectId: XIAOMING, subjectLabel: '小明' });
+    const s = m.store();
+
+    const all = s.queryStructured({ ctx: ctxA });
+    assert.ok(all.length >= 2, `不传过滤条件时应当返回（实际 ${all.length}）`);
+    const facts = s.queryStructured({ ctx: ctxA, kinds: ['fact'] });
+    assert.ok(facts.length >= 1, `带 kinds 不该被静默清空（实际 ${facts.length}）`);
+    assert.ok(facts.every((row) => row.kind === 'fact'));
+    const bySubject = s.queryStructured({ ctx: ctxA, subjectIds: [XIAOMING] });
+    assert.ok(bySubject.length >= 2, `带 subjectIds 不该被静默清空（实际 ${bySubject.length}）`);
+    const both = s.queryStructured({ ctx: ctxA, kinds: ['episode'], subjectIds: [XIAOMING] });
+    assert.equal(both.length, 1, '两个条件同时给也要正确');
+
+    const ctxB = groupCtx(m, B_GROUP, [['222222222', '路人']]);
+    assert.equal(s.queryStructured({ ctx: ctxB }).length, 0, '跨群仍要隔离');
+  } finally {
+    m.close();
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
