@@ -86,13 +86,26 @@ check('formatForwardResponse 兼容标准 node.data 结构', fmtNode.messages[0]
 check('nodeText 清洗 CQ 字符串', nodeText({ message: '[CQ:image,file=x]' }) === '[媒体]');
 
 // 4. 配置默认开关
+//
+// 读 config.example.json（**默认值**）而不是运行中的 config.json：运行配置是使用者自己的
+// 选择（比如有人把 getForwardMsg 关掉减少噪音），拿它当"默认开启"的证据会让这个用例
+// 在别人机器上无故变红。运行配置只校验形状，不校验取值。
 try {
-  const config = JSON.parse(fs.readFileSync(path.join(ROOT, 'config.json'), 'utf8'));
-  check('config.socialV2.tools.getForwardMsg 默认开启', config.socialV2?.tools?.getForwardMsg !== false);
-  check('config.socialV2.tools.sendPoke 默认开启', config.socialV2?.tools?.sendPoke !== false);
-  check('config.socialV2.wake.recommendedPoke 默认开启', config.socialV2?.wake?.recommendedPoke !== false);
+  const defaults = JSON.parse(fs.readFileSync(path.join(ROOT, 'config.example.json'), 'utf8'));
+  check('config.example.json 里 getForwardMsg 默认开启', defaults.socialV2?.tools?.getForwardMsg !== false);
+  check('config.example.json 里 sendPoke 默认开启', defaults.socialV2?.tools?.sendPoke !== false);
+  check('config.example.json 里 recommendedPoke 默认开启', defaults.socialV2?.wake?.recommendedPoke !== false);
 } catch (error) {
-  check('config.json 可读', false, error?.message);
+  check('config.example.json 可读', false, error?.message);
+}
+try {
+  const runtimeFile = path.join(ROOT, 'config.json');
+  const runtime = fs.existsSync(runtimeFile)
+    ? JSON.parse(fs.readFileSync(runtimeFile, 'utf8'))
+    : null;
+  check('运行配置（若存在）形状合法', runtime === null || typeof runtime === 'object');
+} catch (error) {
+  check('运行配置可解析', false, error?.message);
 }
 
 // 5. 桥接端点安全拒绝（可选，桥接运行且状态存在时）
@@ -109,7 +122,11 @@ if (fs.existsSync(consoleTokenFile) && fs.existsSync(socialV2File)) {
       const agentToken = st?.agentToken;
       const urlBase = `http://127.0.0.1:${config.consolePort || 3100}/api/socialV2/forward-message`;
       const authHeaders = { 'x-console-token': consoleToken };
-      if (agentToken) {
+      const forwardToolOff = config.socialV2?.tools?.getForwardMsg === false;
+      if (agentToken && forwardToolOff) {
+        // 运行配置里关掉了这个工具：端点会先拒"工具未启用"，后面的可见性检查没有意义。
+        console.log('⚠️ 跳过桥接端点可见性检查：运行配置 socialV2.tools.getForwardMsg=false（这是使用者的选择）');
+      } else if (agentToken) {
         // 未带 agent token 应被拒绝（reserved2）
         const resNoToken = await fetch(`${urlBase}?key=${encodeURIComponent(key)}&id=abc`, { headers: authHeaders, signal: AbortSignal.timeout(5000) });
         const bodyNoToken = await resNoToken.json().catch(() => ({}));
