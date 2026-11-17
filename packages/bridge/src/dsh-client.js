@@ -16,7 +16,10 @@ import YAML from 'js-yaml';
 import { AbstractApiClient } from '@deepseek-ai/dsh-host-apiproxy/client';
 import { createBoundedQueue } from './bounded-queue.js';
 
-/** mux 事件中转队列的上限：超过就丢最旧（正常情况下远达不到）。 */
+/**
+ * mux 事件中转队列的上限（正常情况下远达不到）。超过时先丢可降级的流式 token
+ * （`assistant/chunk`，collector/账本都不读），丢完仍超限才丢最旧。
+ */
 const MUX_INBOX_MAX = 10000;
 
 /** DSH home：凭据文件与（历史）启动日志都在这里。 */
@@ -705,10 +708,19 @@ export class NodeApiClient extends AbstractApiClient {
     let inboxWarned = false;
     const inbox = createBoundedQueue({
       max: MUX_INBOX_MAX,
+      // 优先丢流式 token：`createTurnCollector` 明确忽略 assistant/chunk（完整文本走
+      // assistant/message），token 账本也只吃 assistant/message|assistant/attempt，
+      // 所以先丢 chunk 既不改变回复内容也不影响账本。队列项是 `{kind:'frame', envelope}`
+      // 包装（见下面 enqueue 调用点），不是裸 envelope —— 分类器要按实际形状取字段。
+      // `{kind:'end'}` 不匹配这个判断，所以永远不会被"优先丢"；它又是最新入队的那条，
+      // 回退的"丢最旧"也伤不到它。
+      preferDrop: (item) => item?.envelope?.payload?.type === 'session/event'
+        && item?.envelope?.payload?.event?.type === 'assistant/chunk',
       onDrop: (item, dropped) => {
         if (inboxWarned) return;
         inboxWarned = true;
-        console.warn(`[mux] 事件积压超过 ${MUX_INBOX_MAX} 条，开始丢弃最旧事件（kind=${item?.kind ?? '?'}）；消费端可能被慢发送阻塞`);
+        const chunk = item?.envelope?.payload?.event?.type === 'assistant/chunk';
+        console.warn(`[mux] 事件积压超过 ${MUX_INBOX_MAX} 条，开始${chunk ? '丢弃流式 assistant/chunk' : '丢弃最旧事件'}（kind=${item?.kind ?? '?'}）；消费端可能被慢发送阻塞`);
       }
     });
     let wake;
