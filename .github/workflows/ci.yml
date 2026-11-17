@@ -29,20 +29,18 @@ jobs:
           cache: npm
           cache-dependency-path: packages/bridge/package-lock.json
 
-      # 可选原生依赖 sherpa-onnx-node / silk-wasm 在 Linux CI 上装不上（没有可用的
-      # 预编译包，也拖慢安装），必须 --omit=optional。
+      # 可选语音依赖 sherpa-onnx-node / silk-wasm 不在 Linux CI 上安装：
+      # sherpa 的预编译二进制按平台分发、体积大（~百 MB），测试不需要；
+      # 用 --omit=optional 让安装更轻、更稳定。
       #
-      # 另外 package-lock.json 里有一条 npm 解析不了的可选依赖：
+      # package-lock.json 里原先有一条 npm 解析不了的可选依赖：
       #   node_modules/sherpa-onnx-node/node_modules/sherpa-onnx-win-arm64
       # 只有 {"optional": true}、没有 version，导致 npm ci / npm install 都直接
-      # 报 "Invalid Version" 退出（本机 npm 11 也一样）。--omit=optional 本来就
-      # 不会安装它，所以先在工作区（仅 CI 本次运行，不提交）删掉这条，再按
-      # lockfile 精确安装；npm ci 若仍失败，退回 npm install。
+      # 报 "Invalid Version" 退出。现在已换成正常的顶层
+      #   node_modules/sherpa-onnx-win-arm64（version/resolved/integrity 齐全）
+      # 条目，lockfile 与 package.json 同步，直接 npm ci 即可，无需任何补丁。
       - name: Install bridge dependencies
-        run: |
-          node -e "const fs=require('fs');const p='packages/bridge/package-lock.json';const lock=JSON.parse(fs.readFileSync(p,'utf8'));delete lock.packages['node_modules/sherpa-onnx-node/node_modules/sherpa-onnx-win-arm64'];fs.writeFileSync(p,JSON.stringify(lock,null,2)+'\n')"
-          npm ci --prefix packages/bridge --omit=optional \
-            || npm install --prefix packages/bridge --omit=optional --no-audit --no-fund
+        run: npm ci --prefix packages/bridge --omit=optional
 
       # test:all 自动发现 packages/bridge/package.json 里所有 test:* 入口；
       # CI=true 时把 Linux 上必然跑不了的套件（需要 Windows chcp / 本机 data/ /
