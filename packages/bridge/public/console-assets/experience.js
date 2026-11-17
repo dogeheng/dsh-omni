@@ -94,6 +94,7 @@ window.createConsoleExperience = function ({ navigate, refreshVoice }) {
   new MutationObserver(() => { featureStatus.textContent = $('featureMsg').textContent; }).observe($('featureMsg'), { childList: true, subtree: true });
   vision.append(jumpButton('查看相关工具权限', 'reference', 'v2Tools'));
   moveDetail('v2MediaMaxMb', vision, '图片与视频上限', '单条消息里图片 / 表情的体积、像素与数量上限');
+  moveDetail('v2WebSearchEnabled', vision, '联网搜索', '选择搜索服务商、填写 Key 与单次用量上限；保存即生效');
 
   const hearing = section('section-hearing', 'hearing', '语音识别 · ASR');
   const voice = section('section-voice', 'voice', '语音合成 · TTS', '试听使用已保存的参数。调整音色后，请先保存，再试听。');
@@ -124,6 +125,8 @@ window.createConsoleExperience = function ({ navigate, refreshVoice }) {
   voiceGroup.classList.add('unfolded-group');
   // Singing becomes a sibling, never a disclosure inside another disclosure.
   moveDetail('v2SingEnabled', voice, '唱歌与曲库', '本地按需运行，配置资源限制与参考声音');
+  moveDetail('v2CoverEnabled', voice, '短翻唱（sing_short_cover）', '从曲库或在线音源取一段，按参考音色唱出来');
+  moveDetail('v2CoverOnlineEnabled', voice, '在线音源', 'QQ 音乐 / 网易云 / 第三方解析的授权音源');
   moveDetail('v2VoiceEnabled', voice, '语音库', '管理已有音频，校验或试发语音条');
   const expression = section('section-expression', 'expression', '表情包与互动');
   moveDetail('v2StickerEnabled', expression, '表情包', '收藏、备注与发送频率', true);
@@ -450,6 +453,53 @@ window.createConsoleExperience = function ({ navigate, refreshVoice }) {
     powerPauseProactive: '离电时暂停主动冒泡，减少后台唤醒。插电后按原策略恢复。',
     powerEnabled: '离电时按此页选择的能力执行省电策略。文字核心聊天始终可用。',
     powerBatteryEffort: '离电时临时降低或调整思考强度，插电后恢复已配置档位。',
+    // 联网搜索（webSearch）
+    v2WebSearchEnabled: '联网搜索总开关（webSearch.enabled）。关闭后 web_search / web_fetch / 图片搜索会直接返回「已在控制台关闭」；保存即生效，不需要重启。',
+    v2WebSearchProvider: 'auto = 先试 DeepSeek，失败自动回退 Bing；deepseek / bing = 只用其中一路。auto 最不容易因为单一服务不可用而失联。',
+    v2WebSearchModel: '调用 DeepSeek 搜索时使用的模型名。留空会用默认模型，一般不需要改。',
+    v2WebSearchBaseUrl: 'DeepSeek 兼容接口的 Base URL（必须是 https）。留空用默认地址；只有自建代理/网关才需要改。密钥只会发往解析到公网的 https 地址。',
+    v2WebSearchApiKeyEnv: '从这个环境变量读取搜索 Key（默认 DEEPSEEK_API_KEY）。推荐用环境变量而不是把 Key 写进 config.json。',
+    v2WebSearchApiKey: 'DeepSeek 搜索用的 API Key。已保存时输入框留空表示不修改；控制台与 GET 回包只显示占位，不会回显明文。',
+    v2WebSearchMaxUses: '一次搜索里允许模型调用搜索工具的最大轮数，1–20。调大能多查几轮，也会增加 token 与耗时。',
+    v2WebSearchMaxTokens: '单次搜索请求的最大输出 token，256–32000。通常 4096 足够，调大只在需要长摘要时有意义。',
+    v2WebSearchMaxResults: '最多返回多少条搜索结果，1–20。条数越多上下文越大，一般 5–10 足够。',
+    v2WebSearchTimeoutSec: '单次搜索请求的超时（秒），1–120。网络慢时可调大；超时后按服务商策略回退或报错。',
+    // 短翻唱（singing.cover）
+    v2CoverEnabled: '短翻唱总开关（singing.cover.enabled）。还要打开「启用唱歌」与 qq_sing 工具权限；保存后重启桥接生效。',
+    v2CoverDefaultDuration: '点歌没指定时长时默认唱多少秒，5–30。越短越快、越省内存，实际还用最长时长兜底。',
+    v2CoverMinDuration: '允许的最短翻唱时长（秒），5–30。低于它的点歌请求会被抬到这个值。',
+    v2CoverMaxDuration: '允许的最长翻唱时长（秒），5–30。超过它的请求会截断到这个值。',
+    v2CoverMaxConcurrent: '同时最多跑几个翻唱任务，1–4。每个任务都要加载 Seed-VC，调大显著增加内存峰值；16GB 机器建议保持 1。',
+    v2CoverMaxQueue: '全局最多排队几个翻唱任务，1–50。队列满时新点歌会被直接拒绝，不会先接受再静默丢失。',
+    v2CoverMaxPerKey: '同一会话最多排队几个请求，1–10。防止一个群连续点歌把队列占满。',
+    v2CoverCooldownSec: '同一会话两次翻唱之间至少间隔多少秒，0–3600。防止连续刷歌，0 表示不冷却。',
+    v2CoverOnlineEnabled: '在线音源总开关（singing.cover.online.enabled）。关闭后只从本地曲库取音源。',
+    v2CoverOnlineQQMusic: '是否允许从 QQ 音乐搜索音源。需要本机 QQ 音乐解析环境；平台没返回授权 URL 时会明确报错，不会绕过限制。',
+    v2CoverOnlineNeteaseLevel: '网易云音质档位（standard/higher/exhigh/lossless/hires）。档位越高越可能命中付费/会员限制，实际可用性取决于你自建的 API 与账号权限。',
+    v2CoverOnlineAllowPaid: '是否允许尝试平台标记为付费/会员的音源，默认关闭。只有确认自己拥有授权时才打开；不会解密 .qmc/.ncm，也不绕过付费墙或 DRM。',
+    v2CoverOnlinePreviewFallback: '付费候选被拒绝时，允许退回平台提供的试听片段（QQ 音乐常见 30–60 秒），只用于短翻唱，不冒充完整歌曲。',
+    v2CoverOnlineTimeoutSec: '单次在线音源请求超时（秒），3–60。网络慢或自建 API 冷启动时可调大。',
+    v2CoverOnlineRetries: '在线音源请求失败后的重试次数，0–3。调大更耐抖，也会让失败反馈更慢。',
+    // 长期记忆阈值（memory.*）
+    v2MemRetrievalMaxResults: '每次需要记忆时最多注入几条，1–20。条数越多上下文越丰富，也越容易挤占 token；保存后重启桥接生效。',
+    v2MemRetrievalCandidateLimit: '检索时先取多少条候选再排序，5–200。调大召回更全但更慢。',
+    v2MemRetrievalMinScore: '候选进入注入的最低相关度（0.05–0.95）。调高更保守（宁缺毋滥），调低会注入更多弱相关记忆。',
+    v2MemRetrievalHalfLifeDays: '记忆权重的半衰期（天），1–3650。调小更偏向最近的事，调大让旧记忆保留更久。',
+    v2MemPromptMaxTokens: '单轮注入记忆的 token 上限（50–350，代码层硬上限 350）。配置更大也会被压回 350。',
+    v2MemPromptTargetTokens: '目标平均注入 token（0–maxTokens）。这是给预算分配的建议值，不是硬上限。',
+    v2MemPromptIncludeSessionState: '注入记忆时是否附带当前会话状态摘要；关闭可再省一点 token。',
+    v2MemExplicitEnabled: '群友明确说「记住…」时是否写入记忆。关闭后只做自动提炼，不响应显式记忆请求。',
+    v2MemCandidateBufferEnabled: '是否先把规则筛出的候选放进缓冲、稍后批量提炼。关闭后不再积累候选（更省调用，但更容易漏记）。',
+    v2MemConsolidationEnabled: '启用离线巩固（合并重复、修正旧记忆）。默认关闭；开启后会占用每日 LLM 调用预算。',
+    v2MemBatchThreshold: '候选达到多少条才触发一次批量提炼，5–200。调低更及时但更费调用，调高更省但记忆更新更慢。',
+    v2MemMaxCandidates: '候选缓冲最多保留多少条，50–5000。超过后按时间淘汰最旧的。',
+    v2MemMaxAdditionalRamMb: '记忆系统新增常驻内存的告警目标（MB，1–2048）。超过只记警告，RSS 无法硬限制。',
+    v2MemExtractIntervalMin: '两次自动提炼之间至少间隔多少分钟，1–1440。与候选阈值共同决定提炼频率。',
+    v2MemCandidateTtlHours: '候选多久没被提炼就过期删除（小时，1–2160）。',
+    v2MemConsolidationOnlyIdle: '只在闲聊空闲时才跑巩固，避免跟正常聊天抢模型调用。',
+    v2MemConsolidationIdleMin: '判定「空闲」需要安静多少分钟，1–1440。',
+    v2MemConsolidationIntervalMin: '两次巩固之间的最小间隔（分钟，5–1440）。',
+    v2MemConsolidationPreferAC: '优先在插电时跑巩固，减少离电耗电。',
   };
   const fieldLabel = input => input.getAttribute('aria-label') || input.labels?.[0]?.textContent.trim() || input.placeholder || input.id;
   let helpCounter = 0;

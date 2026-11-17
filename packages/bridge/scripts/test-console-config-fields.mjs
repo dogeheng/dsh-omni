@@ -2,10 +2,12 @@
 // 控制台「有配置但没入口」的字段契约：真实桥接 + 真实控制台服务器 + 临时 config.json。
 //
 // 覆盖 /api/socialV2/config 的 GET/POST：
-//   · GET 返回归一化后的 sandbox / media / session / reminders / context.catchUp / alerts；
+//   · GET 返回归一化后的 sandbox / media / session / reminders / context.catchUp / alerts / webSearch；
 //   · POST 接受这些段落（含非法值），合法值落盘、非法值 clamp 或回退当前值；
-//   · 顶层 alerts 必须写在 config.json 的顶层，不能混进 socialV2；
-//   · catchUp / wake 新开关 / initialPromptMaxChars / voice 上限 真的生效。
+//   · 顶层 alerts / webSearch 必须写在 config.json 的顶层，不能混进 socialV2；
+//   · webSearch.apiKey 脱敏：GET 只回 '********' + apiKeySet，POST 回传 '********' 不覆盖原值；
+//   · singing / singing.cover / singing.cover.online 三层深合并（只提交部分 cover 不丢其它键）；
+//   · /api/memory/config 的 GET 归一化回读、POST 阈值落盘 + clamp + restartRequired。
 //
 // 不碰真实 config.json：bridgeHarness 在 os.tmpdir() 里建临时根目录。
 import assert from 'node:assert/strict';
@@ -15,7 +17,23 @@ import http from 'node:http';
 import { bridgeHarness } from './audit-bridge-harness.mjs';
 
 const MB = 1024 * 1024;
-const harness = await bridgeHarness();
+const harness = await bridgeHarness({
+  config: {
+    // webSearch 的 apiKey 用来验证「GET 脱敏 / POST 占位不覆盖」；其余字段验证归一化与 clamp。
+    webSearch: {
+      enabled: true,
+      provider: 'bing',
+      apiKey: 'sk-fixture-web-search',
+      apiKeyEnv: 'TEST_WEB_SEARCH_KEY',
+      model: 'fixture-search-model',
+      baseURL: '',
+      maxUses: 3,
+      maxTokens: 1024,
+      maxResults: 5,
+      timeoutMs: 20000
+    }
+  }
+});
 const server = harness.startConsoleServer();
 if (!server.listening) await new Promise(resolve => server.once('listening', resolve));
 const port = server.address().port;
@@ -244,6 +262,230 @@ try {
     assert.equal(file.alerts.maxPerHour, 1, '顶层 alerts 应保留');
     assert.equal(file.socialV2.context.recentLimit, 88);
     assert.equal(file.socialV2.context.catchUp.maxChars, 200, 'catchUp 应保留');
+  });
+
+  // ── webSearch（顶层配置，不在 socialV2 下）────────────────────────────────
+  await test('webSearch：GET 脱敏 + POST 占位不覆盖原 Key + 合法值落盘回读 + 非法值 clamp', async () => {
+    // GET：只回 '********' + apiKeySet，整个响应里不能出现明文 Key。
+    const masked = await request('GET', '/api/socialV2/config');
+    assert.equal(masked.status, 200, masked.text);
+    assert.equal(masked.json.config.webSearch.apiKey, '********');
+    assert.equal(masked.json.config.webSearch.apiKeySet, true);
+    assert.equal(masked.text.includes('sk-fixture-web-search'), false, 'GET 回包不能出现明文 apiKey');
+    assert.equal(masked.json.config.webSearch.provider, 'bing');
+    assert.equal(masked.json.config.webSearch.maxUses, 3);
+
+    // POST：'********' = 不改原 Key；其余合法值原样落盘。
+    await postConfig({
+      webSearch: {
+        enabled: true,
+        provider: 'deepseek',
+        model: 'search-model',
+        baseURL: 'https://example.invalid/v1',
+        apiKeyEnv: 'CUSTOM_SEARCH_KEY',
+        apiKey: '********',
+        maxUses: 4,
+        maxTokens: 8000,
+        maxResults: 15,
+        timeoutMs: 60000
+      }
+    });
+    let file = readConfigFile();
+    assert.equal(file.webSearch.apiKey, 'sk-fixture-web-search', "'********' 不能覆盖已保存的 apiKey");
+    assert.equal(file.webSearch.provider, 'deepseek');
+    assert.equal(file.webSearch.model, 'search-model');
+    assert.equal(file.webSearch.baseURL, 'https://example.invalid/v1');
+    assert.equal(file.webSearch.apiKeyEnv, 'CUSTOM_SEARCH_KEY');
+    assert.equal(file.webSearch.maxUses, 4);
+    assert.equal(file.webSearch.maxTokens, 8000);
+    assert.equal(file.webSearch.maxResults, 15);
+    assert.equal(file.webSearch.timeoutMs, 60000);
+    // 顶层段：不能混进 socialV2（否则 MCP 读不到、还会出现两份）。
+    assert.equal(file.socialV2.webSearch, undefined, 'webSearch 不能混进 socialV2');
+    assert.ok(file.webSearch && typeof file.webSearch === 'object', 'config.json 顶层应有 webSearch');
+
+    let config = await getConfig();
+    assert.equal(config.webSearch.apiKey, '********');
+    assert.equal(config.webSearch.apiKeySet, true);
+    assert.equal(config.webSearch.provider, 'deepseek');
+    assert.equal(config.webSearch.maxUses, 4, '合法值应原样回读');
+    assert.equal(config.webSearch.maxTokens, 8000);
+    assert.equal(config.webSearch.maxResults, 15);
+    assert.equal(config.webSearch.timeoutMs, 60000);
+
+    // 非法值：clamp 到边界；非法 provider 回退当前值；非布尔 enabled 也回退。
+    await postConfig({ webSearch: { enabled: 'yes', provider: 'nope', maxUses: 0, maxTokens: 1, maxResults: 99, timeoutMs: 1 } });
+    file = readConfigFile();
+    assert.equal(file.webSearch.enabled, true, '非布尔 enabled 回退当前值');
+    assert.equal(file.webSearch.provider, 'deepseek', '非法 provider 回退当前值');
+    assert.equal(file.webSearch.maxUses, 1);
+    assert.equal(file.webSearch.maxTokens, 256);
+    assert.equal(file.webSearch.maxResults, 20);
+    assert.equal(file.webSearch.timeoutMs, 5000, '与运行时同区间：最小 5s');
+  });
+
+  // ── memory.* 阈值（只走 /api/memory/config；阈值类不热更新）─────────────────
+  await test('memory 阈值：GET 归一化返回 + POST 落盘 config.json 的 memory 段 + clamp + restartRequired', async () => {
+    const before = await request('GET', '/api/memory/config');
+    assert.equal(before.status, 200, before.text);
+    assert.equal(before.json.ok, true);
+    assert.equal(before.json.config.retrieval.maxResults, 5);
+    assert.equal(before.json.config.retrieval.candidateLimit, 40);
+    assert.equal(before.json.config.retrieval.minScore, 0.18);
+    assert.equal(before.json.config.retrieval.halfLifeDays, 30);
+    assert.equal(before.json.config.prompt.maxTokens, 350);
+    assert.equal(before.json.config.prompt.targetAverageTokens, 150);
+    assert.equal(before.json.config.prompt.includeSessionState, false);
+    assert.equal(before.json.config.capture.explicitMemoryEnabled, true);
+    assert.equal(before.json.config.capture.candidateBufferEnabled, true);
+    assert.equal(before.json.config.capture.batchCandidateThreshold, 15);
+    assert.equal(before.json.config.capture.minExtractionIntervalMs, 30 * 60 * 1000);
+    assert.equal(before.json.config.capture.candidateTtlMs, 7 * 24 * 60 * 60 * 1000);
+    assert.equal(before.json.config.capture.maxCandidates, 500);
+    assert.equal(before.json.config.consolidation.enabled, false);
+    assert.equal(before.json.config.consolidation.onlyWhenIdle, true);
+    assert.equal(before.json.config.consolidation.idleMs, 15 * 60 * 1000);
+    assert.equal(before.json.config.consolidation.intervalMs, 60 * 60 * 1000);
+    assert.equal(before.json.config.consolidation.preferACPower, true);
+    assert.equal(before.json.config.maxAdditionalRamMB, 50);
+    assert.equal('root' in before.json.config, false, 'GET 不应把本机 root 路径回给前端');
+
+    const posted = await request('POST', '/api/memory/config', {
+      retrieval: { maxResults: 9, candidateLimit: 60, minScore: 0.3, halfLifeDays: 45 },
+      prompt: { maxTokens: 300, targetAverageTokens: 120, includeSessionState: true },
+      capture: {
+        explicitMemoryEnabled: false,
+        candidateBufferEnabled: false,
+        batchCandidateThreshold: 30,
+        minExtractionIntervalMs: 900_000,
+        candidateTtlMs: 24 * 60 * 60 * 1000,
+        maxCandidates: 800
+      },
+      consolidation: { enabled: true, onlyWhenIdle: false, idleMs: 10 * 60 * 1000, intervalMs: 2 * 60 * 60 * 1000, preferACPower: false },
+      maxAdditionalRamMB: 77
+    });
+    assert.equal(posted.status, 200, posted.text);
+    assert.equal(posted.json.restartRequired, true, '阈值变了要提示重启桥接');
+    const file = readConfigFile();
+    assert.ok(file.memory && typeof file.memory === 'object', 'config.json 应有 memory 段');
+    assert.deepEqual(file.memory.retrieval, { maxResults: 9, candidateLimit: 60, minScore: 0.3, halfLifeDays: 45 });
+    assert.deepEqual(file.memory.prompt, { maxTokens: 300, targetAverageTokens: 120, includeSessionState: true });
+    assert.equal(file.memory.capture.explicitMemoryEnabled, false);
+    assert.equal(file.memory.capture.candidateBufferEnabled, false);
+    assert.equal(file.memory.capture.batchCandidateThreshold, 30);
+    assert.equal(file.memory.capture.minExtractionIntervalMs, 900_000);
+    assert.equal(file.memory.capture.candidateTtlMs, 24 * 60 * 60 * 1000);
+    assert.equal(file.memory.capture.maxCandidates, 800);
+    assert.deepEqual(file.memory.consolidation, {
+      enabled: true, onlyWhenIdle: false, idleMs: 600_000, intervalMs: 7_200_000, preferACPower: false
+    });
+    assert.equal(file.memory.maxAdditionalRamMB, 77);
+    // 热更新字段（mode 等）仍走原有逻辑：阈值没变时 restartRequired=false。
+    const hotOnly = await request('POST', '/api/memory/config', { mode: 'live' });
+    assert.equal(hotOnly.status, 200, hotOnly.text);
+    assert.equal(hotOnly.json.restartRequired, false, '只改可热更新的 mode 时不应提示重启');
+    assert.equal(readConfigFile().memory.retrieval.mode, 'live');
+
+    const readBack = await request('GET', '/api/memory/config');
+    assert.equal(readBack.json.config.retrieval.maxResults, 9);
+    assert.equal(readBack.json.config.retrieval.minScore, 0.3);
+    assert.equal(readBack.json.config.prompt.maxTokens, 300);
+    assert.equal(readBack.json.config.prompt.includeSessionState, true);
+    assert.equal(readBack.json.config.capture.maxCandidates, 800);
+    assert.equal(readBack.json.config.consolidation.idleMs, 600_000);
+    assert.equal(readBack.json.config.maxAdditionalRamMB, 77);
+
+    // 非法值：全部 clamp 到 normalizeMemoryConfig 的边界，不抛错。
+    const clamped = await request('POST', '/api/memory/config', {
+      retrieval: { maxResults: 0, candidateLimit: 1, minScore: 5, halfLifeDays: 0 },
+      prompt: { maxTokens: 999, targetAverageTokens: 999 },
+      capture: { batchCandidateThreshold: 1, minExtractionIntervalMs: 1, candidateTtlMs: 1, maxCandidates: 1 },
+      consolidation: { idleMs: 1, intervalMs: 1 },
+      maxAdditionalRamMB: 0
+    });
+    assert.equal(clamped.status, 200, clamped.text);
+    assert.equal(clamped.json.restartRequired, true);
+    const clampedFile = readConfigFile();
+    assert.equal(clampedFile.memory.retrieval.maxResults, 1);
+    assert.equal(clampedFile.memory.retrieval.candidateLimit, 5);
+    assert.equal(clampedFile.memory.retrieval.minScore, 0.95);
+    assert.equal(clampedFile.memory.retrieval.halfLifeDays, 1);
+    assert.equal(clampedFile.memory.prompt.maxTokens, 350);
+    assert.equal(clampedFile.memory.prompt.targetAverageTokens, 350, '目标平均 token 不能超过 maxTokens');
+    assert.equal(clampedFile.memory.capture.batchCandidateThreshold, 5);
+    assert.equal(clampedFile.memory.capture.minExtractionIntervalMs, 60_000);
+    assert.equal(clampedFile.memory.capture.candidateTtlMs, 60 * 60 * 1000);
+    assert.equal(clampedFile.memory.capture.maxCandidates, 50);
+    assert.equal(clampedFile.memory.consolidation.idleMs, 60_000);
+    assert.equal(clampedFile.memory.consolidation.intervalMs, 5 * 60 * 1000);
+    assert.equal(clampedFile.memory.maxAdditionalRamMB, 1);
+  });
+
+  // ── singing.cover 三层深合并（修复浅合并把没提交的键整块覆盖）──────────────
+  await test('singing.cover 深合并：只提交 cover.enabled 时其它 cover / online 键保持原值 + clamp', async () => {
+    await postConfig({
+      singing: {
+        enabled: true,
+        cover: {
+          enabled: false,
+          defaultDuration: 18,
+          minDuration: 8,
+          maxDuration: 25,
+          maxConcurrent: 2,
+          maxQueue: 7,
+          maxPerKey: 3,
+          cooldownMs: 123_456,
+          online: {
+            enabled: false,
+            qqmusic: false,
+            neteaseLevel: 'exhigh',
+            allowPaidMedia: true,
+            previewFallback: true,
+            timeoutMs: 15_000,
+            retries: 2
+          }
+        }
+      }
+    });
+    let file = readConfigFile();
+    const seeded = file.socialV2.singing.cover;
+    assert.equal(seeded.enabled, false);
+    assert.equal(seeded.defaultDuration, 18);
+
+    // 只提交 cover.enabled：修复前（浅合并）这里会把 cover 其它键与 online 整块覆盖掉。
+    await postConfig({ singing: { cover: { enabled: true } } });
+    file = readConfigFile();
+    const cover = file.socialV2.singing.cover;
+    assert.equal(cover.enabled, true);
+    for (const key of ['defaultDuration', 'minDuration', 'maxDuration', 'maxConcurrent', 'maxQueue', 'maxPerKey', 'cooldownMs']) {
+      assert.equal(cover[key], seeded[key], `只改 cover.enabled 时 cover.${key} 应保持原值`);
+    }
+    for (const key of ['enabled', 'qqmusic', 'neteaseLevel', 'allowPaidMedia', 'previewFallback', 'timeoutMs', 'retries']) {
+      assert.equal(cover.online[key], seeded.online[key], `只改 cover.enabled 时 cover.online.${key} 应保持原值`);
+    }
+    // 顶层 singing 字段同样深合并（不能被 cover patch 清掉）。
+    assert.equal(file.socialV2.singing.maxSeconds, 20, 'singing.maxSeconds 不应被 cover patch 覆盖');
+    assert.equal(file.socialV2.singing.enabled, true);
+
+    // GET 回读也应保留合并后的值（redactSingingConfig 会再次归一化）。
+    const config = await getConfig();
+    assert.equal(config.singing.cover.defaultDuration, 18);
+    assert.equal(config.singing.cover.maxQueue, 7);
+    assert.equal(config.singing.cover.online.neteaseLevel, 'exhigh');
+    assert.equal(config.singing.cover.online.allowPaidMedia, true);
+
+    // 非法值 clamp：与运行时（short-cover/config.js）一致 —— 时长 5..30、并发 1..2、队列 0..50、冷却 0..600000。
+    await postConfig({ singing: { cover: { maxConcurrent: 99, maxQueue: 0, cooldownMs: 99_999_999, minDuration: 1, maxDuration: 99 } } });
+    file = readConfigFile();
+    const clamped = file.socialV2.singing.cover;
+    assert.equal(clamped.maxConcurrent, 2);
+    assert.equal(clamped.maxQueue, 0);
+    assert.equal(clamped.cooldownMs, 600_000);
+    assert.equal(clamped.minDuration, 5);
+    assert.equal(clamped.maxDuration, 30);
+    assert.ok(clamped.defaultDuration >= clamped.minDuration && clamped.defaultDuration <= clamped.maxDuration,
+      '默认时长必须落在最短/最长之间');
+    assert.equal(clamped.online.neteaseLevel, 'exhigh', '只改资源限制时 online 也应保留');
   });
 
   console.log(`\n全部通过（${passed} 项）`);

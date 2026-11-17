@@ -267,9 +267,9 @@ try {
       if (request.path === '/api/socialV2/config') {
         // Project out everything this fixture/baseline predates (voice IO, singing, sticker
         // probability, sandbox/media/session/reminders/alerts, context wake & catch-up,
-        // initial prompt cap and the two new tool switches). Their payloads are covered by
-        // test-console-config-fields.mjs against the real bridge endpoint.
-        for (const key of ['voice', 'asr', 'speak', 'singing', 'sandbox', 'media', 'session', 'reminders', 'alerts', 'initialPromptMaxChars']) delete request.body[key];
+        // initial prompt cap, top-level webSearch and the two new tool switches). Their payloads
+        // are covered by test-console-config-fields.mjs against the real bridge endpoint.
+        for (const key of ['voice', 'asr', 'speak', 'singing', 'sandbox', 'media', 'session', 'reminders', 'alerts', 'initialPromptMaxChars', 'webSearch']) delete request.body[key];
         if (request.body.sticker) for (const key of ['sendProbability', 'nudgeAfterSend', 'nudgeMinChars']) delete request.body.sticker[key];
         if (request.body.tools) for (const key of ['sendVoice', 'sendImage', 'addSticker', 'speak', 'sing', 'getBalance', 'fileIssue']) delete request.body.tools[key];
         if (request.body.wake) for (const key of ['mediaProbability', 'mediaCooldownMs', 'skipEmptyReplyCheck', 'forceAnyMessage']) delete request.body.wake[key];

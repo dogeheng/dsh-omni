@@ -5011,6 +5011,18 @@ async function main() {
           sendJson(result, result.ok ? 200 : 400);
           return;
         }
+        // 控制台「长期记忆 → 检索与提示词预算 / 提炼与巩固」：阈值类设置只在启动时由
+        // normalizeMemoryConfig 读入，运行中不做热更新，所以 GET 直接回读 config.json 并归一化
+        // （保存后由前端提示「重启桥接后生效」；照现有 speak 脱敏只针对凭据，这里没有凭据）。
+        if (req.method === 'GET' && url.pathname === '/api/memory/config') {
+          const filePath = path.join(ROOT, 'config.json');
+          let file = {};
+          try { file = readConfigObject(filePath); } catch { file = {}; }
+          const normalized = normalizeMemoryConfig(file.memory, { root: ROOT });
+          const { root: _root, ...config } = normalized;
+          sendJson({ ok: true, config });
+          return;
+        }
         // 控制台保存记忆设置：写回 config.json，并热更新 manager。
         if (req.method === 'POST' && url.pathname === '/api/memory/config') {
           const body = await readBody();
@@ -5046,6 +5058,51 @@ async function main() {
           const configFile = path.join(ROOT, 'config.json');
           const file = readJsonSafe(configFile, {});
           if (!file.memory || typeof file.memory !== 'object' || Array.isArray(file.memory)) file.memory = {};
+          // ── 阈值类（检索 / 提示词预算 / 提炼 / 巩固 / 额外内存）：只落盘，不热更新 ──
+          // 类型与边界交给 normalizeMemoryConfig（与启动时同一套口径）；只回写控制台管理的
+          // 那几组键，未暴露的高级字段（extractionConversations、cache、security…）原样保留。
+          // restartRequired 按归一化后的阈值快照是否变化判断：只改 enabled/mode 这类可热更新
+          // 的字段时不应弹「重启桥接」。
+          const asObject = (value) => (value && typeof value === 'object' && !Array.isArray(value)) ? value : null;
+          const thresholdPatch = {
+            retrieval: asObject(body.retrieval),
+            prompt: asObject(body.prompt),
+            capture: asObject(body.capture),
+            consolidation: asObject(body.consolidation)
+          };
+          const hasRamPatch = Object.prototype.hasOwnProperty.call(body, 'maxAdditionalRamMB');
+          const wantsThresholds = Boolean(thresholdPatch.retrieval || thresholdPatch.prompt
+            || thresholdPatch.capture || thresholdPatch.consolidation || hasRamPatch);
+          const thresholdSnapshot = (memoryCfg) => JSON.stringify({
+            retrieval: {
+              maxResults: memoryCfg.retrieval.maxResults,
+              candidateLimit: memoryCfg.retrieval.candidateLimit,
+              minScore: memoryCfg.retrieval.minScore,
+              halfLifeDays: memoryCfg.retrieval.halfLifeDays
+            },
+            prompt: {
+              maxTokens: memoryCfg.prompt.maxTokens,
+              targetAverageTokens: memoryCfg.prompt.targetAverageTokens,
+              includeSessionState: memoryCfg.prompt.includeSessionState
+            },
+            capture: {
+              explicitMemoryEnabled: memoryCfg.capture.explicitMemoryEnabled,
+              candidateBufferEnabled: memoryCfg.capture.candidateBufferEnabled,
+              batchCandidateThreshold: memoryCfg.capture.batchCandidateThreshold,
+              minExtractionIntervalMs: memoryCfg.capture.minExtractionIntervalMs,
+              candidateTtlMs: memoryCfg.capture.candidateTtlMs,
+              maxCandidates: memoryCfg.capture.maxCandidates
+            },
+            consolidation: {
+              enabled: memoryCfg.consolidation.enabled,
+              onlyWhenIdle: memoryCfg.consolidation.onlyWhenIdle,
+              idleMs: memoryCfg.consolidation.idleMs,
+              intervalMs: memoryCfg.consolidation.intervalMs,
+              preferACPower: memoryCfg.consolidation.preferACPower
+            },
+            maxAdditionalRamMB: memoryCfg.maxAdditionalRamMB
+          });
+          const beforeThresholds = thresholdSnapshot(normalizeMemoryConfig(file.memory, { root: ROOT }));
           if ('enabled' in patch) file.memory.enabled = patch.enabled;
           if ('mode' in patch) file.memory.retrieval = { ...(file.memory.retrieval ?? {}), mode: patch.mode };
           if ('autoExtractionEnabled' in patch || 'maxExtraCallsPerDay' in patch || 'extractionConversations' in patch) {
@@ -5055,6 +5112,49 @@ async function main() {
               ...('maxExtraCallsPerDay' in patch ? { maxExtraCallsPerDay: patch.maxExtraCallsPerDay } : {}),
               ...('extractionConversations' in patch ? { extractionConversations: patch.extractionConversations } : {})
             };
+          }
+          let restartRequired = false;
+          if (wantsThresholds) {
+            const after = normalizeMemoryConfig({
+              ...file.memory,
+              retrieval: { ...(asObject(file.memory.retrieval) ?? {}), ...(thresholdPatch.retrieval ?? {}) },
+              prompt: { ...(asObject(file.memory.prompt) ?? {}), ...(thresholdPatch.prompt ?? {}) },
+              capture: { ...(asObject(file.memory.capture) ?? {}), ...(thresholdPatch.capture ?? {}) },
+              consolidation: { ...(asObject(file.memory.consolidation) ?? {}), ...(thresholdPatch.consolidation ?? {}) },
+              ...(hasRamPatch ? { maxAdditionalRamMB: body.maxAdditionalRamMB } : {})
+            }, { root: ROOT });
+            file.memory.retrieval = {
+              ...(asObject(file.memory.retrieval) ?? {}),
+              maxResults: after.retrieval.maxResults,
+              candidateLimit: after.retrieval.candidateLimit,
+              minScore: after.retrieval.minScore,
+              halfLifeDays: after.retrieval.halfLifeDays
+            };
+            file.memory.prompt = {
+              ...(asObject(file.memory.prompt) ?? {}),
+              maxTokens: after.prompt.maxTokens,
+              targetAverageTokens: after.prompt.targetAverageTokens,
+              includeSessionState: after.prompt.includeSessionState
+            };
+            file.memory.capture = {
+              ...(asObject(file.memory.capture) ?? {}),
+              explicitMemoryEnabled: after.capture.explicitMemoryEnabled,
+              candidateBufferEnabled: after.capture.candidateBufferEnabled,
+              batchCandidateThreshold: after.capture.batchCandidateThreshold,
+              minExtractionIntervalMs: after.capture.minExtractionIntervalMs,
+              candidateTtlMs: after.capture.candidateTtlMs,
+              maxCandidates: after.capture.maxCandidates
+            };
+            file.memory.consolidation = {
+              ...(asObject(file.memory.consolidation) ?? {}),
+              enabled: after.consolidation.enabled,
+              onlyWhenIdle: after.consolidation.onlyWhenIdle,
+              idleMs: after.consolidation.idleMs,
+              intervalMs: after.consolidation.intervalMs,
+              preferACPower: after.consolidation.preferACPower
+            };
+            if (hasRamPatch) file.memory.maxAdditionalRamMB = after.maxAdditionalRamMB;
+            restartRequired = beforeThresholds !== thresholdSnapshot(after);
           }
           atomicWriteJson(configFile, file);
           const applied = memory.applyConfig(patch);
@@ -5069,8 +5169,9 @@ async function main() {
               extractionConversations: applied.extractionConversations
             }
           };
-          log(`控制台：长期记忆设置已保存（${JSON.stringify(applied)}）`);
-          sendJson({ ok: true, applied, status: memory.status() });
+          log(`控制台：长期记忆设置已保存（${JSON.stringify(applied)}${restartRequired ? '，阈值需重启桥接后生效' : ''}）`);
+          const { root: _memoryRoot, ...savedMemoryConfig } = normalizeMemoryConfig(file.memory, { root: ROOT });
+          sendJson({ ok: true, applied, status: memory.status(), restartRequired, config: savedMemoryConfig });
           return;
         }
         if (req.method === 'POST' && url.pathname === '/api/memory/migrate') {
@@ -6148,6 +6249,39 @@ async function main() {
               alerts: (() => {
                 try { return normalizeAlertConfig(readConfigObject(path.join(ROOT, 'config.json')).alerts); }
                 catch { return normalizeAlertConfig(cfg.alerts); }
+              })(),
+              // 顶层 webSearch（联网搜索）也是「控制台编辑落盘、MCP 每次调用重读 config.json」的
+              // 一类设置，所以这里优先回读文件（保存 → 刷新即可看到刚改的内容），而不是启动时的
+              // cfg.webSearch（它只保留了 enabled）。apiKey 永远只回 '********' + apiKeySet。
+              // 默认值与 provider 白名单对齐 src/web-search.js 的 loadSearchConfig；数值范围按
+              // 控制台口径 clamp（MCP 每次调用仍会按自身口径再收敛一次），apiKey 的解析顺序
+              // 由 MCP 侧负责。
+              webSearch: (() => {
+                let ws = {};
+                try {
+                  const raw = readConfigObject(path.join(ROOT, 'config.json')).webSearch;
+                  ws = (raw && typeof raw === 'object' && !Array.isArray(raw)) ? raw : {};
+                } catch { ws = {}; }
+                const clampInt = (value, fallback, min, max) => {
+                  const n = Number(value);
+                  return Number.isFinite(n) ? Math.min(max, Math.max(min, Math.round(n))) : fallback;
+                };
+                const apiKey = typeof ws.apiKey === 'string' ? ws.apiKey.trim() : '';
+                return {
+                  enabled: ws.enabled !== false,
+                  provider: ['deepseek', 'bing'].includes(ws.provider) ? ws.provider : 'auto',
+                  model: typeof ws.model === 'string' && ws.model.trim() ? ws.model.trim() : 'deepseek-v4-flash',
+                  baseURL: typeof ws.baseURL === 'string' ? ws.baseURL.trim() : '',
+                  apiKeyEnv: typeof ws.apiKeyEnv === 'string' && ws.apiKeyEnv.trim() ? ws.apiKeyEnv.trim() : 'DEEPSEEK_API_KEY',
+                  apiKey: apiKey ? '********' : '',
+                  apiKeySet: Boolean(apiKey),
+                  // 与运行时（src/web-search.js 的 loadSearchConfig）同区间：
+                  // 别让控制台允许一个"存得进去、调用时被收紧"的值。
+                  maxUses: clampInt(ws.maxUses, 5, 1, 5),
+                  maxTokens: clampInt(ws.maxTokens, 4096, 256, 8192),
+                  maxResults: clampInt(ws.maxResults, 8, 1, 20),
+                  timeoutMs: clampInt(ws.timeoutMs, 35000, 5000, 120000)
+                };
               })()
             }
           });
@@ -6171,8 +6305,10 @@ async function main() {
             : null;
           const current = fileV2 ?? ((cfg.socialV2 && typeof cfg.socialV2 === 'object') ? cfg.socialV2 : {});
           const merged = { ...current, ...body };
-          // 顶层 alerts 不在 socialV2 下：先摘掉，避免被下面的 file.socialV2 = merged 落进 socialV2。
+          // 顶层 alerts / webSearch 不在 socialV2 下：先摘掉，避免被下面的 file.socialV2 = merged
+          // 落进 socialV2（那会让同名字段在 config.json 里出现两份、且 MCP 读不到）。
           delete merged.alerts;
+          delete merged.webSearch;
           // 子对象必须是非 null 对象；null/数组/基本类型会覆盖默认值导致工具开关被绕过，这里直接保留当前值。
           for (const sub of ['tools', 'wake', 'send', 'wait', 'proactive', 'sticker', 'voice', 'feedback', 'context', 'asr', 'speak', 'sandbox', 'media', 'session', 'reminders']) {
             if (body[sub] !== undefined && (body[sub] === null || typeof body[sub] !== 'object' || Array.isArray(body[sub]))) {
@@ -6381,6 +6517,37 @@ async function main() {
             alertsChanged = JSON.stringify(normalizeAlertConfig(curAlerts)) !== JSON.stringify(nextAlerts);
             file.alerts = nextAlerts;
           }
+          // 顶层 webSearch（联网搜索）：apiKey 回传 '********' 表示「保留已保存的 key」，
+          // 其余字段收下控制台提交值并 clamp；未知字段保留，非法类型回退当前值。
+          // web_search MCP 每次调用都会重新读 config.json，所以这里写入后保存即生效（无需重启）。
+          if (body.webSearch && typeof body.webSearch === 'object' && !Array.isArray(body.webSearch)) {
+            const curWs = (file.webSearch && typeof file.webSearch === 'object' && !Array.isArray(file.webSearch))
+              ? file.webSearch
+              : ((cfg.webSearch && typeof cfg.webSearch === 'object') ? cfg.webSearch : {});
+            const patch = body.webSearch;
+            const clampInt = (value, fallback, min, max) => {
+              const n = Number(value);
+              return Number.isFinite(n) ? Math.min(max, Math.max(min, Math.round(n))) : fallback;
+            };
+            const nextWs = { ...curWs };
+            nextWs.enabled = typeof patch.enabled === 'boolean' ? patch.enabled : curWs.enabled !== false;
+            nextWs.provider = ['auto', 'deepseek', 'bing'].includes(patch.provider)
+              ? patch.provider
+              : (['auto', 'deepseek', 'bing'].includes(curWs.provider) ? curWs.provider : 'auto');
+            if (typeof patch.model === 'string') nextWs.model = patch.model.trim();
+            if (typeof patch.baseURL === 'string') nextWs.baseURL = patch.baseURL.trim();
+            if (typeof patch.apiKeyEnv === 'string') nextWs.apiKeyEnv = patch.apiKeyEnv.trim();
+            // '********' 是控制台拿到的脱敏占位，必须保留原值；空串只在原本没有 key 时出现。
+            if (typeof patch.apiKey === 'string' && patch.apiKey !== '********') nextWs.apiKey = patch.apiKey.trim();
+            // 与 src/web-search.js 的运行时钳制同区间（1..5 / 256..8192 / 1..20 / 5000..120000）
+            nextWs.maxUses = clampInt(patch.maxUses, clampInt(curWs.maxUses, 5, 1, 5), 1, 5);
+            nextWs.maxTokens = clampInt(patch.maxTokens, clampInt(curWs.maxTokens, 4096, 256, 8192), 256, 8192);
+            nextWs.maxResults = clampInt(patch.maxResults, clampInt(curWs.maxResults, 8, 1, 20), 1, 20);
+            nextWs.timeoutMs = clampInt(patch.timeoutMs, clampInt(curWs.timeoutMs, 35000, 5000, 120000), 5000, 120000);
+            file.webSearch = { ...curWs, ...nextWs };
+            // 让 /api/features 的「联网搜索」总闸立刻反映这次保存（web_search 本身按文件读，已即时生效）。
+            cfg.webSearch = { ...(cfg.webSearch ?? {}), enabled: nextWs.enabled };
+          }
           if (body.speak && typeof body.speak === 'object' && !Array.isArray(body.speak)) {
             const nextSpeak = { ...(current.speak ?? {}), ...body.speak };
             for (const sub of ['autoConvert', 'cosyvoice', 'mimo', 'doubao', 'openai', 'gptsovits']) {
@@ -6390,14 +6557,72 @@ async function main() {
             }
             merged.speak = normalizeSpeakConfig(nextSpeak);
           }
-          if (body.singing && typeof body.singing === 'object' && !Array.isArray(body.singing)) {
-            merged.singing = normalizeSingingConfig({ ...(current.singing ?? {}), ...body.singing }, ROOT);
-            // The console receives a redacted Netease cookie; keep the stored one.
-            if (body.singing?.cover?.online?.neteaseCookie === '********' && current.singing?.cover?.online?.neteaseCookie) {
-              merged.singing.cover = { ...(merged.singing.cover || {}), online: { ...(merged.singing.cover?.online || {}), neteaseCookie: current.singing.cover.online.neteaseCookie } };
-            }
-            if (body.singing?.cover?.online?.thirdPartyResolverUrl === '********' && current.singing?.cover?.online?.thirdPartyResolverUrl) {
-              merged.singing.cover = { ...(merged.singing.cover || {}), online: { ...(merged.singing.cover?.online || {}), thirdPartyResolverUrl: current.singing.cover.online.thirdPartyResolverUrl } };
+          // singing 是三层嵌套（singing / singing.cover / singing.cover.online）：控制台的
+          // 「唱歌」与「短翻唱 / 在线音源」是分开的两块表单，只提交一部分时**不能**浅合并，
+          // 否则没提交的那层会被整块覆盖掉（旧写法一次「只改 cover.enabled」的保存就会把
+          // cover 的时长/并发/队列与 online 的所有键清空，落盘后再读就只剩 enabled）。
+          if (body.singing !== undefined) {
+            const asObject = (value) => (value && typeof value === 'object' && !Array.isArray(value)) ? value : null;
+            const patchSinging = asObject(body.singing);
+            if (!patchSinging) {
+              // 非法类型（null / 字符串 / 数组）不能覆盖现行配置。
+              merged.singing = asObject(current.singing) ?? {};
+            } else {
+              const curSinging = asObject(current.singing) ?? {};
+              const curCover = asObject(curSinging.cover) ?? {};
+              const patchCover = asObject(patchSinging.cover);
+              const nextSinging = { ...curSinging, ...patchSinging };
+              const nextCover = { ...curCover };
+              if (patchCover) {
+                const curOnline = asObject(curCover.online) ?? {};
+                const patchOnline = asObject(patchCover.online);
+                Object.assign(nextCover, patchCover);
+                // 第三层：online 同样深合并，避免只改 online.timeoutMs 时把其它音源开关清掉。
+                if (patchOnline) nextCover.online = { ...curOnline, ...patchOnline };
+              }
+              nextSinging.cover = nextCover;
+              const normalized = normalizeSingingConfig(nextSinging, ROOT);
+              // 只归一化/夹紧控制台暴露的 cover 字段；路径、缓存、demucs 等高级项原样保留，
+              // 避免把解析后的绝对路径写进 config.json，也避免覆盖用户手改的值。
+              const clampInt = (value, fallback, min, max) => {
+                const n = Number(value);
+                return Number.isFinite(n) ? Math.min(max, Math.max(min, Math.round(n))) : fallback;
+              };
+              const boolOr = (value, fallback) => (typeof value === 'boolean' ? value : fallback);
+              const curOnline = asObject(curCover.online) ?? {};
+              const nextOnline = asObject(nextCover.online) ?? {};
+              const minDuration = clampInt(nextCover.minDuration, 10, 5, 30);
+              const maxDuration = Math.max(minDuration, clampInt(nextCover.maxDuration, 20, 5, 30));
+              const cover = {
+                ...nextCover,
+                enabled: boolOr(nextCover.enabled, curCover.enabled !== false),
+                defaultDuration: Math.min(maxDuration, Math.max(minDuration, clampInt(nextCover.defaultDuration, 15, 5, 30))),
+                minDuration,
+                maxDuration,
+                // 区间与 src/short-cover/config.js 的 normalizeCoverConfig 对齐（并发 ≤2、冷却 ≤600000）
+                maxConcurrent: clampInt(nextCover.maxConcurrent, 1, 1, 2),
+                maxQueue: clampInt(nextCover.maxQueue, 10, 0, 50),
+                maxPerKey: clampInt(nextCover.maxPerKey, 2, 1, 10),
+                cooldownMs: clampInt(nextCover.cooldownMs, 60000, 0, 600000),
+                online: {
+                  ...nextOnline,
+                  enabled: boolOr(nextOnline.enabled, curOnline.enabled !== false),
+                  qqmusic: boolOr(nextOnline.qqmusic, curOnline.qqmusic !== false),
+                  neteaseLevel: (typeof nextOnline.neteaseLevel === 'string' && nextOnline.neteaseLevel.trim())
+                    ? nextOnline.neteaseLevel.trim()
+                    : (String(curOnline.neteaseLevel || 'standard')),
+                  allowPaidMedia: boolOr(nextOnline.allowPaidMedia, curOnline.allowPaidMedia === true),
+                  previewFallback: boolOr(nextOnline.previewFallback, curOnline.previewFallback === true),
+                  timeoutMs: clampInt(nextOnline.timeoutMs, 20000, 3000, 60000),
+                  retries: clampInt(nextOnline.retries, 1, 0, 3)
+                }
+              };
+              // 控制台拿到的是脱敏后的在线凭据；回传 '********' 时保留已保存的值
+              // （其它客户端如果把整段 cover 回传，也不会把 Cookie / 解析服务地址洗掉）。
+              if (patchCover?.online?.neteaseCookie === '********' && curOnline.neteaseCookie) cover.online.neteaseCookie = curOnline.neteaseCookie;
+              if (patchCover?.online?.thirdPartyResolverUrl === '********' && curOnline.thirdPartyResolverUrl) cover.online.thirdPartyResolverUrl = curOnline.thirdPartyResolverUrl;
+              normalized.cover = cover;
+              merged.singing = normalized;
             }
           }
           // feedback：数值/布尔归一化

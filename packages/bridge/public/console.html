@@ -2523,6 +2523,61 @@ button:active:not(:disabled) {
         <div class="meta" style="margin:6px 0 0">安全阀：子进程峰值内存 超过上限、超时、或可用内存低于下限时会直接杀掉，不会让 Seed-VC 拖死 DSH。</div>
       </details>
 
+      <details class="settings-group" id="v2CoverBox" style="margin:14px 0 6px">
+        <summary>短翻唱（sing_short_cover）</summary>
+        <div class="settings-content">
+          <div class="meta" style="margin-bottom:8px">
+            从已授权曲库或在线音源取一段 10–20 秒，用上面配置的参考音色唱出来；重活按需运行、用完退出。
+            仍受「启用唱歌」总开关与 <code>qq_sing</code> 工具权限约束。配置保存在
+            <code>socialV2.singing.cover</code>，保存后重启桥接生效。
+          </div>
+          <div class="row">
+            <label style="flex:1">启用短翻唱</label><input type="checkbox" id="v2CoverEnabled" style="width:auto">
+            <label style="flex:1">默认时长（秒）</label><input type="number" id="v2CoverDefaultDuration" min="5" max="30" style="width:80px">
+            <label style="flex:1">最短时长（秒）</label><input type="number" id="v2CoverMinDuration" min="5" max="30" style="width:80px">
+            <label style="flex:1">最长时长（秒）</label><input type="number" id="v2CoverMaxDuration" min="5" max="30" style="width:80px">
+          </div>
+          <div class="row">
+            <label style="flex:1">同时处理数</label><input type="number" id="v2CoverMaxConcurrent" min="1" max="4" style="width:80px">
+            <label style="flex:1">全局队列上限</label><input type="number" id="v2CoverMaxQueue" min="1" max="50" style="width:80px">
+            <label style="flex:1">每个会话排队上限</label><input type="number" id="v2CoverMaxPerKey" min="1" max="10" style="width:80px">
+            <label style="flex:1">同一会话冷却（秒）</label><input type="number" id="v2CoverCooldownSec" min="0" max="3600" style="width:80px">
+          </div>
+          <div class="meta">时长 5–30 秒；队列与并发是资源保护阀，冷却按秒填写（0–3600 秒）。目录、缓存、人声分离等高级项仍直接改 config.json。</div>
+        </div>
+      </details>
+      <details class="settings-group" id="v2CoverOnlineBox" style="margin:0 0 6px">
+        <summary>在线音源（qqmusic / netease / 第三方解析）</summary>
+        <div class="settings-content">
+          <div class="meta" style="margin-bottom:8px">
+            从在线平台取授权音源（QQ 音乐 / 自建网易云 API / 第三方解析）；需要对应服务先就绪。
+            网易云 Cookie 与解析服务地址属于凭据，不在控制台回显，需要时直接改 <code>singing.cover.online</code>。
+          </div>
+          <div class="row">
+            <label style="flex:1">启用在线音源</label><input type="checkbox" id="v2CoverOnlineEnabled" style="width:auto">
+            <label style="flex:1">启用 QQ 音乐</label><input type="checkbox" id="v2CoverOnlineQQMusic" style="width:auto">
+            <label style="flex:1">网易云音质</label>
+            <select id="v2CoverOnlineNeteaseLevel" style="width:120px">
+              <option value="standard">standard</option>
+              <option value="higher">higher</option>
+              <option value="exhigh">exhigh</option>
+              <option value="lossless">lossless</option>
+              <option value="hires">hires</option>
+            </select>
+          </div>
+          <div class="row">
+            <label style="flex:1">允许付费 / 会员音源</label><input type="checkbox" id="v2CoverOnlineAllowPaid" style="width:auto">
+            <label style="flex:1">允许试听片段兜底</label><input type="checkbox" id="v2CoverOnlinePreviewFallback" style="width:auto">
+            <label style="flex:1">请求超时（秒）</label><input type="number" id="v2CoverOnlineTimeoutSec" min="3" max="60" style="width:80px">
+            <label style="flex:1">失败重试次数</label><input type="number" id="v2CoverOnlineRetries" min="0" max="3" style="width:70px">
+          </div>
+          <div class="meta" style="border-left:3px solid #f59e0b;padding-left:10px;color:#b45309">
+            ⚠️ 版权 / 付费：打开「允许付费 / 会员音源」只会让桥接<strong>尝试</strong>请求你在平台上本来就有权访问的音源；
+            它不会解密 .qmc/.ncm/.mflac，也不绕过付费墙或 DRM。请先确认自己拥有相应授权，否则保持关闭。
+          </div>
+        </div>
+      </details>
+
       <div class="meta" style="margin:10px 0 4px"><b>试听与试发</b>：用的是<b>已保存</b>的参数，改完先点「保存当前参数」。试听不受「允许 AI 开口说话」总开关限制，方便先调好音色再开放给 AI。</div>
       <div class="row" style="flex-wrap:wrap;gap:8px;align-items:center">
         <input type="text" id="ttsPreviewText" placeholder="试听文本，例如：嗯嗯，我听到啦，等我一下下。" style="flex:3;min-width:240px">
@@ -2819,6 +2874,37 @@ button:active:not(:disabled) {
       </div>
       <div class="meta">超过上限的图片 / 表情会被拒绝理解。范围：1KB–16MB、1–1000 百万像素、1–20 张。</div>
 </div></details>
+<details class="settings-group"><summary>联网搜索（webSearch：DeepSeek 搜索优先，Bing 兜底）</summary><div class="settings-content">
+      <div class="meta" style="margin-bottom:8px">
+        优先用与 DSH 同源的 DeepSeek 联网搜索（搜索词只发给 DeepSeek），不可用时自动回退 Bing；保存后立即生效
+        （web_search MCP 每次调用都重读 config.json），不需要重启。这里的「启用联网搜索」与总览页功能开关是同一个
+        <code>webSearch.enabled</code>，两处会同步。
+      </div>
+      <div class="row">
+        <label style="flex:1">启用联网搜索</label><input type="checkbox" id="v2WebSearchEnabled" style="width:auto">
+        <label style="flex:1">搜索服务商</label>
+        <select id="v2WebSearchProvider" style="width:190px">
+          <option value="auto">auto（DeepSeek 优先，失败回退 Bing）</option>
+          <option value="deepseek">只走 DeepSeek</option>
+          <option value="bing">只走 Bing</option>
+        </select>
+      </div>
+      <div class="row">
+        <label style="flex:1">模型</label><input type="text" id="v2WebSearchModel" placeholder="deepseek-v4-flash" style="flex:2">
+        <label style="flex:1">接口地址（Base URL，留空用默认）</label><input type="text" id="v2WebSearchBaseUrl" placeholder="https://api.deepseek.com/anthropic/v1" style="flex:3">
+      </div>
+      <div class="row">
+        <label style="flex:1">API Key</label><input type="password" id="v2WebSearchApiKey" autocomplete="off" style="flex:2">
+        <label style="flex:1">或从环境变量读取</label><input type="text" id="v2WebSearchApiKeyEnv" placeholder="DEEPSEEK_API_KEY" style="flex:2">
+      </div>
+      <div class="row">
+        <label style="flex:1">单次最多搜索轮数</label><input type="number" id="v2WebSearchMaxUses" min="1" max="20" style="width:80px">
+        <label style="flex:1">单次最大 token</label><input type="number" id="v2WebSearchMaxTokens" min="256" max="32000" step="256" style="width:100px">
+        <label style="flex:1">最多返回结果数</label><input type="number" id="v2WebSearchMaxResults" min="1" max="20" style="width:80px">
+        <label style="flex:1">单次超时（秒）</label><input type="number" id="v2WebSearchTimeoutSec" min="1" max="120" style="width:80px">
+      </div>
+      <div class="meta">API Key 输入框留空表示保持已保存的值不变；推荐用环境变量提供 Key，不写进 config.json。搜索范围 1–20 轮、256–32000 token、1–20 条、1–120 秒。</div>
+</div></details>
 <details class="settings-group"><summary>会话生命周期（session）</summary><div class="settings-content">
       <div class="row">
         <label style="flex:1">人格热重载（换人格卡后下一轮生效）</label><input type="checkbox" id="v2SessionHotReloadPersona" style="width:auto">
@@ -2967,6 +3053,45 @@ button:active:not(:disabled) {
           <span class="meta" id="memAdvancedMsg"></span>
         </div>
         <div class="meta" style="margin-top:8px">迁移会把 social-v2.json 的话题/印象复制进新库并先备份；回滚只删除本次迁移导入的行。旧文件不会被修改。</div>
+      </div></details>
+
+      <details class="settings-group" style="margin-top:12px"><summary>检索与提示词预算（retrieval / prompt）</summary><div class="settings-content">
+        <div class="meta" style="margin-bottom:8px">决定每次需要记忆时最多查多少条、注入多少 token。阈值类设置保存后需要<b>重启桥接</b>才生效；修改后点页面底部共用的「保存设置」。</div>
+        <div class="row">
+          <label style="flex:1">每次最多注入条数</label><input type="number" id="v2MemRetrievalMaxResults" min="1" max="20" style="width:90px">
+          <label style="flex:1">候选池大小</label><input type="number" id="v2MemRetrievalCandidateLimit" min="5" max="200" style="width:90px">
+          <label style="flex:1">最低相关度（0–1）</label><input type="number" id="v2MemRetrievalMinScore" min="0.05" max="0.95" step="0.01" style="width:90px">
+          <label style="flex:1">记忆半衰期（天）</label><input type="number" id="v2MemRetrievalHalfLifeDays" min="1" max="3650" style="width:90px">
+        </div>
+        <div class="row">
+          <label style="flex:1">单轮注入 token 上限（硬上限 350）</label><input type="number" id="v2MemPromptMaxTokens" min="50" max="350" style="width:90px">
+          <label style="flex:1">目标平均 token</label><input type="number" id="v2MemPromptTargetTokens" min="0" max="350" style="width:90px">
+          <label style="flex:1">附带当前会话状态</label><input type="checkbox" id="v2MemPromptIncludeSessionState" style="width:auto">
+        </div>
+      </div></details>
+
+      <details class="settings-group"><summary>提炼与巩固（capture / consolidation）</summary><div class="settings-content">
+        <div class="meta" style="margin-bottom:8px">控制候选记忆的提炼频率、保留期与离线巩固；这些阈值同样需要<b>重启桥接</b>后生效。</div>
+        <div class="row">
+          <label style="flex:1">记录明确说出的记忆</label><input type="checkbox" id="v2MemExplicitEnabled" style="width:auto">
+          <label style="flex:1">候选缓冲</label><input type="checkbox" id="v2MemCandidateBufferEnabled" style="width:auto">
+          <label style="flex:1">启用巩固</label><input type="checkbox" id="v2MemConsolidationEnabled" style="width:auto">
+        </div>
+        <div class="row">
+          <label style="flex:1">候选批阈值</label><input type="number" id="v2MemBatchThreshold" min="5" max="200" style="width:80px">
+          <label style="flex:1">最多候选条数</label><input type="number" id="v2MemMaxCandidates" min="50" max="5000" style="width:90px">
+          <label style="flex:1">额外内存目标（MB）</label><input type="number" id="v2MemMaxAdditionalRamMb" min="1" max="2048" style="width:90px">
+        </div>
+        <div class="row">
+          <label style="flex:1">提炼最小间隔（分钟）</label><input type="number" id="v2MemExtractIntervalMin" min="1" max="1440" style="width:90px">
+          <label style="flex:1">候选保留时长（小时）</label><input type="number" id="v2MemCandidateTtlHours" min="1" max="2160" step="0.5" style="width:90px">
+        </div>
+        <div class="row">
+          <label style="flex:1">仅在空闲时巩固</label><input type="checkbox" id="v2MemConsolidationOnlyIdle" style="width:auto">
+          <label style="flex:1">空闲判定（分钟）</label><input type="number" id="v2MemConsolidationIdleMin" min="1" max="1440" style="width:90px">
+          <label style="flex:1">巩固间隔（分钟）</label><input type="number" id="v2MemConsolidationIntervalMin" min="5" max="1440" style="width:90px">
+          <label style="flex:1">仅插电时巩固</label><input type="checkbox" id="v2MemConsolidationPreferAC" style="width:auto">
+        </div>
       </div></details>
     </section>
 
@@ -4119,6 +4244,20 @@ async function loadV2Config() {
     document.getElementById('v2AlertsEventUpstreamDegraded').checked = alertEvents.upstreamDegraded !== false;
     document.getElementById('v2AlertsEventSleep').checked = alertEvents.sleep !== false;
     document.getElementById('v2AlertsEventDshDown').checked = alertEvents.dshDown !== false;
+    const ws = c.webSearch || {};
+    document.getElementById('v2WebSearchEnabled').checked = ws.enabled !== false;
+    document.getElementById('v2WebSearchProvider').value = ['auto', 'deepseek', 'bing'].includes(ws.provider) ? ws.provider : 'auto';
+    document.getElementById('v2WebSearchModel').value = ws.model || '';
+    document.getElementById('v2WebSearchBaseUrl').value = ws.baseURL || '';
+    document.getElementById('v2WebSearchApiKeyEnv').value = ws.apiKeyEnv || '';
+    vioSetKey('v2WebSearchApiKey', ws);
+    document.getElementById('v2WebSearchMaxUses').value = ws.maxUses ?? 5;
+    document.getElementById('v2WebSearchMaxTokens').value = ws.maxTokens ?? 4096;
+    document.getElementById('v2WebSearchMaxResults').value = ws.maxResults ?? 8;
+    document.getElementById('v2WebSearchTimeoutSec').value = round1((ws.timeoutMs ?? 35000) / 1000);
+    // 「联网搜索」总闸在新旧两处是同一个字段，保持控件显示一致（保存分别走各自按钮）。
+    const wsFeatureToggle = [...document.querySelectorAll('[data-feature]')].find(el => el.dataset.feature === 'webSearch');
+    if (wsFeatureToggle) wsFeatureToggle.checked = ws.enabled !== false;
     document.getElementById('v2InitPromptMaxChars').value = c.initialPromptMaxChars ?? 2000;
     if (typeof applyV2InitPromptMax === 'function') applyV2InitPromptMax(c.initialPromptMaxChars ?? 2000);
     const fb = c.feedback || {};
@@ -4290,12 +4429,51 @@ async function saveV2Config() {
       }
     }
   };
+  // 顶层 webSearch：与 socialV2 不是同一段，后端单独写 config.json 的顶层 webSearch。
+  body.webSearch = {
+    enabled: document.getElementById('v2WebSearchEnabled').checked,
+    provider: document.getElementById('v2WebSearchProvider').value,
+    model: document.getElementById('v2WebSearchModel').value.trim(),
+    baseURL: document.getElementById('v2WebSearchBaseUrl').value.trim(),
+    apiKeyEnv: document.getElementById('v2WebSearchApiKeyEnv').value.trim(),
+    // 已保存且没改时回传脱敏占位，后端据此保留原值。
+    apiKey: vioGetKey('v2WebSearchApiKey'),
+    maxUses: Math.min(20, Math.max(1, Math.round(Number(document.getElementById('v2WebSearchMaxUses').value) || 5))),
+    maxTokens: Math.min(32000, Math.max(256, Math.round(Number(document.getElementById('v2WebSearchMaxTokens').value) || 4096))),
+    maxResults: Math.min(20, Math.max(1, Math.round(Number(document.getElementById('v2WebSearchMaxResults').value) || 8))),
+    timeoutMs: Math.min(120000, Math.max(1000, Math.round((Number(document.getElementById('v2WebSearchTimeoutSec').value) || 35) * 1000)))
+  };
   const r = await api('/api/socialV2/config', 'POST', body);
+  // 长期记忆阈值走独立端点（/api/memory/config，阈值类需重启桥接生效）。只在真的改过时
+  // 才发第二个请求，避免每次保存聊天参数都重写 memory 段。
+  let memoryNote = '';
+  let memoryFailed = false;
+  if (memoryThresholdDirty()) {
+    try {
+      const mr = await api('/api/memory/config', 'POST', readMemoryThresholds());
+      if (mr && mr.ok) {
+        if (mr.config) {
+          memoryThresholdsLocal = mr.config;
+          applyMemoryThresholdConfig(mr.config, { force: true });
+        } else {
+          memoryThresholdSaved = memoryThresholdSnapshot();
+        }
+        memoryNote = mr.restartRequired ? '（长期记忆阈值已写入，重启桥接后生效）' : '（长期记忆阈值已保存）';
+      } else {
+        memoryFailed = true;
+        memoryNote = '（⚠ 长期记忆阈值保存失败：' + (mr?.error || '未知错误') + '）';
+      }
+    } catch (error) {
+      memoryFailed = true;
+      memoryNote = '（⚠ 长期记忆阈值保存失败：' + (error?.message || error) + '）';
+    }
+  }
   const msg = document.getElementById('v2ConfigMsg');
-  msg.textContent = r.ok
-    ? ('✅ 已保存' + (r.alertsRestartRequired ? '（站外告警已写入，重启桥接后生效）' : ''))
-    : ('❌ ' + (r.error || '失败'));
-  msg.className = r.ok ? 'meta ok' : 'meta err';
+  const failed = !r.ok || memoryFailed;
+  msg.textContent = failed
+    ? ('❌ ' + [r.ok ? '' : (r.error || '保存失败'), memoryFailed ? memoryNote.replace(/^（|）$/g, '') : ''].filter(Boolean).join('；'))
+    : ('✅ 已保存' + (r.alertsRestartRequired ? '（站外告警已写入，重启桥接后生效）' : '') + memoryNote);
+  msg.className = failed ? 'meta err' : 'meta ok';
   if (r.ok) { loadV2Config(); loadFeatures(); }
 }
 
@@ -4598,6 +4776,23 @@ function fillVoiceIoForm(a, s) {
   vioEl('v2SingPython').value = sing.pythonPath || '';
   vioEl('v2SingRef').value = sing.refAudio || '';
   vioEl('v2SingSongsDir').value = sing.songsDir || '';
+  const cov = (sing.cover && typeof sing.cover === 'object' && !Array.isArray(sing.cover)) ? sing.cover : {};
+  vioEl('v2CoverEnabled').checked = cov.enabled !== false;
+  vioEl('v2CoverDefaultDuration').value = cov.defaultDuration ?? 15;
+  vioEl('v2CoverMinDuration').value = cov.minDuration ?? 10;
+  vioEl('v2CoverMaxDuration').value = cov.maxDuration ?? 20;
+  vioEl('v2CoverMaxConcurrent').value = cov.maxConcurrent ?? 1;
+  vioEl('v2CoverMaxQueue').value = cov.maxQueue ?? 10;
+  vioEl('v2CoverMaxPerKey').value = cov.maxPerKey ?? 2;
+  vioEl('v2CoverCooldownSec').value = round1((cov.cooldownMs ?? 60000) / 1000);
+  const covOnline = (cov.online && typeof cov.online === 'object' && !Array.isArray(cov.online)) ? cov.online : {};
+  vioEl('v2CoverOnlineEnabled').checked = covOnline.enabled !== false;
+  vioEl('v2CoverOnlineQQMusic').checked = covOnline.qqmusic !== false;
+  vioEl('v2CoverOnlineNeteaseLevel').value = ['standard', 'higher', 'exhigh', 'lossless', 'hires'].includes(covOnline.neteaseLevel) ? covOnline.neteaseLevel : 'standard';
+  vioEl('v2CoverOnlineAllowPaid').checked = covOnline.allowPaidMedia === true;
+  vioEl('v2CoverOnlinePreviewFallback').checked = covOnline.previewFallback === true;
+  vioEl('v2CoverOnlineTimeoutSec').value = round1((covOnline.timeoutMs ?? 20000) / 1000);
+  vioEl('v2CoverOnlineRetries').value = covOnline.retries ?? 1;
   const g = s.gptsovits || {};
   vioEl('v2GsvBaseUrl').value = g.baseUrl || '';
   vioEl('v2GsvTextLang').value = g.textLang || '';
@@ -4710,7 +4905,28 @@ function collectVoiceIoForm() {
     seedVcDir: vioStr('v2SingSeedVcDir'),
     pythonPath: vioStr('v2SingPython'),
     refAudio: vioStr('v2SingRef'),
-    songsDir: vioStr('v2SingSongsDir')
+    songsDir: vioStr('v2SingSongsDir'),
+    // 只提交「短翻唱 / 在线音源」暴露的字段：后端按 singing → cover → online 三层深合并，
+    // 未提交的路径、缓存、凭据等键原样保留。
+    cover: {
+      enabled: vioEl('v2CoverEnabled').checked,
+      defaultDuration: Math.round(vioNum('v2CoverDefaultDuration', 15)),
+      minDuration: Math.round(vioNum('v2CoverMinDuration', 10)),
+      maxDuration: Math.round(vioNum('v2CoverMaxDuration', 20)),
+      maxConcurrent: Math.round(vioNum('v2CoverMaxConcurrent', 1)),
+      maxQueue: Math.round(vioNum('v2CoverMaxQueue', 10)),
+      maxPerKey: Math.round(vioNum('v2CoverMaxPerKey', 2)),
+      cooldownMs: Math.max(0, Math.round(vioNum('v2CoverCooldownSec', 60) * 1000)),
+      online: {
+        enabled: vioEl('v2CoverOnlineEnabled').checked,
+        qqmusic: vioEl('v2CoverOnlineQQMusic').checked,
+        neteaseLevel: vioEl('v2CoverOnlineNeteaseLevel').value,
+        allowPaidMedia: vioEl('v2CoverOnlineAllowPaid').checked,
+        previewFallback: vioEl('v2CoverOnlinePreviewFallback').checked,
+        timeoutMs: Math.max(0, Math.round(vioNum('v2CoverOnlineTimeoutSec', 20) * 1000)),
+        retries: Math.round(vioNum('v2CoverOnlineRetries', 1))
+      }
+    }
   };
   return { asr, speak, singing };
 }
@@ -4864,6 +5080,10 @@ async function loadFeatures() {
     document.querySelectorAll('[data-feature]').forEach(el => {
       el.checked = f[el.dataset.feature] !== false;
     });
+    // 总览功能开关里的「联网搜索」与「视觉与视频 → 联网搜索」细节是同一个 webSearch.enabled。
+    const wsFeature = [...document.querySelectorAll('[data-feature]')].find(el => el.dataset.feature === 'webSearch');
+    const wsToggle = document.getElementById('v2WebSearchEnabled');
+    if (wsFeature && wsToggle) wsToggle.checked = wsFeature.checked;
   } catch {}
 }
 
@@ -4889,6 +5109,15 @@ async function saveFeatures() {
   }
 }
 document.getElementById('featureSave').addEventListener('click', saveFeatures);
+// 联网搜索总开关：总览「功能开关」与「联网搜索」细节双向同步显示；两边各自保存，
+// 但写的是同一个 config.json 顶层 webSearch.enabled，不会互相覆盖。
+(function syncWebSearchToggles() {
+  const feature = [...document.querySelectorAll('[data-feature]')].find(el => el.dataset.feature === 'webSearch');
+  const toggle = document.getElementById('v2WebSearchEnabled');
+  if (!feature || !toggle) return;
+  feature.addEventListener('change', () => { toggle.checked = feature.checked; });
+  toggle.addEventListener('change', () => { feature.checked = toggle.checked; });
+})();
 
 // ── 电源与省电（运行总览） ─────────────────────────────────────────────────
 // 只写 config.json 的 power 段，不碰大功能开关/工具开关：实际可用 = 手动开关 AND（插电 ? 全放行 : 这里勾的能力）。
@@ -6797,6 +7026,9 @@ function renderMemoryStatus(payload) {
   const openError = st.openError ? ` · ⚠ ${st.openError}` : '';
   document.getElementById('memStatusLine').textContent =
     `mode=${payload.mode} · active ${db.memories ?? 0} · 候选 ${db.candidates ?? 0} · 今日预算 ${budget.used ?? 0}/${budget.max ?? 0}${rss}${openError}`;
+  // 阈值型设置（检索/提示词预算/提炼/巩固）：用同一份 status 回包回填，不额外发请求。
+  // 旧桥接的 config 里没有这些字段时用默认值，保存新字段会在旧桥接被忽略（契约保持向后兼容）。
+  applyMemoryThresholdConfig(cfg);
 }
 async function loadMemoryPanel() {
   const msg = document.getElementById('memConfigMsg');
@@ -6850,6 +7082,83 @@ async function loadMemoryList() {
   } catch (error) {
     rowsEl.textContent = '读取失败：' + (error?.message || error);
   }
+}
+// ── 长期记忆阈值（retrieval / prompt / capture / consolidation）────────────────
+// 这些阈值只在桥接启动时读入（不做热更新），所以保存走 /api/memory/config，响应里的
+// restartRequired 决定是否提示「重启桥接后生效」。前端只在值真的改过时才发请求。
+const memoryThresholdEl = id => document.getElementById(id);
+function memoryThresholdNum(id, fallback) {
+  const raw = memoryThresholdEl(id).value;
+  const n = Number(raw);
+  return raw !== '' && Number.isFinite(n) ? n : fallback;
+}
+function memoryThresholdInt(id, fallback) { return Math.round(memoryThresholdNum(id, fallback)); }
+function readMemoryThresholds() {
+  return {
+    retrieval: {
+      maxResults: memoryThresholdInt('v2MemRetrievalMaxResults', 5),
+      candidateLimit: memoryThresholdInt('v2MemRetrievalCandidateLimit', 40),
+      minScore: memoryThresholdNum('v2MemRetrievalMinScore', 0.18),
+      halfLifeDays: memoryThresholdInt('v2MemRetrievalHalfLifeDays', 30)
+    },
+    prompt: {
+      maxTokens: memoryThresholdInt('v2MemPromptMaxTokens', 350),
+      targetAverageTokens: memoryThresholdInt('v2MemPromptTargetTokens', 150),
+      includeSessionState: memoryThresholdEl('v2MemPromptIncludeSessionState').checked
+    },
+    capture: {
+      explicitMemoryEnabled: memoryThresholdEl('v2MemExplicitEnabled').checked,
+      candidateBufferEnabled: memoryThresholdEl('v2MemCandidateBufferEnabled').checked,
+      batchCandidateThreshold: memoryThresholdInt('v2MemBatchThreshold', 15),
+      minExtractionIntervalMs: Math.max(0, Math.round(memoryThresholdNum('v2MemExtractIntervalMin', 30) * 60000)),
+      candidateTtlMs: Math.max(0, Math.round(memoryThresholdNum('v2MemCandidateTtlHours', 168) * 3600000)),
+      maxCandidates: memoryThresholdInt('v2MemMaxCandidates', 500)
+    },
+    consolidation: {
+      enabled: memoryThresholdEl('v2MemConsolidationEnabled').checked,
+      onlyWhenIdle: memoryThresholdEl('v2MemConsolidationOnlyIdle').checked,
+      idleMs: Math.max(0, Math.round(memoryThresholdNum('v2MemConsolidationIdleMin', 15) * 60000)),
+      intervalMs: Math.max(0, Math.round(memoryThresholdNum('v2MemConsolidationIntervalMin', 60) * 60000)),
+      preferACPower: memoryThresholdEl('v2MemConsolidationPreferAC').checked
+    },
+    maxAdditionalRamMB: memoryThresholdInt('v2MemMaxAdditionalRamMb', 50)
+  };
+}
+let memoryThresholdSaved = '';
+let memoryThresholdsLocal = null;
+const memoryThresholdSnapshot = () => JSON.stringify(readMemoryThresholds());
+const memoryThresholdDirty = () => memoryThresholdSaved !== '' && memoryThresholdSnapshot() !== memoryThresholdSaved;
+/** 回填阈值；force=保存成功后用服务端归一化结果覆盖本地草稿。 */
+function applyMemoryThresholdConfig(cfg, { force = false } = {}) {
+  // 页面刷新后 status 里的 config 是「启动时那份」（阈值不热更新）；保存过就用本地
+  // 刚拿到的那份，避免还没重启就被旧值覆盖。
+  const src = (!force && memoryThresholdsLocal) ? memoryThresholdsLocal : (cfg || {});
+  // 有未保存草稿时不覆盖（切页/轮询都会重新拉 status）。
+  if (!force && memoryThresholdDirty()) return;
+  const retrieval = src.retrieval || {};
+  const prompt = src.prompt || {};
+  const capture = src.capture || {};
+  const consolidation = src.consolidation || {};
+  memoryThresholdEl('v2MemRetrievalMaxResults').value = retrieval.maxResults ?? 5;
+  memoryThresholdEl('v2MemRetrievalCandidateLimit').value = retrieval.candidateLimit ?? 40;
+  memoryThresholdEl('v2MemRetrievalMinScore').value = retrieval.minScore ?? 0.18;
+  memoryThresholdEl('v2MemRetrievalHalfLifeDays').value = retrieval.halfLifeDays ?? 30;
+  memoryThresholdEl('v2MemPromptMaxTokens').value = prompt.maxTokens ?? 350;
+  memoryThresholdEl('v2MemPromptTargetTokens').value = prompt.targetAverageTokens ?? 150;
+  memoryThresholdEl('v2MemPromptIncludeSessionState').checked = prompt.includeSessionState === true;
+  memoryThresholdEl('v2MemExplicitEnabled').checked = capture.explicitMemoryEnabled !== false;
+  memoryThresholdEl('v2MemCandidateBufferEnabled').checked = capture.candidateBufferEnabled !== false;
+  memoryThresholdEl('v2MemBatchThreshold').value = capture.batchCandidateThreshold ?? 15;
+  memoryThresholdEl('v2MemExtractIntervalMin').value = round1((capture.minExtractionIntervalMs ?? 1800000) / 60000);
+  memoryThresholdEl('v2MemCandidateTtlHours').value = round1((capture.candidateTtlMs ?? 604800000) / 3600000);
+  memoryThresholdEl('v2MemMaxCandidates').value = capture.maxCandidates ?? 500;
+  memoryThresholdEl('v2MemConsolidationEnabled').checked = consolidation.enabled === true;
+  memoryThresholdEl('v2MemConsolidationOnlyIdle').checked = consolidation.onlyWhenIdle !== false;
+  memoryThresholdEl('v2MemConsolidationIdleMin').value = round1((consolidation.idleMs ?? 900000) / 60000);
+  memoryThresholdEl('v2MemConsolidationIntervalMin').value = round1((consolidation.intervalMs ?? 3600000) / 60000);
+  memoryThresholdEl('v2MemConsolidationPreferAC').checked = consolidation.preferACPower !== false;
+  memoryThresholdEl('v2MemMaxAdditionalRamMb').value = src.maxAdditionalRamMB ?? 50;
+  memoryThresholdSaved = memoryThresholdSnapshot();
 }
 async function saveMemoryConfig() {
   const msg = document.getElementById('memConfigMsg');
@@ -6942,6 +7251,8 @@ document.getElementById('memRollback').addEventListener('click', () => memoryAdv
 
 setConsolePage(location.hash.slice(1), { updateHash:false });
 
+// 阈值控件先按默认值渲染并记录基线，避免第一次保存聊天参数时被误判成「记忆阈值改过」。
+applyMemoryThresholdConfig(null);
 refresh(); refreshRoles(); refreshWhitelist(); refreshSessions(); refreshPending(); refreshPresets(); loadFeatures(); loadPower(); loadSocialForm(); loadV2Config(); refreshV2Activity(); loadV2ToolLog(); loadV2SessionOptions(); loadCallConfig(); loadVoiceprints(); refreshSocialStatus(); refreshSlang(); loadSlangConfig(); loadSecurity(); refreshSimPrompt(); refreshDshModel(); refreshUsage(); refreshUsageChart(); refreshUsageRecent();
 setInterval(() => { refresh(); refreshSessions(); refreshPending(); refreshSocialStatus(); refreshSlang(); }, 3000);
 // 用量看板只在本页可见时轮询：既保证「实时」，又不让其它页白白多打两份接口。
