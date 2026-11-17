@@ -111,6 +111,27 @@
       "legacySource": "social-v2.json"
     }
   },
+  "alerts": {
+    "enabled": false,
+    "channels": [
+      "macos"
+    ],
+    "webhook": {
+      "url": "",
+      "headers": {},
+      "timeoutMs": 8000
+    },
+    "minIntervalMs": 600000,
+    "maxPerHour": 12,
+    "events": {
+      "startup": false,
+      "gatewayDown": true,
+      "qqOffline": true,
+      "upstreamDegraded": true,
+      "sleep": true,
+      "dshDown": true
+    }
+  },
   "security": {
     "interceptNotify": true
   },

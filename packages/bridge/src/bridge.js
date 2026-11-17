@@ -37,6 +37,7 @@ import { buildCallMemoryContext } from './call-memory-context.js';
 import { VoiceprintStore } from './voiceprints.js';
 import { pruneStaleUnread } from './unread-freshness.js';
 import { createCoalescedWriter } from './state-writer.js';
+import { createAlertDispatcher } from './alerts.js';
 import { autoSpeakable, createTtsService, normalizeSpeakConfig, redactSpeakConfig, SPEAK_EMOTIONS } from './voice-tts.js';
 import { createSingingService, normalizeSingingConfig, redactSingingConfig } from './singing.js';
 import { createShortCoverService } from './short-cover/manager-v2.js';
@@ -1610,6 +1611,14 @@ let memorySystem = null;
 // ── 主流程 ──────────────────────────────────────────────────────────────────
 async function main() {
   const cfg = loadConfig();
+  // 站外告警：QQ 本身发不出消息时（网关掉线 / 会话失效 / 休眠）用系统通知或 webhook 通知操作者。
+  // 不挂任何轮询 —— 全部由已有的健康检查与休眠采样在事件发生时调用，内部有按事件节流。
+  const alerts = createAlertDispatcher({
+    config: cfg.alerts,
+    logger: (...args) => log('[alert]', ...args),
+    platform: process.platform
+  });
+  let dshDownSince = 0;
   // 电源监控在 main 的末尾才启动；这里先声明成 null，避免早期代码/请求处理器踩到 TDZ。
   // 三个省电状态变量也放在这里：测试 harness 会在 main 中途 return，声明在末尾会 TDZ。
   let powerMonitor = null;
@@ -3341,6 +3350,11 @@ async function main() {
       sleepWatch.lastAt = lastAt;
       if (count > before) {
         log(`[power] 过去 24 小时检测到 ${count} 次休眠（最近 ${new Date(lastAt).toLocaleString('zh-CN', { hour12: false })}）：合盖/空闲休眠会让 QQ 会话失效`);
+        void alerts.notify({
+          event: 'sleep',
+          title: '机器刚刚休眠过：QQ 会话可能已失效',
+          message: `过去 24 小时第 ${count} 次休眠（最近 ${new Date(lastAt).toLocaleString('zh-CN', { hour12: false })}）。如果她之后没反应，去 SnowLuma 控制台重新登录。`
+        });
       }
     });
   }
@@ -3965,7 +3979,15 @@ async function main() {
       }
     } else if (dshReady) {
       dshReady = false;
+      dshDownSince = Date.now();
       log('⚠️ DSH 不可用（重启中？），QQ 消息将入队等待');
+    }
+    if (!dshReady && dshDownSince && Date.now() - dshDownSince > 5 * 60_000) {
+      void alerts.notify({
+        event: 'dshDown',
+        title: 'DeepSeek Harness 已离线 5 分钟以上',
+        message: '桥接联系不上 DSH，QQ 消息只会排队不会回复。检查 DSH 是否在运行（桌面版是否被关掉）。'
+      });
     }
     // 冷会话瘦身：挂在已有的 5 秒检查循环上，靠 6 小时节流保证它几乎不做事。
     if (Date.now() - lastConversationCompactAt > 6 * 60 * 60 * 1000) {
@@ -4146,6 +4168,11 @@ async function main() {
     gatewayAlertAt = Date.now();
     const minutes = Math.round(downMs / 60000);
     log(`⚠️ QQ 网关已断线 ${minutes} 分钟：需要在 SnowLuma 里重新登录（http://127.0.0.1:6081）`);
+    void alerts.notify({
+      event: 'gatewayDown',
+      title: 'QQ 网关掉线：她收不到消息了',
+      message: `桥接检测到 SnowLuma 断线 ${minutes} 分钟。需要在 SnowLuma 里重新登录（${cfg.snowluma?.homeDir ? '本机 SnowLuma 控制台' : 'SnowLuma 控制台'}）后扫码。`
+    });
     const reminderCfg = normalizeRemindersConfig(cfg.socialV2?.reminders);
     if (!reminderCfg.enabled) return;
     try {
@@ -4163,12 +4190,25 @@ async function main() {
     const snap = snowlumaHealthSnapshot();
     void maybeAlertGatewayDown(snap);
     maybeAutoRestartSnowluma(snap);
+    // QQ 账号掉线（WS 还连着但账号不在线）：休眠后最常见，只能重新登录。
+    if (snap.connected && snap.accountOnline === false) {
+      void alerts.notify({
+        event: 'qqOffline',
+        title: 'QQ 会话失效：她在线但发不出消息',
+        message: 'SnowLuma 的 WebSocket 还连着，但 QQ 账号已不在线（多半是合盖休眠后会话失效）。需要在 SnowLuma 控制台重新扫码登录。'
+      });
+    }
     if (snap.degraded && !snowlumaHealth.degraded) {
       snowlumaHealth.degraded = true;
       snowlumaHealth.reason = snap.hint ?? '';
       log(`⚠️ SnowLuma 上游不健康：${snap.hint}`);
       log('   这不是桥接的问题：桥接没有任何原生/注入面，也不控制 SnowLuma 或 QQ。');
       log('   排查：SnowLuma 的 logs/snowluma-*.log 里搜 [Hook]（看是否有 "receive path stale" 或 "process enumeration timed out"）。');
+      void alerts.notify({
+        event: 'upstreamDegraded',
+        title: 'SnowLuma 上游不健康：收到了连接但收不到消息',
+        message: snap.hint || 'SnowLuma 的 QQ hook 可能卡死，重启容器通常能恢复。'
+      });
     } else if (!snap.degraded && snowlumaHealth.degraded) {
       snowlumaHealth.degraded = false;
       snowlumaHealth.reason = '';
@@ -15442,6 +15482,12 @@ async function main() {
     log(`长期记忆后台整理定时器已就绪（每 ${Math.round(interval / 60000)} 分钟检查一次；自动提炼=${cfg.memory.capture.autoExtractionEnabled ? '开' : '关'}，每日预算 ${cfg.memory.capture.maxExtraCallsPerDay} 次）`);
   }
 
+  // 启动通知（默认关闭）：重启频繁的话开它会很吵。
+  void alerts.notify({
+    event: 'startup',
+    title: 'dsh-omni 已启动',
+    message: `模式 ${currentMode}，控制台 ${cfg.consolePort || 3100} 端口。`
+  });
   await pumpMux();
 }
 
