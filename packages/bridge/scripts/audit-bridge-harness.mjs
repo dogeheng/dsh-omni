@@ -36,6 +36,13 @@ import * as inboxModule from '../src/inbox.js';
 import * as outboxModule from '../src/outbox.js';
 import * as threadModule from '../src/thread.js';
 import * as relayModule from '../src/relay/index.js';
+import * as snowlumaConn from '../src/snowluma-conn.js';
+import * as snowlumaRecovery from '../src/snowluma-recovery.js';
+import * as callPresenceModule from '../src/call-presence.js';
+import * as callMemory from '../src/call-memory.js';
+import * as callMemoryContext from '../src/call-memory-context.js';
+import * as voiceprintsModule from '../src/voiceprints.js';
+import * as unreadFreshness from '../src/unread-freshness.js';
 import { unwrap, createTurnCollector } from '../src/dsh-client.js';
 
 const root = fileURLToPath(new URL('..', import.meta.url));
@@ -207,6 +214,13 @@ export async function bridgeHarness({ config = {}, savedState, files = {}, globa
     ...voiceAsr, ...voiceTts, ...singing, ...shortCover, ...shortCoverV2, ...shortCoverConfig,
     ...power, ...roleCard, ...memory, ...consoleAssets, ...reminders, ...callConfig,
     ...inboxModule, ...outboxModule, ...threadModule, ...relayModule,
+    ...snowlumaConn, ...snowlumaRecovery, ...callPresenceModule, ...callMemory,
+    ...callMemoryContext, ...voiceprintsModule, ...unreadFreshness,
+    // 连接发现/写回会碰真实 homeDir 与 config.json，harness 里必须离线；
+    // 需要真实行为的用例用 bridgeHarness({ globals: { … } }) 覆盖（…globals 最后展开）。
+    discoverSnowLumaConnection: async () => ({ ok: false, error: 'harness stub' }),
+    persistToken: () => ({ updated: false }),
+    persistSnowLumaEndpoint: () => ({ updated: false }),
     // 电源监控在测试里必须确定：不 spawn pmset、不按宿主机当前电源改变策略、不留下轮询定时器。
     // 纯函数（normalizePowerConfig / powerAllowsCapability …）仍用 src/power.js 的真实现。
     createPowerMonitor: () => ({

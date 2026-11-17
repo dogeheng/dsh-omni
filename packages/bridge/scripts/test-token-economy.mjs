@@ -291,18 +291,21 @@ await test('an in-flight wait rechecks mode permission before exposing a new arr
   assert.equal(result.data.newMessages, undefined);
 });
 
-await test('building a budgeted snapshot preserves whole oldest messages without granting a receipt', async ({ h, st, request, append }) => {
+await test('a budgeted snapshot keeps the newest unread without granting a receipt past unseen older ones', async ({ h, st, request, append }) => {
   h.cfg.socialV2.context.wakeMessageLimit = 2;
   h.cfg.socialV2.context.wakeRecentLimit = 0;
   append('first'); append('second'); append('third');
   const snapshot = h.buildWakeSnapshotV2(KEY);
-  assert.deepEqual(seqs(snapshot.messages), [1, 2]);
+  // 8627d5c 起快照优先展示**最新**未读：旧积压不能把触发这次唤醒的新消息挤出去。
+  assert.deepEqual(seqs(snapshot.messages), [2, 3]);
   assert.equal(snapshot.includedUnreadCount, 2);
   assert.equal(snapshot.unreadCount, 3);
   assert.equal(snapshot.partial, true);
-  assert.equal(snapshot.readThroughSeq, 2);
+  // 但水位不能越过没展示过的 seq 1：否则 mark_read 会把一条从没给模型看过的消息静默吃掉。
+  assert.equal(snapshot.readThroughSeq, 0);
   assert.ok(JSON.stringify(snapshot).length <= h.cfg.socialV2.context.wakeMaxChars);
   assert.equal((await request('mark-read', { body: { throughSeq: 2 } })).status, 400);
+  assert.equal((await request('mark-read', { body: { throughSeq: 3 } })).status, 400);
   assert.deepEqual(seqs(st.unread), [1, 2, 3]);
 });
 
