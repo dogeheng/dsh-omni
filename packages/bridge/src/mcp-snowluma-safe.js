@@ -19,7 +19,7 @@ import { z } from 'zod';
 // 在 MCP 里拦会连「安全拒绝理由」都拿不到，反而让模型无法把话说清楚。
 import { SENSITIVE_RE } from './sensitive.js';
 import { serializeModelData } from './qq-model-view.js';
-import { deleteSandboxFile, listSandbox, mkdirSandbox, normalizeSandboxConfig, readSandboxFile, sandboxInfo, writeSandboxFile } from './sandbox.js';
+import { deleteSandboxFile, listSandbox, mkdirSandbox, normalizeSandboxConfig, readSandboxBinary, readSandboxFile, sandboxInfo, writeSandboxFile } from './sandbox.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const ROOT = path.resolve(__dirname, '..');
@@ -1220,19 +1220,43 @@ if (cfg.socialV2?.sticker?.enabled !== false && cfg.socialV2?.tools?.sendSticker
 if (cfg.socialV2?.tools?.sendImage !== false) {
   server.tool(
     'qq_send_image',
-    '在会话里发一张网络图片/表情包（http/https 直链）。桥接会自己下载并校验：SSRF 防护、只收 PNG/JPEG/GIF/WebP、≤4MB；OneBot 不会去拉任意 URL。用法：先用 mcp__web-search-safe__web_search / web_fetch 找到图片直链，再传 imageUrl；一条消息只能一张图，想说话先用 qq_send_message / qq_reply。发之前先确认内容和场合合适：不要发 NSFW、血腥、政治敏感或来路不明的图，不确定就不发；群聊里也不要刷图。需要引用/点名时可用 replyToMessageId / atUserId（群聊）。',
+    '在会话里发一张图片。两种来源二选一：(1) imageUrl —— 网络图片/表情包直链（桥接自己下载并校验 SSRF、只收 PNG/JPEG/GIF/WebP、≤4MB）；(2) imagePath —— **沙箱工作区内的相对路径**，用于发你自己生成或保存到本地的图片（例如 out/cover.png；不允许绝对路径、..、symlink）。一条消息只能一张图，想说话先用 qq_send_message / qq_reply。发之前先确认内容和场合合适：不要发 NSFW、血腥、政治敏感或来路不明的图，不确定就不发；群聊里也不要刷图。需要引用/点名时可用 replyToMessageId / atUserId（群聊）。',
     {
       key: z.string().describe('会话 key，格式 group:群号 或 private:QQ号'),
       token: z.string().describe('会话令牌（见唤醒提示中的【会话令牌】）'),
-      imageUrl: z.string().describe('图片的 http/https 直链（不是网页地址；通常以 .jpg/.png/.gif/.webp 结尾）'),
+      imageUrl: z.string().optional().describe('图片的 http/https 直链（不是网页地址；通常以 .jpg/.png/.gif/.webp 结尾）。与 imagePath 二选一'),
+      imagePath: z.string().optional().describe('沙箱工作区内的相对路径（如 out/cover.png）。与 imageUrl 二选一；用于发本地产出的图片'),
       replyToMessageId: z.union([z.number(), z.string()]).optional().describe('要引用/回复的消息 id（非零整数，可为负数，可选）'),
       atUserId: z.union([z.number(), z.string()]).optional().describe('要 @ 的群成员 QQ 号（群聊中可选，私聊不可用）')
     },
-    async ({ key, token, imageUrl, replyToMessageId, atUserId }) => {
+    async ({ key, token, imageUrl, imagePath, replyToMessageId, atUserId }) => {
       try {
+        const hasUrl = typeof imageUrl === 'string' && imageUrl.trim() !== '';
+        const hasPath = typeof imagePath === 'string' && imagePath.trim() !== '';
+        if (hasUrl === hasPath) {
+          return { content: [{ type: 'text', text: JSON.stringify({ ok: false, error: 'imageUrl 与 imagePath 必须且只能给一个' }) }] };
+        }
+        let payload;
+        if (hasPath) {
+          // 本地图片：只允许沙箱工作区内的相对路径（与 sandbox_* 工具同一套校验）。
+          // 上限取 media.maxBytes（默认 4MB）与沙箱读上限里更小的那个。
+          const mediaMax = Number(getConfig().socialV2?.media?.maxBytes) || 4 * 1024 * 1024;
+          const file = readSandboxBinary(normalizeSandboxConfig(getConfig().socialV2?.sandbox), String(imagePath), {
+            maxBytes: Math.min(4 * 1024 * 1024, mediaMax)
+          });
+          payload = {
+            key,
+            imageBase64: file.buffer.toString('base64'),
+            imagePath: file.path,
+            replyToMessageId,
+            atUserId: atUserId ?? null
+          };
+        } else {
+          payload = { key, imageUrl: String(imageUrl), replyToMessageId, atUserId: atUserId ?? null };
+        }
         const data = await agentApi('/api/socialV2/send-image', {
           method: 'POST',
-          body: JSON.stringify({ key, imageUrl: String(imageUrl), replyToMessageId, atUserId: atUserId ?? null }),
+          body: JSON.stringify(payload),
           headers: { 'x-agent-token': token },
           timeoutMs: 120000
         });

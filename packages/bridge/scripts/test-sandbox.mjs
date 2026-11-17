@@ -4,7 +4,7 @@ import os from 'node:os';
 import path from 'node:path';
 import {
   deleteSandboxFile, listSandbox, mkdirSandbox, normalizeSandboxConfig,
-  readSandboxFile, sandboxInfo, writeSandboxFile,
+  readSandboxBinary, readSandboxFile, sandboxInfo, writeSandboxFile,
 } from '../src/sandbox.js';
 
 const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'dsh-sandbox-'));
@@ -42,3 +42,25 @@ for (const name of ['sandbox_list', 'sandbox_read', 'sandbox_write', 'sandbox_mk
 }
 console.log('sandbox tests passed');
 fs.rmSync(tmp, { recursive: true, force: true });
+
+// ── 二进制读取（本地图片出口用）───────────────────────────────────────────────
+{
+  // 与文本读取共用同一套路径校验：只接受工作区内相对路径、拒绝 symlink
+  fs.mkdirSync(path.join(cfg.workspace, 'out'), { recursive: true });
+  const png = Buffer.from('89504e470d0a1a0a0000000d49484452', 'hex');
+  fs.writeFileSync(path.join(cfg.workspace, 'out', 'pic.png'), png);
+  const bin = readSandboxBinary(cfg, 'out/pic.png');
+  assert.deepEqual([...bin.buffer], [...png], '二进制内容要原样读回');
+  assert.equal(bin.path, path.join('out', 'pic.png'));
+  assert.equal(bin.bytes, png.length);
+  for (const bad of ['../outside.bin', '/etc/passwd', 'out/../../x']) {
+    assert.throws(() => readSandboxBinary(cfg, bad), /sandbox 路径被拒绝/);
+  }
+  assert.throws(() => readSandboxBinary(cfg, 'link.txt'), /symlink|sandbox 路径被拒绝/);
+  // 上限：按调用方给的值卡（图片出口传 media.maxBytes）
+  fs.writeFileSync(path.join(cfg.workspace, 'out', 'big.png'), Buffer.alloc(2048, 1));
+  assert.throws(() => readSandboxBinary(cfg, 'out/big.png', { maxBytes: 1024 }), /超过读取上限/);
+  assert.equal(readSandboxBinary(cfg, 'out/big.png', { maxBytes: 4096 }).bytes, 2048);
+  assert.throws(() => readSandboxBinary(cfg, 'out'), /not a regular file|sandbox 路径被拒绝/);
+  console.log('  ✅ 沙箱二进制读取：路径校验/符号链接/上限都生效');
+}

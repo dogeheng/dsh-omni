@@ -94,8 +94,35 @@ export function readSandboxFile(cfg, input) {
   try {
     const fst = fs.fstatSync(fd);
     if (!fst.isFile()) throw badPath('not a regular file');
-    return { path: path.relative(cfg.workspace, file), content: fs.readFileSync(fd, 'utf8'), bytes: fst.size };
+    // 相对路径要按**真实根**算：macOS 的 /var → /private/var 是符号链接，
+    // 用 cfg.workspace 算会得到一串 ../../..（既难读，也把宿主路径漏了出去）。
+    return { path: path.relative(realRoot(cfg), file), content: fs.readFileSync(fd, 'utf8'), bytes: fst.size };
   } finally { fs.closeSync(fd); }
+}
+
+/**
+ * 读工作区里的二进制文件（图片出口用）。路径校验与 `readSandboxFile` 完全一致：
+ * 只接受工作区内的相对路径、逐段拒绝 symlink、O_NOFOLLOW 打开。
+ *
+ * @param {object} cfg normalize 后的 sandbox 配置
+ * @param {string} input 工作区内相对路径
+ * @param {{maxBytes?:number}} [opts] 上限（默认 maxReadBytes；硬上限 8MB）
+ */
+export function readSandboxBinary(cfg, input, { maxBytes = null } = {}) {
+  ensureRoots(cfg);
+  const file = resolveInWorkspace(cfg, input, { mustExist: true });
+  const st = fs.lstatSync(file);
+  if (!st.isFile()) throw badPath('not a regular file');
+  const cap = Math.max(1024, Math.min(8 * 1024 * 1024, Number(maxBytes) || cfg.maxReadBytes));
+  if (st.size > cap) throw Object.assign(new Error(`文件超过读取上限 ${cap} 字节`), { code: 'SANDBOX_TOO_LARGE' });
+  const fd = openNoFollow(file, fs.constants.O_RDONLY);
+  try {
+    const fst = fs.fstatSync(fd);
+    if (!fst.isFile()) throw badPath('not a regular file');
+    return { path: path.relative(realRoot(cfg), file), buffer: fs.readFileSync(fd), bytes: fst.size };
+  } finally {
+    fs.closeSync(fd);
+  }
 }
 
 export function writeSandboxFile(cfg, input, content, { append = false } = {}) {

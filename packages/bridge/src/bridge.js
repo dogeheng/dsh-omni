@@ -4447,8 +4447,10 @@ async function main() {
         res.writeHead(status, { 'content-type': 'application/json; charset=utf-8', ...SECURITY_HEADERS });
         res.end(JSON.stringify(obj, null, 2));
       };
-      const readBody = () => new Promise((resolve, reject) => {
-        const MAX_BODY_BYTES = 1_000_000;
+      // maxBytes 可按端点放宽（本地图片出口要 4MB 的图 → base64 后约 5.4MB）。
+      // 默认仍是 1MB；放宽只对明确声明的那一个端点生效，别全局调大。
+      const readBody = ({ maxBytes = 1_000_000 } = {}) => new Promise((resolve, reject) => {
+        const MAX_BODY_BYTES = Math.max(1024, Math.min(8 * 1024 * 1024, Number(maxBytes) || 1_000_000));
         const chunks = [];
         let total = 0;
         let settled = false;
@@ -4470,7 +4472,7 @@ async function main() {
         // 提前按 Content-Length 拒绝超限请求体
         const declared = Number(req.headers['content-length']);
         if (Number.isFinite(declared) && declared > MAX_BODY_BYTES) {
-          fail(413, '请求体过大（超过 1MB）');
+          fail(413, `请求体过大（超过 ${Math.round(MAX_BODY_BYTES / 1000)}KB）`);
           return;
         }
         bodyTimer = setTimeout(() => fail(400, '请求体读取超时'), 30000);
@@ -4480,7 +4482,7 @@ async function main() {
           total += buf.length;
           if (total > MAX_BODY_BYTES) {
             req.pause();
-            fail(413, '请求体过大（超过 1MB）');
+            fail(413, `请求体过大（超过 ${Math.round(MAX_BODY_BYTES / 1000)}KB）`);
             return;
           }
           chunks.push(buf);
@@ -7976,12 +7978,17 @@ async function main() {
           return;
         }
         if (req.method === 'POST' && url.pathname === '/api/socialV2/send-image') {
-          const body = await readBody();
+          // 本地图片是 base64 塞在 body 里：4MB 的图约 5.4MB JSON，默认 1MB 闸门会先把它拦掉。
+          // 这个端点单独放宽到 8MB（= 解码后 6MB 上限），其余端点仍是 1MB。
+          const body = await readBody({ maxBytes: 8 * 1024 * 1024 });
           const key = String(body.key ?? '').trim();
           const imageUrl = String(body.imageUrl ?? body.url ?? '').trim();
+          // 本地图片出口：MCP 把沙箱里的文件读成 base64 送过来，桥接只负责最后一道校验与发送。
+          const imageBase64 = String(body.imageBase64 ?? '').trim();
           const replyToMessageId = body.replyToMessageId;
           const atUserId = body.atUserId ?? null;
-          if (!key || !imageUrl) { sendJson({ ok: false, error: 'key 和 imageUrl 不能为空' }, 400); return; }
+          if (!key || (!imageUrl && !imageBase64)) { sendJson({ ok: false, error: 'key 必填，且 imageUrl / imageBase64 至少给一个' }, 400); return; }
+          if (imageUrl && imageBase64) { sendJson({ ok: false, error: 'imageUrl 与 imageBase64 不要同时给' }, 400); return; }
           if (req.headers['x-agent-token'] && !agentTokenOk(key, req.headers['x-agent-token'])) { sendJson({ ok: false, error: 'agent token 无效' }, 403); return; }
           if (req.headers['x-agent-token'] && !v2SessionAllowed(key)) { sendJson({ ok: false, error: '目标不在当前模式允许范围内' }, 403); return; }
           if (req.headers['x-agent-token'] && !v2ToolEnabled('sendImage')) { sendJson({ ok: false, error: '工具未启用：qq_send_image' }, 403); return; }
@@ -8022,14 +8029,31 @@ async function main() {
             actualReplyToMessageId = resolved.messageId;
           }
           let image;
-          try {
-            const maxBytes = Math.min(4 * 1024 * 1024, Number(cfg.socialV2?.media?.maxBytes) || 4 * 1024 * 1024);
-            // safeFetchBuffer 自带 SSRF/重定向/体积校验，且返回前已经验过图片魔数。
-            const fetched = await safeFetchBuffer(imageUrl, maxBytes);
-            image = fetched.buffer;
-          } catch (error) {
-            sendJson({ ok: false, error: `图片下载失败：${error?.message ?? error}` }, 400);
-            return;
+          const maxBytes = Math.min(4 * 1024 * 1024, Number(cfg.socialV2?.media?.maxBytes) || 4 * 1024 * 1024);
+          if (imageBase64) {
+            // 本地图片与网络图片走**同一组**校验：体积上限、base64 形状、图片魔数。
+            // 不信任调用方：MCP 侧已经校验过一次，这里再校验一次（两端都可能被别的东西调用）。
+            try {
+              const raw = imageBase64.startsWith('data:') ? imageBase64.slice(imageBase64.indexOf(',') + 1) : imageBase64;
+              if (!/^[A-Za-z0-9+/=\s]+$/.test(raw)) throw new Error('不是合法的 base64');
+              const buf = Buffer.from(raw, 'base64');
+              if (!buf.length) throw new Error('解码后为空');
+              if (buf.length > maxBytes) throw new Error(`超过上限 ${maxBytes} 字节`);
+              if (!looksLikeImageBuffer(buf)) throw new Error('不是可识别的图片（PNG/JPEG/GIF/WebP）');
+              image = buf;
+            } catch (error) {
+              sendJson({ ok: false, error: `图片校验失败：${error?.message ?? error}` }, 400);
+              return;
+            }
+          } else {
+            try {
+              // safeFetchBuffer 自带 SSRF/重定向/体积校验，且返回前已经验过图片魔数。
+              const fetched = await safeFetchBuffer(imageUrl, maxBytes);
+              image = fetched.buffer;
+            } catch (error) {
+              sendJson({ ok: false, error: `图片下载失败：${error?.message ?? error}` }, 400);
+              return;
+            }
           }
           st.sendTimes = st.sendTimes || [];
           st.sendTimes.push(now);
@@ -8038,7 +8062,7 @@ async function main() {
           saveSocialV2State();
           try {
             await sendImageToQQ(key, image, actualReplyToMessageId, atUserId);
-            appendActivity(`${key} [image] AI 发送网络图片（${image.length} 字节）`);
+            appendActivity(`${key} [image] AI 发送${imageBase64 ? '本地' : '网络'}图片（${image.length} 字节）`);
             sendJson({ ok: true, key, bytes: image.length });
           } catch (error) {
             sendJson({ ok: false, error: `发送图片失败：${error?.message ?? error}` }, 500);
