@@ -94,6 +94,7 @@ import {
   createMemoryManager,
   normalizeForDedupe,
   normalizeMemoryConfig,
+  redactForMemory,
   sanitizePromptLine
 } from './memory/index.js';
 
@@ -8787,7 +8788,7 @@ async function main() {
               ...result,
               ...(reminder ? { reminder } : {}),
               subject: { resolved: !!identity.qqId, label: identity.label ?? null },
-              hint: result.ok === false ? result.reason : (reminder?.ok ? '已写入长期记忆，并已归档到提醒事项' : '已写入长期记忆（跨会话可见，按作用域隔离）')
+              hint: result.ok === false ? result.reason : `${reminder?.ok ? '已写入长期记忆，并已归档到提醒事项' : '已写入长期记忆（跨会话可见，按作用域隔离）'}${result.redacted ? '；其中本机路径/凭据形态的部分已遮蔽' : ''}`
             }, result.ok === false ? 400 : 200);
             return;
           }
@@ -11493,7 +11494,10 @@ async function main() {
         root: ROOT,
         config: cfg.memory,
         logger: (msg, err) => log(msg, err),
-        powerState: () => powerMonitor?.state?.() ?? null
+        powerState: () => powerMonitor?.state?.() ?? null,
+        // 记忆入库前的精确令牌脱敏：32-hex 的会话令牌不匹配 SENSITIVE_RE，
+        // 只有这份动态名单能拦住它（名单由桥接维护，memory 模块看不到）。
+        redactToken: (text) => redactKnownTokensOnly(text)
       });
       memorySystem = manager;
       if (cfg.memory.enabled) {
@@ -11664,7 +11668,12 @@ async function main() {
   }
 
   function legacyTextHitV2(tomb, text) {
-    const hay = normalizeForDedupe(text);
+    // 墓碑里留的是**入库时脱敏后**的内容，比较前旧副本必须过同一道脱敏：
+    // 否则「凭据已被遮蔽」的记忆永远清不掉旧副本，明文会继续留在 social-v2.json 里。
+    const scrubbed = redactForMemory(String(text ?? ''), {
+      redactToken: (value) => redactKnownTokensOnly(value)
+    });
+    const hay = normalizeForDedupe(scrubbed.text);
     const needle = String(tomb?.normalizedContent ?? '');
     if (!hay || !needle) return false;
     return hay.includes(needle) || needle.includes(hay);

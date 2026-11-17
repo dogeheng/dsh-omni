@@ -618,3 +618,31 @@ test('删除墓碑：模型（agent token）不能把已遗忘的记忆写回来
     }
   }, { config: { memory: memoryConfig() } });
 });
+
+test('记忆写入脱敏：路径与凭据形态不进库，接口如实告知', async () => {
+  await withBridge(async (h) => {
+    const server = h.startConsoleServer();
+    if (!server.listening) await new Promise((resolve) => server.once('listening', resolve));
+    const port = server.address().port;
+    try {
+      const key = `group:${A_GROUP}`;
+      incoming(h, key, { sender: '小明', userId: XIAOMING, text: '我最近在折腾一个项目' });
+      const token = h.getSocialV2State(key).agentToken;
+      const res = await requestJson(port, '/api/socialV2/memory-append', {
+        method: 'POST', agentToken: token,
+        body: { key, category: 'fact', content: '小明的项目在 /Users/someone/secret-app，凭据 token=abcdef123456', extra: { target: '小明' } }
+      });
+      assert.equal(res.status, 200, res.text);
+      assert.equal(res.body.ok, true);
+      assert.equal(res.body.redacted, true, '接口要如实告诉模型内容已被遮蔽');
+      assert.match(String(res.body.hint), /已遮蔽/);
+      const row = h.memory.store().getMemory(res.body.id);
+      assert.ok(row, '记忆应当真的写进去了');
+      assert.ok(!row.content.includes('/Users/'), '库里不能出现明文路径');
+      assert.ok(!row.content.includes('abcdef123456'), '库里不能出现明文凭据');
+      assert.ok(row.content.includes('小明'), '不该把整句吞掉');
+    } finally {
+      await new Promise((resolve) => server.close(resolve));
+    }
+  }, { config: { memory: memoryConfig() } });
+});

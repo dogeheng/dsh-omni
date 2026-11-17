@@ -1,3 +1,5 @@
+import { SENSITIVE_RE } from '../sensitive.js';
+
 // 记忆检索的文本层：中文轻量分词、FTS 查询构造、Token 估算、脱敏与去重归一。
 //
 // 为什么不用 unicode61 直接吃中文：
@@ -122,6 +124,25 @@ export function estimateTokens(text) {
 }
 
 /** 去重归一：NFKC + 小写 + 去掉所有空白/标点，只留字母数字汉字。 */
+/**
+ * 写库前的统一脱敏。
+ *
+ * 两道闸门，缺一不可：
+ *   ① 已知令牌：32 位十六进制的会话令牌**不匹配** SENSITIVE_RE（见该文件里的说明），
+ *      只有桥接注入的精确名单能拦住，所以 redactToken 由调用方传进来；
+ *   ② 路径 / 凭据形态：用 SENSITIVE_RE 打码。这里**打码而不是拒写** ——
+ *      拒写会让「我把项目放在 /Users/x/foo」这类正常陈述整条丢掉；打码既保住语义，
+ *      又不让明文进库（记忆可能经 person_shared 出现在别的群）。
+ */
+export function redactForMemory(text, { redactToken = null } = {}) {
+  let out = String(text ?? '');
+  if (typeof redactToken === 'function') out = String(redactToken(out) ?? '');
+  const probe = new RegExp(SENSITIVE_RE.source, 'gi');
+  const redacted = probe.test(out);
+  if (redacted) out = out.replace(new RegExp(SENSITIVE_RE.source, 'gi'), '[已遮蔽]');
+  return { text: out, redacted };
+}
+
 export function normalizeForDedupe(text) {
   return String(text ?? '')
     .normalize('NFKC')

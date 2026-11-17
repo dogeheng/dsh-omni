@@ -38,6 +38,7 @@ export {
   quoteFtsToken,
   sanitizeMemoryContent,
   sanitizePromptLine,
+  redactForMemory,
   tokenizeMemoryText
 } from './text.js';
 export {

@@ -12,6 +12,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { MemoryStore } from './store.js';
+import { redactForMemory } from './text.js';
 import {
   authorizeForget, authorizeWrite, buildReadContext, defaultWriteScope, MEMORY_KINDS,
   parseConversationKey, SCOPE, STYLE_SUBJECT_KEY
@@ -76,7 +77,9 @@ class LruCache {
 }
 
 export function createMemoryManager({
-  root = '', config = {}, logger = () => {}, now = nowMs, powerState = () => null
+  root = '', config = {}, logger = () => {}, now = nowMs, powerState = () => null,
+  // 已知令牌（会话令牌等）只有桥接知道；memory 模块拿不到那份名单，由调用方注入。
+  redactToken = null
 } = {}) {
   const cfg = normalizeMemoryConfig(config, { root });
   const personaId = cfg.personaId;
@@ -134,7 +137,7 @@ export function createMemoryManager({
     const t = now();
     if (t < state.nextRetryAt) return null;
     try {
-      const s = new MemoryStore({ file: dbFile, logger: log, now });
+      const s = new MemoryStore({ file: dbFile, logger: log, now, redact: (text) => redactForMemory(text, { redactToken }) });
       s.open();
       state.store = s;
       state.openError = null;
@@ -315,7 +318,16 @@ export function createMemoryManager({
         // store.addMemory 命中墓碑：这条内容被使用者明确遗忘过，只有操作者能重记。
         return { ok: false, reason: '这条内容之前被明确遗忘过；如果确实要重新记住，需要操作者在控制台重新添加' };
       }
-      return { ok: true, id: result.id, created: result.created, duplicate: !!result.duplicate, scope: auth.scope, kind: finalKind, superseded: result.superseded ?? [] };
+      return {
+        ok: true,
+        id: result.id,
+        created: result.created,
+        duplicate: !!result.duplicate,
+        scope: auth.scope,
+        kind: finalKind,
+        superseded: result.superseded ?? [],
+        ...(result.redacted ? { redacted: true } : {})
+      };
     }, { ok: false, reason: '记忆写入异常（已降级）' }, '显式记忆写入');
   }
 

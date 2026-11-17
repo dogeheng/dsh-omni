@@ -21,6 +21,7 @@ import {
   planLegacyImport,
   planExtraction,
   runExtractionOnce,
+  redactForMemory,
   runLegacyMigration,
   rollbackLegacyMigration,
   verifyLegacyMigration
@@ -639,7 +640,11 @@ test('18. 删除墓碑：自动路径不能复活，显式重记可以覆盖', (
     const rec = remember(m, ctx, { kind: 'state', content, subjectId: XIAOMING, subjectLabel: '小明' });
     const del = m.forget({ ctx, id: rec.id });
     assert.equal(del.ok, true);
-    assert.equal(del.removed[0].content, content, '删除结果要带回内容，供桥接清理旧副本');
+    // 写入时凭据形态已被遮蔽；删除结果带回的是**库里那份**，桥接拿它清旧副本才清得掉。
+    const stored = redactForMemory(content).text;
+    assert.notEqual(stored, content, '凭据形态应当在入库前被遮蔽');
+    assert.equal(rec.redacted, true, '写入结果要带 redacted 标记');
+    assert.equal(del.removed[0].content, stored, '删除结果要带回（已脱敏的）内容');
     const s = m.store();
     assert.equal(s.countTombstones({ personaId: 'default' }), 1);
 
@@ -835,6 +840,36 @@ test('24. 群风：preference+群风保留键，单条 active、旧历史压缩�
     const latest = m.buildPromptBlock({ ctx: ctxA, text: '6', reason: 'wake' });
     assert.match(latest.text, /长/);
     assert.ok(latest.tokens <= 60);
+  } finally {
+    m.close();
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('25. 写入脱敏：已知令牌与本机路径都不进库，且脱敏是确定性的', () => {
+  const root = tempRoot();
+  const TOKEN = 'a1b2c3d4e5f60718293a4b5c6d7e8f90';
+  const m = createMemoryManager({
+    root,
+    config: { enabled: true, retrieval: { mode: 'live' } },
+    // 桥接注入的精确令牌名单；memory 模块自己看不到这份名单
+    redactToken: (text) => String(text).split(TOKEN).join('***'),
+  });
+  try {
+    const ctx = groupCtx(m, A_GROUP, [[XIAOMING, '小明']]);
+    const secret = `小明的令牌是 ${TOKEN}，项目在 /Users/someone/secret-app`;
+    const rec = m.remember({ ctx, kind: 'fact', content: secret, subjectId: XIAOMING, subjectLabel: '小明' });
+    assert.equal(rec.ok, true);
+    assert.equal(rec.redacted, true, '写库结果要带 redacted 标记');
+    const row = m.store().getMemory(rec.id);
+    assert.ok(!row.content.includes(TOKEN), '已知令牌不能明文入库');
+    assert.ok(!row.content.includes('/Users/'), '本机路径不能明文入库');
+    assert.ok(row.content.includes('[已遮蔽]'), '被遮蔽的位置要留下可见标记');
+    assert.ok(row.content.includes('小明'), '遮蔽不应把整句话吞掉');
+
+    // 脱敏是确定性的 → 同一段内容再写一次应当判重，而不是在库里留两份
+    const again = m.remember({ ctx, kind: 'fact', content: secret, subjectId: XIAOMING, subjectLabel: '小明' });
+    assert.equal(again.duplicate, true, '脱敏确定性应当保住去重');
   } finally {
     m.close();
     fs.rmSync(root, { recursive: true, force: true });

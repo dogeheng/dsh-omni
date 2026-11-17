@@ -210,11 +210,14 @@ export class MemoryStore {
    * @param {string} p.file                     sqlite 文件路径（':memory:' 允许，测试用）
    * @param {(msg:string, err?:unknown)=>void} [p.logger]
    * @param {() => number} [p.now]
+   * @param {(text: string) => {text: string, redacted: boolean}} [p.redact]
+   *        写库前的脱敏（未知时原样入库）。由 manager 注入，见 text.js 的 redactForMemory。
    */
-  constructor({ file, logger = () => {}, now = Date.now } = {}) {
+  constructor({ file, logger = () => {}, now = Date.now, redact = null } = {}) {
     this.file = String(file || ':memory:');
     this.logger = logger;
     this.now = now;
+    this.redact = typeof redact === 'function' ? redact : null;
     this.db = null;
     this.stmtCache = new Map();
     this.stmtLimit = 128;
@@ -418,8 +421,13 @@ export class MemoryStore {
   } = {}) {
     if (!MEMORY_SCOPES.includes(scope)) throw new Error(`非法 scope: ${scope}`);
     if (!MEMORY_KINDS.includes(kind)) throw new Error(`非法 kind: ${kind}`);
-    const text = String(content ?? '').trim();
+    // 脱敏放在**唯一写入口**：显式记忆、提炼、迁移、候选提升都从这里入库，
+    // 只在一个入口做才不会出现"某条路径忘了脱敏"的岔路。
+    const rawText = String(content ?? '').trim();
+    const scrubbed = this.redact ? this.redact(rawText) : { text: rawText, redacted: false };
+    const text = String(scrubbed.text ?? '').trim();
     if (!text) throw new Error('记忆内容为空');
+    const wasRedacted = scrubbed.redacted === true;
     const subject = subjectId ? String(subjectId) : null;
     const dedupeKey = this.buildDedupeKey({ personaId, scope, scopeKey, kind, subjectId: subject, content: text });
     const grams = buildGramsText(`${text} ${subjectLabel ?? ''}`, { maxTokens: 240 });
@@ -477,7 +485,7 @@ export class MemoryStore {
             .run(id, ...superseded);
         }
         this._bump('writes');
-        return { id, created: true, superseded };
+        return { id, created: true, superseded, ...(wasRedacted ? { redacted: true } : {}) };
       } catch (error) {
         if (!/UNIQUE constraint failed|constraint failed/i.test(String(error?.message ?? error))) throw error;
         // 去重命中：恢复刚被 supersede 的旧记录（新内容没写进去，旧状态仍应有效）。
