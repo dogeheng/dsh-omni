@@ -134,17 +134,24 @@ await test('my-recent returns an existing safe cursor without authorizing unrela
   assert.deepEqual(seqs(st.unread), [1]);
 });
 
-await test('combined close cannot bypass the pre-sleep observation guard', async ({ st, request, append }) => {
+await test('combined close is deferred while the pre-sleep window is open (no in-turn blocking)', async ({ st, request, append }) => {
   append('still discussing a normal topic');
   const read = await request('unread');
   const before = plain(st.wakeConfig);
-  for (const route of ['mark-read', 'wake-config']) {
-    const result = await request(route, { body: { throughSeq: read.data.readThroughSeq, config: DIVING } });
-    assert.equal(result.status, 400);
-    assert.ok(result.data.preSleepWaitRemainingMs > 0);
-    assert.deepEqual(seqs(st.unread), [1]);
-    assert.deepEqual(plain(st.wakeConfig), before);
-  }
+  const close = await request('wake-config', { body: { throughSeq: read.data.readThroughSeq, config: DIVING } });
+  // 不再 400：模型提交完就能结束回合，观察窗口由桥接自己跑。
+  // 旧实现回 400 逼模型在回合里空等 5 分钟，期间会话一直判忙，新 @ 会被吞掉。
+  assert.equal(close.status, 200);
+  assert.equal(close.data.deferred, true);
+  assert.ok(close.data.pendingSleep.remainingMs > 0);
+  assert.ok(close.data.preSleepWaitRemainingMs > 0);
+  // 生效前唤醒配置不变，但已读水位照常推进 —— 所以模型不需要为了收尾在回合里等。
+  assert.deepEqual(plain(st.wakeConfig), before);
+  assert.deepEqual(seqs(st.unread), []);
+  assert.ok(st.pendingSleep, '待生效的潜水要挂在会话状态上');
+  // mark_read 也不再被观察窗口挡：它只负责确认已读。
+  const marked = await request('mark-read', { body: { throughSeq: read.data.readThroughSeq } });
+  assert.equal(marked.status, 200);
 }, { observe: true });
 
 await test('a full quiet observation allows a single combined close', async ({ h, st, request, append }) => {

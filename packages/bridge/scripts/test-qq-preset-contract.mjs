@@ -46,14 +46,17 @@ test('snapshots are optional, partial snapshots require reading, and watermarks 
   assert.match(prefix, /首次进入会话、角色变化[^。]*qq_get_prompt/);
 });
 
-test('one closing action can acknowledge the read watermark after the full observation', () => {
+test('diving is submitted in one action and the observation window runs bridge-side', () => {
   assert.match(prefix, /qq_mark_read\(throughSeq=/);
   assert.match(prefix, /qq_set_wake_config\(config=[^)]*throughSeq=/);
   assert.match(prefix, /不需先 mark_read/);
-  assert.match(prefix, /qq_wait_for_messages\(timeoutMs=300000\)/);
-  assert.match(prefix, /短等待不能代替/);
-  assert.match(prefix, /preSleepWaitRemainingMs[^。]*继续等待/);
-  assert.match(prefix, /若你参与回复[^。]*重新观察/);
+  // 沉睡前观察由桥接自己跑：模型不许再在回合里蹲 qq_wait_for_messages 5 分钟。
+  // 旧的「先 timeoutMs=300000 等满」写法会把会话锁死，期间的 @ 会被繁忙逻辑吞掉。
+  assert.match(prefix, /不需要在回合里空等/);
+  assert.match(prefix, /桥接会替你观察/);
+  assert.match(prefix, /新消息会自动取消这次潜水/);
+  assert.match(prefix, /提交完就结束回合/);
+  assert.equal(/qq_wait_for_messages\(timeoutMs=300000\)/.test(prefix), false, '不得再要求回合内空等 5 分钟');
 });
 
 test('pre-reply quiet checks, waiting for replies and pre-sleep observation have distinct instructions', () => {
@@ -66,7 +69,7 @@ test('pre-reply quiet checks, waiting for replies and pre-sleep observation have
   assert.match(prefix, /【回复后】[^\n]*qq_wait_for_messages\(purpose="messages"\)/);
   assert.match(prefix, /短静默不算沉睡前观察/);
   assert.match(prefix, /5 分钟观察不是回复的前置条件/);
-  assert.match(prefix, /只有准备收尾时[^。]*preSleepWaitRemainingMs/);
+  assert.match(prefix, /观察期由桥接自己跑/);
 });
 
 test('social autonomy and visual, forwarding, sticker and web capabilities remain described', () => {
@@ -86,8 +89,8 @@ test('social autonomy and visual, forwarding, sticker and web capabilities remai
 test('autonomy limits and the observation escape hatch stay described', () => {
   // These rules were previously unguarded: deleting any of them left every test green.
   for (const text of [
-    // 沉睡前观察唯一的逃生口：明确结束语可以跳过 5 分钟等待。
-    '除非对方明确“不聊了/晚安/下了/拜拜”等结束语',
+    // 沉睡前观察唯一的逃生口：明确结束语不设观察，立即生效。
+    '对方明确“不聊了/晚安/下了/拜拜”等结束语时立即生效',
     // [SILENT] 是桥接的退出标记，误用会静默吞掉回复。
     '不要用 [SILENT]',
     // 记忆面

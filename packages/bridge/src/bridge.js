@@ -6495,20 +6495,9 @@ async function main() {
           // （旧 preset 与「没有水位」的收尾调用；见 acknowledgeMessagesV2 的注释与
           // test-token-economy 的 legacy 用例）。当前 preset 会明确要求带上 readThroughSeq 水位。
           const throughSeq = requestedReadThroughSeqV2(st, body, !!req.headers['x-agent-token']);
-          // 如果当前已经是“潜水”唤醒配置，且最近还有对话/刚被唤醒，不允许用 mark_read 直接回到潜水；
-          // 必须先等够沉睡前观察窗口，避免“聊两句又去潜水”。
-          if (isSleepingConfigV2(st.wakeConfig) && preSleepWaitBlockedV2(st)) {
-            const preSleepMs = Math.max(0, Number(cfg.socialV2?.wake?.preSleepWaitMs) || 300000);
-            const remaining = Math.max(0, preSleepMs - ((st.lastIncomingAt || 0) ? Date.now() - st.lastIncomingAt : 0));
-            const remainMin = Math.ceil(remaining / 60000);
-            sendJson({
-              ok: false,
-              error: `还不能通过 qq_mark_read 直接回到潜水：还需等待约 ${remainMin} 分钟无新消息，或调用 qq_wait_for_messages(timeoutMs=${preSleepMs}) 完成一次沉睡前观察。如果等待期间有人发新消息，请先查看返回的 newMessages；判断不需要你参与就可以直接收尾沉睡，若你参与了则需下次再等观察窗口。`,
-              preSleepWaitMs: preSleepMs,
-              preSleepWaitRemainingMs: remaining
-            }, 400);
-            return;
-          }
+          // 观察窗口不再用 mark_read 挡：它只确认已读，拦下来只会逼模型在回合里空等，
+          // 把会话锁死、让新 @ 在"繁忙期间唤醒"里被吞掉。「别聊两句就潜水」的节奏改由
+          // set_wake_config 的延迟生效保证（见 schedulePendingSleepV2）。
           const markedCount = acknowledgeMessagesV2(st, throughSeq);
           st.lastActionAt = Date.now();
           st.wakeConfig.noActionCount = 0;
@@ -6632,41 +6621,34 @@ async function main() {
               return;
             }
           }
-          // 沉睡前强制观察窗口：除非对方明确结束、或已经安静/等待足够时间，否则不允许 AI 聊两句就设置潜水。
+          const markedCount = acknowledgeOnClose ? acknowledgeMessagesV2(st, throughSeq) : 0;
+          // 沉睡前观察窗口：最近还有人说话时，这次潜水先记下、等窗口结束再生效。
+          // 注意：不 400 —— 模型提交完立刻结束回合，观察由桥接自己跑（见 schedulePendingSleepV2）。
           if (isSleepingConfigV2(next) && preSleepWaitBlockedV2(st)) {
             const preSleepMs = Math.max(0, Number(cfg.socialV2?.wake?.preSleepWaitMs) || 300000);
             const remaining = Math.max(0, preSleepMs - ((st.lastIncomingAt || 0) ? Date.now() - st.lastIncomingAt : 0));
-            const remainMin = Math.ceil(remaining / 60000);
+            const pending = schedulePendingSleepV2(key, next, remaining);
+            const remainSec = Math.ceil(pending.remainingMs / 1000);
+            log(`[reserved2] 潜水待生效 ${key}：约 ${remainSec}s 后（期间有人说话则取消）`);
             sendJson({
-              ok: false,
-              error: `还不能立刻设置潜水/下一次唤醒：还需等待约 ${remainMin} 分钟无新消息，或调用 qq_wait_for_messages(timeoutMs=${preSleepMs}) 完成一次沉睡前观察。如果等待期间有人发新消息，请先查看返回的 newMessages；判断不需要你参与就可以直接设置并沉睡，若你参与了则需下次再等观察窗口。`,
+              ok: true,
+              deferred: true,
+              key,
+              markedCount,
+              unreadCount: st.unread.length,
+              readThroughSeq: readThroughSeqV2(st),
+              // 生效前仍是旧配置：这一点必须如实回给模型，别让它以为已经潜下去了。
+              wakeConfig: st.wakeConfig,
+              pendingSleep: { applyAt: new Date(pending.applyAt).toISOString(), remainingMs: pending.remainingMs },
               preSleepWaitMs: preSleepMs,
-              preSleepWaitRemainingMs: remaining
-            }, 400);
+              preSleepWaitRemainingMs: remaining,
+              wakeSafety: computeWakeSafetyV2(next),
+              hint: `已记下这次潜水：最近还有人说话，约 ${remainSec} 秒没人开口才会生效，期间有新消息会自动取消。不需要在回合里等，直接结束回合即可。`
+            });
             return;
           }
-          const markedCount = acknowledgeOnClose ? acknowledgeMessagesV2(st, throughSeq) : 0;
-          st.wakeConfig = next;
-          st.wakeConfig.lastWakeAt = st.wakeConfig.lastWakeAt || 0;
-          st.wakeConfig.wakeCount = st.wakeConfig.wakeCount || 0;
-          st.wakeConfig.noActionCount = 0;
-          st.wakeConfig.confirmedAt = Date.now();
-          st.wakeConfig.confirmedBy = 'set_wake_config';
-          st.lastActionAt = Date.now();
-          // 已成功设置下一次唤醒：本轮沉睡前观察标记作废，下次想再睡需重新走 5 分钟观察。
-          st.preSleepWaitSatisfiedAt = 0;
-          st.preSleepWaitObservedAt = 0;
-          st.preSleepWaitAccumMs = 0;
-          saveSocialV2State();
-          wakeConfigUpdatedKeys.add(key);
-          wakeConfigMissCount.delete(key);
-          if (st.pendingWakeTimer) {
-            clearTimeout(st.pendingWakeTimer);
-            st.pendingWakeTimer = null;
-          }
-          cancelReplyCheckV2(key); // AI 已主动设置新的唤醒配置，取消回复检查
-          setupSleepTimerV2(key);
-          log(`[reserved2] 更新唤醒配置 ${key}: mode=${next.mode} infinite=${next.infinite} sleepUntil=${next.sleepUntil ?? 'null'}`);
+          cancelPendingSleepV2(key);
+          commitWakeConfigV2(key, st, next);
           sendJson({ ok: true, key, markedCount, unreadCount: st.unread.length, readThroughSeq: readThroughSeqV2(st), wakeConfig: next, wakeSafety: computeWakeSafetyV2(next) });
           return;
         }
@@ -10870,6 +10852,76 @@ async function main() {
     return { hard, timed, soft, guaranteed, stale };
   }
 
+  /**
+   * 真正提交一份唤醒配置（立即生效的那条路径和"观察窗口结束后生效"的那条共用）。
+   */
+  function commitWakeConfigV2(key, st, next, { reason = 'set_wake_config' } = {}) {
+    st.wakeConfig = next;
+    st.wakeConfig.lastWakeAt = st.wakeConfig.lastWakeAt || 0;
+    st.wakeConfig.wakeCount = st.wakeConfig.wakeCount || 0;
+    st.wakeConfig.noActionCount = 0;
+    st.wakeConfig.confirmedAt = Date.now();
+    st.wakeConfig.confirmedBy = reason;
+    st.lastActionAt = Date.now();
+    // 已成功设置下一次唤醒：本轮沉睡前观察标记作废，下次想再睡需重新观察。
+    st.preSleepWaitSatisfiedAt = 0;
+    st.preSleepWaitObservedAt = 0;
+    st.preSleepWaitAccumMs = 0;
+    saveSocialV2State();
+    wakeConfigUpdatedKeys.add(key);
+    wakeConfigMissCount.delete(key);
+    if (st.pendingWakeTimer) {
+      clearTimeout(st.pendingWakeTimer);
+      st.pendingWakeTimer = null;
+    }
+    cancelReplyCheckV2(key); // AI 已主动设置新的唤醒配置，取消回复检查
+    setupSleepTimerV2(key);
+    log(`[reserved2] 更新唤醒配置 ${key}: mode=${next.mode} infinite=${next.infinite} sleepUntil=${next.sleepUntil ?? 'null'}${reason === 'pending-sleep' ? '（观察窗口结束后生效）' : ''}`);
+  }
+
+  /**
+   * 记下这次潜水，等观察窗口结束且期间没人说话再生效。
+   *
+   * 为什么等待放在桥接而不是回合里：旧实现直接回 400，逼模型在回合内
+   * qq_wait_for_messages(300000) 等满 5 分钟。这 5 分钟里会话一直判忙，新 @ 只能
+   * 暂存，最后被"繁忙期间唤醒…已被当前回合处理"吞掉 —— 用户看到的是"@ 她四五分钟
+   * 才回，或者干脆没回"。改成桥接自己等之后，模型提交完就能结束回合。
+   */
+  function schedulePendingSleepV2(key, config, waitMs) {
+    const st = getSocialV2State(key);
+    cancelPendingSleepV2(key);
+    const delay = Math.max(0, Math.round(Number(waitMs) || 0));
+    const applyAt = Date.now() + delay;
+    // 票据：定时器回调可能在"已经被新提交替换"之后才被事件循环捞起来跑
+    // （clearTimeout 对已入队的回调无效）。只认自己那张票，否则旧的潜水会把新的盖掉。
+    const ticket = {};
+    const timer = setTimeout(() => {
+      const live = socialV2.conversations.get(key);
+      if (!live || live !== st) return;
+      if (st.pendingSleep?.ticket !== ticket) return; // 已被取消或被新的提交替换
+      // 期间又有人说话：观察窗口重新开始（那条消息本身也会唤醒她）。
+      if (preSleepWaitBlockedV2(st)) {
+        const windowMs = Math.max(0, Number(cfg.socialV2?.wake?.preSleepWaitMs) || 300000);
+        schedulePendingSleepV2(key, config, windowMs - (Date.now() - (st.lastIncomingAt || 0)));
+        return;
+      }
+      st.pendingSleep = null;
+      commitWakeConfigV2(key, st, config, { reason: 'pending-sleep' });
+    }, delay);
+    timer.unref?.();
+    st.pendingSleep = { config, applyAt, timer, ticket };
+    return { applyAt, remainingMs: delay };
+  }
+
+  /** 取消还没生效的潜水（有新消息、重新设置配置、会话被重置时调用）。 */
+  function cancelPendingSleepV2(key) {
+    const st = socialV2.conversations.get(key);
+    if (!st || !st.pendingSleep) return false;
+    if (st.pendingSleep.timer) clearTimeout(st.pendingSleep.timer);
+    st.pendingSleep = null;
+    return true;
+  }
+
   // 防“永眠”：检查当前 WakeConfig 是否至少有一个可触发唤醒的途径；没有则重置为默认配置。
   // opts.skipSave=true 用于加载状态阶段，避免中途落盘覆盖尚未加载的会话。
   function ensureWakeableV2(st, opts = {}) {
@@ -10929,6 +10981,9 @@ async function main() {
         preSleepWaitSatisfiedAt: 0,
         preSleepWaitObservedAt: 0,
         preSleepWaitAccumMs: 0,
+        // 已提交但还在观察窗口里、尚未生效的潜水（{ config, applyAt, timer }）。
+        // 只在内存里：进程重启后模型会重新判断，不需要跨重启保留。
+        pendingSleep: null,
         lastUnreadSeq: 0,
         lastReadThroughSeq: 0,
         modelSeenSeqs: new Set(),
@@ -12661,6 +12716,10 @@ async function main() {
       if (seen.includes(fingerprint)) return { ok: true, duplicate: true };
       st.seenInbound = [...seen, fingerprint].slice(-200);
     }
+    // 有人说话 = 这次潜水作废：观察窗口重新开始（这条消息本身也会唤醒她）。
+    if (st.pendingSleep && cancelPendingSleepV2(key)) {
+      log(`[reserved2] 新消息到达，取消待生效的潜水 ${key}`);
+    }
     const recentLimit = Number(cfg.socialV2?.context?.recentLimit) || 100;
     const unreadLimit = Number(cfg.socialV2?.context?.unreadLimit) || 30;
     // 存储层的归一化**不能只留 kind/file/url/faceId**：reserved2 的图片/表情工具
@@ -13231,7 +13290,7 @@ async function main() {
     const proactiveLine = '【积极性】不要习惯性潜水：群里有你能接的话题就主动参与，偶尔插一句别人的话题也很正常；只有确实没话可说、对方已明确结束、或长时间没人说话时才潜水。\n\n';
     const replyTiming = replyTimingV2(st);
     const replyLine = `【首回复节奏】先处理已有消息，完整的问题及时回答。需要确认对方是否继续补充时，用 qq_wait_for_messages(purpose="reply", quietMs=${replyTiming.quietMs})；从最后来信计时，合批和读提示词的耗时也算，目前还差约 ${Math.ceil(replyTiming.remainingQuietMs / 1000)} 秒静默。已安静够久可直接回，工具也会立即返回并补上思考期间的新消息。只有明确没说完、你确实要等下文时，才用普通 messages 长等待。\n\n`;
-    const preSleepLine = `【沉睡前强制等待】这是决定潜水收尾时的步骤，不是首回复的前置条件。除非对方明确说“不聊了/晚安/下了/拜拜”等结束语，否则每次设置潜水/下一次唤醒前，必须先调用 qq_wait_for_messages(timeoutMs=${preSleepMs}) 完成一次沉睡前观察；回复前 purpose="reply" 的短静默不能代替这次完整观察。若 ${Math.round(preSleepMs / 60000)} 分钟内没人说话，返回 preSleepWaitSatisfied=true，可以设置下一次唤醒并沉睡；若期间有人发新消息，先查看返回的 newMessages——判断不需要你参与就可以直接沉睡，若你选择参与回复，则下次想睡时需要重新等待观察窗口。如果返回里带 preSleepWaitRemainingMs，就按剩余时间继续等待。\n\n`;
+    const preSleepLine = `【潜水】决定收尾/潜水时，直接用 qq_set_wake_config(config=…, throughSeq=读到的水位) 提交下一次唤醒条件，**不需要在回合里空等**：最近还有人说话时，桥接会替你观察（默认 ${Math.round(preSleepMs / 60000)} 分钟没人开口才真正生效），期间来了新消息会自动取消这次潜水。对方明确说“不聊了/晚安/下了/拜拜”等结束语时立即生效；5 分钟观察不是回复的前置条件。\n\n`;
     const lastMsg = [...(Array.isArray(st.recentMessages) ? st.recentMessages : [])].reverse().find((m) => m && !m.isSelf);
     const lastAiMin = st.lastAiReplyAt ? Math.max(0, Math.round((Date.now() - Number(st.lastAiReplyAt)) / 60000)) : null;
     const statusBits = [`未读 ${(st.unread || []).length} 条`];
