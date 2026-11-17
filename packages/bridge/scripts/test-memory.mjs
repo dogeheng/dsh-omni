@@ -1111,3 +1111,158 @@ test('32. 角色标签不当人名：私聊的「私聊/主人」不能把别人
     fs.rmSync(root, { recursive: true, force: true });
   }
 });
+
+test('33. pruneStorage 之后 VACUUM 真正还盘（阈值 / 内存库 / 极小库都不误伤）', () => {
+  const root = tempRoot();
+  const file = path.join(root, 'memory.sqlite');
+  const s = new MemoryStore({ file });
+  s.open();
+  try {
+    // 1) 灌入足量数据：删掉大部分行之后才会有整页进 freelist，才谈得上回收。
+    const pad = '这是一段用于撑大数据库页的填充内容。'.repeat(8);
+    const ids = [];
+    for (let i = 0; i < 300; i++) {
+      const row = s.addMemory({
+        personaId: 'default', scope: 'group', scopeKey: A_GROUP, kind: 'fact',
+        subjectId: XIAOMING, subjectLabel: '小明', content: `第${i}条：${pad}`, origin: 'explicit'
+      });
+      if (row.created) ids.push(row.id);
+    }
+    assert.equal(ids.length, 300, '300 条样本必须全部入库');
+    for (const id of ids.slice(0, 270)) assert.equal(s.deleteMemory(id), true, `删除 #${id} 失败`);
+
+    const freelistBefore = Number(s.db.prepare('PRAGMA freelist_count').get().freelist_count);
+    assert.ok(freelistBefore > 0, `DELETE 只把页放进 freelist，此时应当 > 0（实际 ${freelistBefore}）`);
+    const fileBefore = fs.statSync(file).size;
+
+    // 2) 默认 2MB 阈值：空闲页不够时不值得 VACUUM，必须直接返回、不做无谓 I/O。
+    const below = s.vacuumIfWorthwhile();
+    assert.equal(below.vacuumed, false, `空闲页不足 2MB 时不应 VACUUM：${JSON.stringify(below)}`);
+    assert.equal(below.reason, 'few-free-pages');
+    assert.equal(below.freeBytes, freelistBefore * Number(s.db.prepare('PRAGMA page_size').get().page_size));
+    assert.equal(fs.statSync(file).size, fileBefore, '未 VACUUM 时不能改文件大小');
+
+    // 3) 阈值归零 → 真回收：freelist 归零、文件变小、活跃数据不受影响。
+    const result = s.vacuumIfWorthwhile({ minFreeBytes: 0 });
+    assert.equal(result.vacuumed, true, `值得回收时必须执行 VACUUM：${JSON.stringify(result)}`);
+    assert.equal(result.beforeBytes, fileBefore, 'beforeBytes 必须是 VACUUM 前的真实文件大小');
+    assert.equal(Number(s.db.prepare('PRAGMA freelist_count').get().freelist_count), 0, 'VACUUM 后 freelist 必须归零');
+    assert.equal(fs.statSync(file).size, result.afterBytes, 'afterBytes 必须是 VACUUM 后的真实文件大小');
+    assert.ok(result.afterBytes < result.beforeBytes, `文件必须变小（${result.beforeBytes} → ${result.afterBytes}）`);
+    assert.equal(s.countMemories({ personaId: 'default' }), 30, 'VACUUM 不能动活跃数据');
+    assert.equal(s.countMemories({ personaId: 'default', status: 'superseded' }), 0);
+
+    // 4) :memory: 没有文件可回收：直接 skipped，不做任何 I/O。
+    const mem = new MemoryStore({ file: ':memory:' });
+    mem.open();
+    try {
+      const skipped = mem.vacuumIfWorthwhile({ minFreeBytes: 0 });
+      assert.equal(skipped.vacuumed, false);
+      assert.equal(skipped.skipped, true, ':memory: 必须返回 skipped');
+      assert.equal(skipped.reason, 'memory-db');
+    } finally {
+      mem.close();
+    }
+
+    // 5) 极小库（没删过东西）：freelist 为 0，按阈值判据返回 few-free-pages。
+    const tiny = new MemoryStore({ file: path.join(root, 'tiny.sqlite') });
+    tiny.open();
+    try {
+      const tinyResult = tiny.vacuumIfWorthwhile();
+      assert.equal(tinyResult.vacuumed, false, '空库/极小库不能被 VACUUM');
+      assert.equal(tinyResult.reason, 'few-free-pages');
+    } finally {
+      tiny.close();
+    }
+  } finally {
+    s.close();
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('34. VACUUM 失败必须降级：事务里调用只返回 error，不抛错、库照常可用', () => {
+  const root = tempRoot();
+  const file = path.join(root, 'memory.sqlite');
+  const s = new MemoryStore({ file });
+  s.open();
+  try {
+    s.addMemory({ personaId: 'default', scope: 'group', scopeKey: A_GROUP, kind: 'fact', content: '一条记忆' });
+    // VACUUM 不能在事务里执行：真实失败路径，回收必须降级成返回值而不是异常。
+    s.db.exec('BEGIN IMMEDIATE');
+    let result;
+    assert.doesNotThrow(() => { result = s.vacuumIfWorthwhile({ minFreeBytes: 0 }); }, 'VACUUM 失败不能把调用方带崩');
+    assert.equal(result.vacuumed, false);
+    assert.match(String(result.error), /transaction/i, `错误要带回来（实际：${result.error}）`);
+    s.db.exec('ROLLBACK');
+    // 降级之后记忆库仍然可读可写。
+    assert.equal(s.addMemory({ personaId: 'default', scope: 'group', scopeKey: A_GROUP, kind: 'fact', content: '事务回滚后还能写' }).created, true);
+    assert.equal(s.countMemories({ personaId: 'default' }), 2);
+  } finally {
+    s.close();
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('35. memory-admin 的 backup 接上备份保留策略（源码契约）', () => {
+  const src = fs.readFileSync(new URL('./memory-admin.mjs', import.meta.url), 'utf8');
+  const start = src.indexOf('function backup()');
+  assert.ok(start >= 0, 'memory-admin.mjs 里必须有 backup()');
+  const nextFn = src.indexOf('\nfunction forget()', start);
+  assert.ok(nextFn > start, 'backup() 后面应当紧跟 forget()，用它裁出备份函数体');
+  const body = src.slice(start, nextFn);
+
+  const backupCall = body.indexOf('backupTo(');
+  const pruneCall = body.indexOf('pruneBackups(');
+  assert.ok(backupCall >= 0, 'backup() 必须调用 store.backupTo');
+  assert.ok(pruneCall > backupCall, `备份成功后必须调用 pruneBackups（backup 函数体：${body}）`);
+  assert.match(body, /pruneBackups\(\{\s*backupDir\s*\}\)/, '必须把 CLI 的 backupDir 交给保留策略（不能写死路径）');
+  assert.match(body, /try\s*\{[\s\S]*pruneBackups\([\s\S]*\}\s*catch/, '保留策略清理失败只能告警，不能影响备份本身');
+  assert.match(src, /import\s*\{[^}]*pruneBackups[^}]*\}\s*from\s*'[^']*memory\/legacy\.js'/, 'pruneBackups 应从 memory/legacy.js 导入');
+});
+
+test('36. manager 接线：真删过才回收，24h 内最多一次（内存时间戳冷却）', () => {
+  const root = tempRoot();
+  let t = 1800000000000;
+  const m = createMemoryManager({ root, config: { enabled: true, retrieval: { mode: 'live' } }, now: () => t });
+  try {
+    const s = m.store();
+    const longAgo = t - 200 * 24 * 60 * 60 * 1000;
+    const seedDiscarded = (tag) => {
+      const row = s.addCandidate({
+        personaId: 'default', conversationKey: `group:${A_GROUP}`, scope: 'group', scopeKey: A_GROUP,
+        kindHint: 'fact', content: `已处理候选-${tag}`, now: longAgo
+      });
+      s.markCandidates([row.id], 'discarded', longAgo);
+    };
+
+    // 1) 真删过数据 → 尝试回收（这里库太小，按阈值降级成 few-free-pages，但调用必须发生）
+    seedDiscarded('a');
+    const first = m.pruneStorage({ force: true });
+    assert.ok(first.vacuum, `删过东西后必须尝试 VACUUM（result=${JSON.stringify(first)}）`);
+    assert.equal(first.vacuum.vacuumed, false);
+    assert.equal(first.vacuum.reason, 'few-free-pages', '小库应当被阈值挡住');
+
+    // 2) 24h 冷却内再删：只记 throttled，不再碰磁盘
+    t += 60 * 60 * 1000;
+    seedDiscarded('b');
+    const cooled = m.pruneStorage({ force: true });
+    assert.ok(cooled.vacuum, '删过东西后仍要有 vacuum 结论');
+    assert.equal(cooled.vacuum.vacuumed, false);
+    assert.equal(cooled.vacuum.reason, 'throttled', `24h 内不应再次尝试 VACUUM（实际 ${JSON.stringify(cooled.vacuum)}）`);
+
+    // 3) 冷却期过后重新允许尝试
+    t += 24 * 60 * 60 * 1000;
+    seedDiscarded('c');
+    const later = m.pruneStorage({ force: true });
+    assert.ok(later.vacuum, '冷却期过后要重新尝试');
+    assert.notEqual(later.vacuum.reason, 'throttled', '25 小时后不应再被冷却挡住');
+
+    // 4) 没删到东西（deleted === 0）时不该做任何回收
+    const empty = m.pruneStorage({ force: true });
+    assert.equal(empty.vacuum, undefined, '没删到东西时不应尝试 VACUUM');
+    assert.equal(Number(empty.candidates) + Number(empty.memories) + Number(empty.tombstones), 0);
+  } finally {
+    m.close();
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});

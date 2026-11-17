@@ -796,6 +796,63 @@ export class MemoryStore {
     return { expired, candidates, memories, tombstones: Number(tombstones.changes ?? 0) };
   }
 
+  /**
+   * 回收磁盘：pruneStorage 只是 DELETE，SQLite 会把腾出来的页放进 freelist，
+   * 文件本身**不会变小**——必须 VACUUM 重写整库才会还盘。
+   *
+   * 阈值：用 PRAGMA freelist_count × page_size 估算空闲字节，低于 minFreeBytes
+   * 直接返回（不碰磁盘、不做无谓 I/O）；只有值得回收时才 VACUUM。
+   *
+   * 安全性：记忆库是 24/7 服务，这里的任何失败都降级成返回值，绝不 throw：
+   *   - VACUUM 不能在事务里跑，这里只做单条 exec；
+   *   - 失败（被事务/锁挡住、磁盘满…）返回 { vacuumed:false, error }，调用方继续用现有库。
+   *
+   * WAL 模式：VACUUM 重写出来的页先落在 WAL，主库文件要 checkpoint 之后才会截断；
+   * 常驻进程不会主动关库，所以顺手做一次 TRUNCATE checkpoint，让 fs.statSync 看到的
+   * 就是真实磁盘占用（有其它读者时可能拿不到锁，属尽力而为，不影响 vacuumed 结论）。
+   *
+   * @param {object} [p]
+   * @param {number} [p.minFreeBytes] 值得回收的空闲字节下限（默认 2MB）
+   * @param {() => number} [p.now]    与其它方法同一时间基准（调用方用于日志对齐；阈值判断不用时间）
+   * @returns {{vacuumed:boolean, reason?:string, skipped?:boolean, error?:string,
+   *            freeBytes?:number, beforeBytes?:number, afterBytes?:number, at?:number}}
+   */
+  vacuumIfWorthwhile({ minFreeBytes = 2 * 1024 * 1024, now = this.now() } = {}) {
+    if (this.file === ':memory:') return { vacuumed: false, skipped: true, reason: 'memory-db', at: now };
+    if (!this.db || !this.ready) return { vacuumed: false, skipped: true, reason: 'not-open', at: now };
+    let freeBytes = 0;
+    try {
+      const freelist = Number(this.db.prepare('PRAGMA freelist_count').get()?.freelist_count ?? 0);
+      const pageSize = Number(this.db.prepare('PRAGMA page_size').get()?.page_size ?? 0);
+      freeBytes = Math.max(0, freelist) * Math.max(0, pageSize);
+    } catch (error) {
+      // 读 pragma 都失败说明库状态异常：降级，不尝试 VACUUM。
+      this.logger('memory: 读取 freelist 失败，跳过文件回收', error?.message ?? error);
+      return { vacuumed: false, error: String(error?.message ?? error), at: now };
+    }
+    const threshold = Math.max(0, Number(minFreeBytes) || 0);
+    if (freeBytes < threshold) {
+      return { vacuumed: false, reason: 'few-free-pages', freeBytes, minFreeBytes: threshold, at: now };
+    }
+    const sizeOf = () => {
+      try { return fs.statSync(this.file).size; } catch { return 0; }
+    };
+    const beforeBytes = sizeOf();
+    try {
+      this.db.exec('VACUUM');
+    } catch (error) {
+      this.logger('memory: VACUUM 回收失败（继续使用现有库）', error?.message ?? error);
+      return { vacuumed: false, error: String(error?.message ?? error), freeBytes, beforeBytes, at: now };
+    }
+    try {
+      // 让主库文件真正截断；被外部读者占用时返回 busy，不影响本次回收结论。
+      this.db.exec('PRAGMA wal_checkpoint(TRUNCATE)');
+    } catch (error) {
+      this.logger('memory: VACUUM 后 checkpoint 失败（不影响回收结果）', error?.message ?? error);
+    }
+    return { vacuumed: true, beforeBytes, afterBytes: sizeOf(), freeBytes, at: now };
+  }
+
   // ── 每日 LLM 预算（提炼 + 巩固共用） ───────────────────────────────────────
   /**
    * 原子占用一次额度。返回 false = 今天已经用完。

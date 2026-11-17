@@ -28,6 +28,8 @@ import {
   rollbackLegacyMigration,
   verifyLegacyMigration
 } from '../src/memory/index.js';
+// 备份保留策略定义在 legacy.js（index.js 有 re-export，这里按任务要求直连该实现文件）。
+import { pruneBackups } from '../src/memory/legacy.js';
 
 const ROOT = fileURLToPath(new URL('..', import.meta.url));
 const args = process.argv.slice(2);
@@ -171,7 +173,16 @@ function backup() {
   const store = open();
   const stamp = new Date().toISOString().replace(/[:.]/g, '-');
   const target = store.backupTo(path.join(backupDir, `memory.${stamp}.sqlite`));
-  print({ ok: true, backup: target, bytes: fs.statSync(target).size });
+  const bytes = fs.statSync(target).size;
+  // 备份成功后顺手执行保留策略：只留最近几份。清理失败只告警 —— 备份本身已经写成功，
+  // 不能因为清理失败让运维误以为备份失败。
+  let pruned = null;
+  try {
+    pruned = pruneBackups({ backupDir });
+  } catch (error) {
+    console.error(`⚠️ 备份保留策略执行失败（备份已生成，可手动清理）：${error?.message ?? error}`);
+  }
+  print({ ok: true, backup: target, bytes, pruned });
   store.close();
 }
 

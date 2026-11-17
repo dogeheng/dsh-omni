@@ -616,11 +616,20 @@ export function createMemoryManager({
    * 同时负责 P3 提炼与本地巩固；两者都遵守同一份每日 LLM 预算。
    */
   let lastStoragePruneAt = 0;
+  // VACUUM 比删行贵得多（会重写整库），用内存时间戳冷却：24 小时内最多回收一次。
+  // 不落盘、不加定时器；进程重启后重新计时（最多多回收一次，可接受）。
+  let lastVacuumAt = 0;
+  const VACUUM_COOLDOWN_MS = 24 * 60 * 60 * 1000;
   /**
    * 存储卫生（候选/旧版本记忆/墓碑的真删）。
    *
    * 不挂新定时器：由桥接已有的低频维护路径调用，这里再做一层 6 小时节流，
    * 避免"每次维护都扫一遍表"。force=true 供测试/CLI 用。
+   *
+   * 真删过东西（deleted > 0）之后才尝试 VACUUM：DELETE 只把页放进 freelist，
+   * 文件不会自己变小；回收是否值得由 store.vacuumIfWorthwhile 按空闲页阈值判断
+   * （低于 2MB 不做无谓 I/O）。VACUUM 失败在 store 里已降级成返回值，这里再包一层
+   * safe，保证回收环节永远不影响记忆写入/桥接主链路。
    */
   function pruneStorage({ force = false } = {}) {
     if (!cfg.enabled) return { skipped: 'disabled' };
@@ -629,7 +638,22 @@ export function createMemoryManager({
     const t = now();
     if (!force && lastStoragePruneAt && t - lastStoragePruneAt < 6 * 60 * 60 * 1000) return { skipped: 'throttled' };
     lastStoragePruneAt = t;
-    return safe(() => s.pruneStorage({ personaId, now: t }), { skipped: 'error' }, '存储清理');
+    const result = safe(() => s.pruneStorage({ personaId, now: t }), { skipped: 'error' }, '存储清理');
+    if (!result || result.skipped) return result;
+    const deleted = (Number(result.candidates) || 0) + (Number(result.memories) || 0) + (Number(result.tombstones) || 0);
+    if (deleted <= 0) return result;
+    if (lastVacuumAt && t - lastVacuumAt < VACUUM_COOLDOWN_MS) {
+      result.vacuum = { vacuumed: false, reason: 'throttled' };
+      return result;
+    }
+    lastVacuumAt = t;
+    const vacuum = safe(() => s.vacuumIfWorthwhile({ now: t }), { vacuumed: false, reason: 'error' }, '存储文件回收');
+    result.vacuum = vacuum;
+    if (vacuum?.vacuumed) {
+      const kb = (n) => Math.round((Number(n) || 0) / 1024);
+      log(`[memory] 存储回收：VACUUM ${kb(vacuum.beforeBytes)}KB → ${kb(vacuum.afterBytes)}KB（空闲 ${kb(vacuum.freeBytes)}KB 已还盘）`);
+    }
+    return result;
   }
 
   async function tick({ invoke = null, idleForMs = Number.POSITIVE_INFINITY, power = null, force = false } = {}) {
