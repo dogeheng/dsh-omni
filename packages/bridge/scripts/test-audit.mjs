@@ -55,6 +55,7 @@ const tests = [
   'test-console-assets.mjs',
   // 离电省电：pmset 解析、配置归一化、策略判定、fail-open、状态文件与去抖状态机
   'test-power.mjs',
+  'test-stack-mac.mjs',
   // 长期记忆：SQLite/FTS5 检索、作用域隔离、Token 预算、事实更新、删除、迁移回滚、
   // 提炼预算、降级；以及桥接层的真实注入/隔离/工具路由（跑真 bridge.js + 假 DSH）。
   'test-memory.mjs', 'test-memory-bridge.mjs',

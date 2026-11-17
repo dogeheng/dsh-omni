@@ -24,6 +24,7 @@ import { fileURLToPath } from 'node:url';
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const ROOT = path.resolve(HERE, '..');
 const DATA_DIR = path.join(ROOT, 'data');
+const STOP_FILE = path.join(DATA_DIR, 'stack-stopped');
 const CONFIG_FILE = path.join(ROOT, 'config.json');
 const PID_FILE = path.join(DATA_DIR, 'bridge.pid');
 const LOCK_FILE = path.join(DATA_DIR, 'ensure-bridge.lock');
@@ -208,6 +209,7 @@ function ensureDocker(stack) {
   const waitMs = Math.min(300_000, Math.max(15_000, Number(stack.dockerWaitMs) || 120_000));
   const deadline = Date.now() + waitMs;
   while (Date.now() < deadline) {
+    if (fs.existsSync(STOP_FILE)) return false;
     sleepSync(3000);
     if (dockerReady()) {
       log('[ensure-stack] Docker 已就绪');
@@ -220,6 +222,7 @@ function ensureDocker(stack) {
 
 /** 确保 SnowLuma 容器在跑：优先 docker start（保留登录态），没有容器才 compose up。 */
 function ensureContainer(stack) {
+  if (fs.existsSync(STOP_FILE)) return false;
   const name = String(stack.container || 'snowluma');
   if (containerRunning(name)) return true;
   try {
@@ -244,6 +247,7 @@ function ensureContainer(stack) {
 }
 
 function main() {
+  if (fs.existsSync(STOP_FILE)) return;
   const cfg = readConfig();
   const stack = cfg.stack && typeof cfg.stack === 'object' ? cfg.stack : {};
   if (stack.autoStart === false) return;
@@ -303,12 +307,14 @@ function main() {
 
   if (!takeLock()) return; // another launchd tick is already working
   try {
+    if (fs.existsSync(STOP_FILE)) return;
     // 先保证依赖在，再拉起桥接。桥接健康时只补容器，不动桥接进程。
     if (!containerOk && ensureDocker(stack)) {
       const ok = ensureContainer(stack);
       writeGuard({ ...readGuard(), containerOk: ok, containerCheckedAt: Date.now() });
     }
 
+    if (fs.existsSync(STOP_FILE)) return;
     if (bridgeHealthy) {
       log('[ensure-stack] 桥接健康，只检查了 SnowLuma 容器');
       return;
