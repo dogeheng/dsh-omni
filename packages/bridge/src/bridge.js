@@ -3409,15 +3409,23 @@ async function main() {
    * （崩溃、ensure-bridge 拉起、手动重启）没投出去的消息就永久消失，而 QQ 那边
    * 看起来只是"它没理我"。DSH 恢复后由 flushQueue 统一补投。
    */
+  let outboxRestored = false;
   function restoreOutboxDeliveries() {
+    if (outboxRestored) return 0;
+    outboxRestored = true;
+    // 权威副本在磁盘：不先 load()，下面的 pending() 永远读到空数组，
+    // 「重启也不丢」就只停留在注释里（旧实现正是如此）。
+    // 文件损坏时 load() 会降级为只读，不会用空队列覆盖原文件。
+    outbox.load();
     const entries = outbox.pending();
-    if (!entries.length) return;
+    if (!entries.length) return 0;
     for (const entry of entries) {
       const items = queued.get(entry.key) ?? [];
       items.push({ ...entry.payload, outboxId: entry.id });
       queued.set(entry.key, items);
     }
     log(`待投递队列已从磁盘恢复 ${entries.length} 条（DSH 就绪后补投）`);
+    return entries.length;
   }
 
   // reset 竞态导致 ensureSession 抛「会话创建期间已重置」时，把消息放回队列稍后重试。

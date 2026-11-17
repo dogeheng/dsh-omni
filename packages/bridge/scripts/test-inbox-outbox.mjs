@@ -91,6 +91,24 @@ assert(restored.length === 2, `outbox: 重启后读回 2 条（实际 ${restored
 assert(restored.every((e) => e.nextAt === 0), 'outbox: 重启后清掉退避时间（立刻重试一次）');
 assert(JSON.parse(fs.readFileSync(outboxFile, 'utf8')).version === OUTBOX_VERSION, 'outbox: 落盘带 version');
 
+// 唤醒项故意没有 promptText（提示词在投递那一刻才按 wakeReason 拼），
+// 重启时不能被当成空条目丢掉。
+const wakeFile = path.join(temp, 'outbox-wake.json');
+fs.writeFileSync(wakeFile, JSON.stringify({
+  version: OUTBOX_VERSION,
+  entries: [
+    { id: 'w1', key: 'group:7', payload: { promptText: '', wakeReason: 'atMention' }, createdAt: 1, attempts: 2, nextAt: Date.now() + 60000, lastError: 'DSH 未就绪' },
+    { id: 'w2', key: 'group:7', payload: { promptText: '' }, createdAt: 2, attempts: 0, nextAt: 0, lastError: '' },
+    { id: 'w3', key: 'group:7', payload: { promptText: '普通消息' }, createdAt: 3, attempts: 0, nextAt: 0, lastError: '' },
+  ],
+}));
+const obWake = createOutbox({ file: wakeFile });
+const wakeRestored = obWake.load();
+assert(wakeRestored.length === 2, `outbox: 只有唤醒原因的条目也要读回（实际 ${wakeRestored.length}）`);
+assert(wakeRestored[0].id === 'w1' && wakeRestored[0].payload.wakeReason === 'atMention', 'outbox: 唤醒原因原样读回');
+assert(wakeRestored[1].payload.promptText === '普通消息', 'outbox: 普通文本条目不受影响');
+assert(wakeRestored[0].nextAt === 0, 'outbox: 唤醒项重启后也清掉退避时间');
+
 // 上限：超出 maxEntries 丢最旧，不无限增长。
 const tiny = createOutbox({ file: path.join(temp, 'outbox-tiny.json'), maxEntries: 2 });
 tiny.load();

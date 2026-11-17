@@ -28,6 +28,18 @@ export function deliveryText(entry) {
   return String(entry?.payload?.promptText ?? entry?.payload?.text ?? '');
 }
 
+/**
+ * 这条队列项还值得保留吗。
+ *
+ * 唤醒项故意没有 promptText：真正的提示词由 deliverPromptNow 在**投递那一刻**
+ * 用 wakeReason 重新拼（会话可能已换 token、未读也多了几条）。所以「文本为空」
+ * 不等于「空条目」—— 旧实现只认文本，重启时会把这类条目静默丢掉，正好是最该
+ * 保住的那一类（DSH 停机期间收到的 @ 和私聊）。
+ */
+export function isRestorable(entry) {
+  return deliveryText(entry) !== '' || String(entry?.payload?.wakeReason ?? '') !== '';
+}
+
 /** 队列里同一条消息的判据：同一会话 + 同一段文本 + 同一唤醒原因，就不重复入队。 */
 export function sameDelivery(a, b) {
   return !!a && !!b && a.key === b.key
@@ -76,7 +88,7 @@ export function createOutbox({ file, log = () => {}, now = Date.now, maxEntries 
       return [];
     }
     entries = raw.entries
-      .filter((e) => e && typeof e.id === 'string' && typeof e.key === 'string' && e.payload && typeof e.payload === 'object' && deliveryText(e) !== '')
+      .filter((e) => e && typeof e.id === 'string' && typeof e.key === 'string' && e.payload && typeof e.payload === 'object' && isRestorable(e))
       .map((e) => ({
         id: e.id,
         key: e.key,
