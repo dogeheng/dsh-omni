@@ -19,6 +19,7 @@ import {
   estimateTokens,
   parseExtractionOutput,
   planLegacyImport,
+  pruneBackups,
   planExtraction,
   runExtractionOnce,
   redactForMemory,
@@ -872,6 +873,90 @@ test('25. 写入脱敏：已知令牌与本机路径都不进库，且脱敏是�
     assert.equal(again.duplicate, true, '脱敏确定性应当保住去重');
   } finally {
     m.close();
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('26. 存储卫生：候选/旧版本记忆/墓碑按保留期真删，活跃数据不受影响', () => {
+  const root = tempRoot();
+  const m = makeManager(root);
+  try {
+    const s = m.store();
+    const ctx = groupCtx(m, A_GROUP, [[XIAOMING, '小明']]);
+    const longAgo = Date.now() - 200 * 24 * 60 * 60 * 1000;
+    const recent = Date.now() - 24 * 60 * 60 * 1000;
+
+    // 候选：一条 pending（近期，要留）+ 两条已处理（很久以前，要删）
+    const pending = s.addCandidate({
+      personaId: 'default', conversationKey: `group:${A_GROUP}`, scope: 'group', scopeKey: A_GROUP,
+      kindHint: 'fact', content: '还在排队的候选', now: recent
+    });
+    const done1 = s.addCandidate({
+      personaId: 'default', conversationKey: `group:${A_GROUP}`, scope: 'group', scopeKey: A_GROUP,
+      kindHint: 'fact', content: '已处理候选一', now: longAgo
+    });
+    const done2 = s.addCandidate({
+      personaId: 'default', conversationKey: `group:${A_GROUP}`, scope: 'group', scopeKey: A_GROUP,
+      kindHint: 'fact', content: '已处理候选二', now: longAgo
+    });
+    s.markCandidates([done1.id, done2.id], 'discarded', longAgo);
+
+    // 记忆：active 一条、被取代一条、墓碑一条（都塞进很久以前的时间）
+    const keep = m.remember({ ctx, kind: 'fact', content: '要保留的事实', subjectId: XIAOMING, subjectLabel: '小明' });
+    const oldState = m.remember({ ctx, kind: 'state', content: '旧状态', subjectKey: 'project', subjectId: XIAOMING, subjectLabel: '小明' });
+    m.remember({ ctx, kind: 'state', content: '新状态', subjectKey: 'project', subjectId: XIAOMING, subjectLabel: '小明' });
+    const doomed = m.remember({ ctx, kind: 'episode', content: '要被忘掉的事', subjectId: XIAOMING, subjectLabel: '小明' });
+    m.forget({ ctx, id: doomed.id });
+    // 把时间线推回很久以前：这些行的 updated_at / created_at 都要老于保留期
+    s.db.exec(`UPDATE memories SET updated_at = ${longAgo}`);
+    s.db.exec(`UPDATE tombstones SET created_at = ${longAgo}`);
+    s.db.exec(`UPDATE candidates SET updated_at = ${longAgo} WHERE status <> 'pending'`);
+
+    const result = s.pruneStorage({ personaId: 'default' });
+    assert.ok(result.candidates >= 2, `已处理候选要真删（实际 ${result.candidates}）`);
+    assert.ok(result.memories >= 1, `旧版本记忆要真删（实际 ${result.memories}）`);
+    assert.ok(result.tombstones >= 1, `过期墓碑要真删（实际 ${result.tombstones}）`);
+
+    assert.equal(s.countPendingCandidates({ personaId: 'default' }), 1, 'pending 候选不受影响');
+    assert.deepEqual(s.listCandidates({ personaId: 'default' }).map((c) => c.id), [pending.id], '只剩排队中的那条');
+    assert.ok(s.getMemory(keep.id), 'active 记忆不受影响');
+    assert.equal(s.getMemory(oldState.id), null, '被取代的旧版本已删除');
+    assert.equal(s.countTombstones({ personaId: 'default' }), 0, '墓碑清空');
+    assert.ok(!m.recall({ ctx, text: '旧状态', limit: 5 }).rows.some((row) => row.id === oldState.id), '删掉的旧版本不再可召回');
+  } finally {
+    m.close();
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('27. 备份保留策略：只留最近几份，且不碰别人的文件', () => {
+  const root = tempRoot();
+  const dir = path.join(root, 'backups');
+  fs.mkdirSync(dir, { recursive: true });
+  try {
+    const base = Date.now() - 100000;
+    for (let i = 0; i < 8; i++) {
+      const when = new Date(base + i * 1000);
+      const stamp = when.toISOString().replace(/[:.]/g, '-');
+      const file = path.join(dir, `social-v2.${stamp}.abcdef${i}.json`);
+      fs.writeFileSync(file, '{}');
+      fs.writeFileSync(`${file}.sha256`, 'x');
+      // 两个文件都要改 mtime：单元按组内最大 mtime 排序
+      fs.utimesSync(file, when, when);
+      fs.utimesSync(`${file}.sha256`, when, when);
+    }
+    const foreign = path.join(dir, 'notes.txt');
+    fs.writeFileSync(foreign, 'keep me');
+
+    const result = pruneBackups({ backupDir: dir, keep: 3 });
+    assert.equal(result.kept, 3, '保留 3 份');
+    assert.equal(result.removed, 10, '5 份 × 2 个文件');
+    const left = fs.readdirSync(dir).filter((name) => name.startsWith('social-v2.'));
+    assert.equal(left.length, 6, `应当只剩 3×2 个文件，实际 ${left.length}`);
+    assert.ok(left.some((name) => name.includes('abcdef7')), '最新的一份必须留着');
+    assert.ok(!left.some((name) => name.includes('abcdef0')), '最旧的一份应当被清掉');
+    assert.ok(fs.existsSync(foreign), '不认识的文件不能动');
+  } finally {
     fs.rmSync(root, { recursive: true, force: true });
   }
 });

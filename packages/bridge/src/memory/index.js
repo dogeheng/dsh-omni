@@ -54,6 +54,7 @@ export { MemoryStore } from './store.js';
 export {
   LEGACY_ORIGIN,
   planLegacyImport,
+  pruneBackups,
   readLegacyState,
   rollbackLegacyMigration,
   runLegacyMigration,

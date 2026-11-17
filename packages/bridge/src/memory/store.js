@@ -709,8 +709,19 @@ export class MemoryStore {
     return Number(info.changes ?? 0);
   }
 
-  /** 清理过期候选 + 把 pending 数量压回上限（最旧的先丢）。 */
-  pruneCandidates({ personaId = 'default', ttlMs = 7 * 24 * 60 * 60 * 1000, maxCandidates = 500, now = this.now() } = {}) {
+  /**
+   * 清理过期候选 + 把 pending 数量压回上限（最旧的先丢）+ **真删**已处理过的老候选。
+   *
+   * 旧实现只把 status 改成 expired，从不 DELETE：候选表只进不出，一年下来按每天几百条
+   * 规则命中算就是十几万行、几十 MB，而且 prune 之后磁盘页也不会回收。
+   */
+  pruneCandidates({
+    personaId = 'default',
+    ttlMs = 7 * 24 * 60 * 60 * 1000,
+    maxCandidates = 500,
+    retentionMs = 30 * 24 * 60 * 60 * 1000,
+    now = this.now()
+  } = {}) {
     const expired = this._stmt(`UPDATE candidates SET status = 'expired', updated_at = ?
                                 WHERE persona_id = ? AND status = 'pending' AND created_at < ?`)
       .run(now, personaId, now - ttlMs);
@@ -721,7 +732,44 @@ export class MemoryStore {
                                   ORDER BY created_at ASC LIMIT ?`).all(personaId, pending - maxCandidates);
       dropped = this.markCandidates(victims.map((v) => v.id), 'expired', now);
     }
-    return { expired: Number(expired.changes ?? 0), dropped };
+    // 真删：已经处理过（非 pending）且过了保留期的候选没有留存价值。
+    // 唯一索引只约束 status='pending'，删历史行不会影响去重。
+    const purged = retentionMs > 0
+      ? this._stmt("DELETE FROM candidates WHERE persona_id = ? AND status <> 'pending' AND updated_at < ?")
+        .run(personaId, now - retentionMs)
+      : { changes: 0 };
+    return { expired: Number(expired.changes ?? 0), dropped, purged: Number(purged.changes ?? 0) };
+  }
+
+  /**
+   * 存储卫生：把"只标不删"的三张表按保留期真正回收。
+   *
+   * 调用频率由上层控制（桥接的每小时维护 + manager 里 6 小时节流），这里只做有界的一批
+   * （maxDelete），避免某一次清理把事件循环卡住。
+   */
+  pruneStorage({
+    personaId = 'default',
+    now = this.now(),
+    memoryRetentionMs = 90 * 24 * 60 * 60 * 1000,
+    tombstoneRetentionMs = 180 * 24 * 60 * 60 * 1000,
+    candidateRetentionMs = 30 * 24 * 60 * 60 * 1000,
+    maxDelete = 200
+  } = {}) {
+    const expired = this.expireDue(now);
+    const candidates = this.pruneCandidates({ personaId, now, retentionMs: candidateRetentionMs }).purged;
+    // 被取代 / 已过期的旧版本：过了保留期就真删（FTS 行由 deleteMemory 一并清掉）。
+    const victims = this._stmt(`SELECT id FROM memories
+      WHERE persona_id = ? AND status IN ('superseded','expired') AND updated_at < ?
+      ORDER BY updated_at ASC LIMIT ?`)
+      .all(personaId, now - memoryRetentionMs, Math.max(1, Number(maxDelete) || 200));
+    let memories = 0;
+    for (const row of victims) if (this.deleteMemory(row.id)) memories += 1;
+    // 墓碑只需要拦住"自动复活"，180 天后基本不会再有旧副本回流。
+    const tombstones = tombstoneRetentionMs > 0
+      ? this._stmt('DELETE FROM tombstones WHERE persona_id = ? AND created_at < ?')
+        .run(personaId, now - tombstoneRetentionMs)
+      : { changes: 0 };
+    return { expired, candidates, memories, tombstones: Number(tombstones.changes ?? 0) };
   }
 
   // ── 每日 LLM 预算（提炼 + 巩固共用） ───────────────────────────────────────

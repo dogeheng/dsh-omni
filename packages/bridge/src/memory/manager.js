@@ -615,6 +615,23 @@ export function createMemoryManager({
    * 后台 tick（由桥接的低频定时器调用，或在 CLI 里手动调）。
    * 同时负责 P3 提炼与本地巩固；两者都遵守同一份每日 LLM 预算。
    */
+  let lastStoragePruneAt = 0;
+  /**
+   * 存储卫生（候选/旧版本记忆/墓碑的真删）。
+   *
+   * 不挂新定时器：由桥接已有的低频维护路径调用，这里再做一层 6 小时节流，
+   * 避免"每次维护都扫一遍表"。force=true 供测试/CLI 用。
+   */
+  function pruneStorage({ force = false } = {}) {
+    if (!cfg.enabled) return { skipped: 'disabled' };
+    const s = store();
+    if (!s) return { skipped: 'store-unavailable' };
+    const t = now();
+    if (!force && lastStoragePruneAt && t - lastStoragePruneAt < 6 * 60 * 60 * 1000) return { skipped: 'throttled' };
+    lastStoragePruneAt = t;
+    return safe(() => s.pruneStorage({ personaId, now: t }), { skipped: 'error' }, '存储清理');
+  }
+
   async function tick({ invoke = null, idleForMs = Number.POSITIVE_INFINITY, power = null, force = false } = {}) {
     if (!cfg.enabled) return { ran: false, reason: 'disabled' };
     const s = store();
@@ -839,6 +856,7 @@ export function createMemoryManager({
     verifyLegacy,
     rollbackLegacy,
     tick,
+    pruneStorage,
     metricsSummary,
     status,
     listMemories,

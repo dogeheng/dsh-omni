@@ -15301,6 +15301,11 @@ async function main() {
             power: powerMonitor?.state?.() ?? null
           });
           if (result?.ran) log(`[memory] 后台整理：${JSON.stringify(result)}`);
+          // 存储卫生：候选/旧版本记忆/墓碑的真删。manager 内部 6 小时节流，
+          // 复用的就是这个已有定时器 —— 不新增常驻定时器。
+          const pruned = memory.pruneStorage();
+          const cleaned = pruned && ['candidates', 'memories', 'tombstones'].reduce((n, k) => n + (Number(pruned[k]) || 0), 0);
+          if (cleaned > 0) log(`[memory] 存储清理：${JSON.stringify(pruned)}`);
         } catch (error) {
           log(`[memory] 后台整理失败：${error?.message ?? error}`);
         } finally {

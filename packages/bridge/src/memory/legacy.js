@@ -168,6 +168,42 @@ export function planLegacyImport(socialState, { personaId = 'default', now = Dat
   return { entries, stats };
 }
 
+/**
+ * 备份保留策略：每类备份只留最近 keep 份。
+ *
+ * 为什么需要：迁移/回滚每跑一次就往 data/memory/backups/ 丢一份（social-v2.json 副本
+ * + .sha256 + 回滚前的 sqlite），没有清理就只增不减（一次强制迁移约 +285KB）。
+ * 备份的意义是"后悔时可回滚"，留最近 5 次足够；只碰自己认识的两个前缀，
+ * 别人的文件一律不删。
+ */
+export function pruneBackups({ backupDir, keep = 5, fsImpl = fs, pathImpl = path } = {}) {
+  const limit = Math.max(1, Number(keep) || 5);
+  let names;
+  try { names = fsImpl.readdirSync(backupDir); } catch { return { kept: 0, removed: 0 }; }
+  const units = new Map(); // 备份单元 -> { files, mtime }
+  for (const name of names) {
+    if (!name.startsWith('social-v2.') && !name.startsWith('memory.')) continue;
+    const unit = name.replace(/\.(json|sqlite)(\.sha256)?$/, '');
+    if (unit === name) continue; // 不认识的后缀，不动
+    const full = pathImpl.join(backupDir, name);
+    let stat;
+    try { stat = fsImpl.statSync(full); } catch { continue; }
+    if (!stat.isFile()) continue;
+    const entry = units.get(unit) ?? { files: [], mtime: 0 };
+    entry.files.push(full);
+    entry.mtime = Math.max(entry.mtime, stat.mtimeMs);
+    units.set(unit, entry);
+  }
+  const sorted = [...units.values()].sort((a, b) => b.mtime - a.mtime);
+  let removed = 0;
+  for (const unit of sorted.slice(limit)) {
+    for (const file of unit.files) {
+      try { fsImpl.unlinkSync(file); removed += 1; } catch { /* 已不在 */ }
+    }
+  }
+  return { kept: Math.min(sorted.length, limit), removed };
+}
+
 /** 迁移前的原始文件备份（不覆盖同名文件；附带 .sha256 便于事后核对）。 */
 export function backupLegacyFile({ file, backupDir, now = Date.now() } = {}) {
   fs.mkdirSync(backupDir, { recursive: true });
@@ -179,6 +215,8 @@ export function backupLegacyFile({ file, backupDir, now = Date.now() } = {}) {
   const target = path.join(backupDir, `social-v2.${stamp}.${hash.slice(0, 8)}.json`);
   fs.writeFileSync(target, text, { mode: 0o600 });
   fs.writeFileSync(`${target}.sha256`, `${hash}  ${path.basename(file)}\n`, { mode: 0o600 });
+  // 顺手执行保留策略：备份是给"后悔"用的，留最近几份就够，不清理就是只增不减。
+  try { pruneBackups({ backupDir }); } catch { /* 清理失败不影响这次备份 */ }
   return { path: target, hash, bytes: Buffer.byteLength(text) };
 }
 
@@ -277,6 +315,7 @@ export function rollbackLegacyMigration(store, { backupDir, personaId = 'default
   try {
     const stamp = new Date(now).toISOString().replace(/[:.]/g, '-');
     dbBackup = store.backupTo(path.join(backupDir, `memory.before-rollback.${stamp}.sqlite`));
+    try { pruneBackups({ backupDir }); } catch { /* 清理失败不影响回滚 */ }
   } catch (error) {
     logger(`memory: 回滚前备份失败（继续回滚）：${error?.message ?? error}`);
   }
