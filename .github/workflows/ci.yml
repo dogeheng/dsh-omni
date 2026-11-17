@@ -1,0 +1,54 @@
+name: CI
+
+# push 到任意分支 + 所有 PR 都跑；同 ref 的新跑取消旧跑，避免排队浪费。
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    name: bridge tests (Node 22 / Linux)
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: packages/bridge/package-lock.json
+
+      # 可选原生依赖 sherpa-onnx-node / silk-wasm 在 Linux CI 上装不上（没有可用的
+      # 预编译包，也拖慢安装），必须 --omit=optional。
+      #
+      # 另外 package-lock.json 里有一条 npm 解析不了的可选依赖：
+      #   node_modules/sherpa-onnx-node/node_modules/sherpa-onnx-win-arm64
+      # 只有 {"optional": true}、没有 version，导致 npm ci / npm install 都直接
+      # 报 "Invalid Version" 退出（本机 npm 11 也一样）。--omit=optional 本来就
+      # 不会安装它，所以先在工作区（仅 CI 本次运行，不提交）删掉这条，再按
+      # lockfile 精确安装；npm ci 若仍失败，退回 npm install。
+      - name: Install bridge dependencies
+        run: |
+          node -e "const fs=require('fs');const p='packages/bridge/package-lock.json';const lock=JSON.parse(fs.readFileSync(p,'utf8'));delete lock.packages['node_modules/sherpa-onnx-node/node_modules/sherpa-onnx-win-arm64'];fs.writeFileSync(p,JSON.stringify(lock,null,2)+'\n')"
+          npm ci --prefix packages/bridge --omit=optional \
+            || npm install --prefix packages/bridge --omit=optional --no-audit --no-fund
+
+      # test:all 自动发现 packages/bridge/package.json 里所有 test:* 入口；
+      # CI=true 时把 Linux 上必然跑不了的套件（需要 Windows chcp / 本机 data/ /
+      # 运行中的 DSH / 已安装 DSH / 私有文档 / CRLF 工作区）标成 SKIP 而不是失败，
+      # 名单与理由见 packages/bridge/scripts/test-all.mjs 的 CI_SKIP 注释。
+      - name: Run full test suite
+        run: npm --prefix packages/bridge run test:all
+        env:
+          CI: 'true'
