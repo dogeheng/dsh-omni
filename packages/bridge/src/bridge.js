@@ -36,6 +36,7 @@ import { recordCallTurn, recordVoiceprintBindings } from './call-memory.js';
 import { buildCallMemoryContext } from './call-memory-context.js';
 import { VoiceprintStore } from './voiceprints.js';
 import { pruneStaleUnread } from './unread-freshness.js';
+import { createCoalescedWriter } from './state-writer.js';
 import { autoSpeakable, createTtsService, normalizeSpeakConfig, redactSpeakConfig, SPEAK_EMOTIONS } from './voice-tts.js';
 import { createSingingService, normalizeSingingConfig, redactSingingConfig } from './singing.js';
 import { createShortCoverService } from './short-cover/manager-v2.js';
@@ -1354,6 +1355,10 @@ function log(...args) {
   try { console.log(line); } catch {}
   appendBridgeLog(`${line}\n`);
 }
+
+// social-v2 状态合并写：250ms 内多次变更只落盘一次（见 src/state-writer.js）。
+// 退出钩子在文件底部统一注册（harness 会在那里截断源码，测试里不会真的挂进程事件）。
+const socialV2Saver = createCoalescedWriter({ delayMs: 250, log: (...args) => log(...args) });
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 const convKey = (kind, id) => `${kind}:${id}`;
 const SEND_TIMEOUT_MS = 15000;
@@ -11063,7 +11068,8 @@ async function main() {
     }
   }
 
-  function saveSocialV2State() {
+  /** 真正落盘：全量快照写成 JSON（只在合并写 flush 时调用）。 */
+  function writeSocialV2StateNow() {
     try {
       const obj = { paused: socialV2.paused, conversations: Object.create(null) };
       for (const [key, st] of socialV2.conversations) {
@@ -11099,6 +11105,23 @@ async function main() {
     } catch (error) {
       log('保存 socialV2 状态失败:', error?.message ?? error);
     }
+  }
+
+  /**
+   * 标记「social-v2 有变化」：250ms 内的多次变更合并成一次落盘。
+   *
+   * 为什么不在这里直接写：52 个调用点里最常见的是一条消息一次。全量 stringify + 原子写
+   * 在 6 个会话时约 1ms、50 个群时约 10ms，而且跑在 mux 事件线程和 MCP HTTP 线程上；
+   * 合并之后同一条消息的落盘开销接近于零（快照也推迟到 flush 时才生成）。
+   * 需要立刻在磁盘上看到最新态时（退出前、用例里），调用 flushSocialV2State()。
+   */
+  function saveSocialV2State() {
+    socialV2Saver.schedule(() => writeSocialV2StateNow());
+  }
+
+  /** 立刻把待写的 social-v2 落盘。 */
+  function flushSocialV2State() {
+    socialV2Saver.flush();
   }
 
   // ── 二代仿真：操作者预写的「初始提示词」（每个会话一份，只在首次唤醒时注入） ──────
@@ -15256,7 +15279,11 @@ process.on('uncaughtException', (error) => {
   releaseLock();
   process.exit(1);
 });
-process.on('exit', () => releaseLock());
+// 合并写是异步的：退出前必须把待写状态刷掉，否则最后 250ms 的消息会丢。
+process.on('exit', () => {
+  try { socialV2Saver.flush(); } catch { /* 退出路径不再抛 */ }
+  releaseLock();
+});
 
 main().catch((error) => {
   console.error('[omni] 启动失败:', error);

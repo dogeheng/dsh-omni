@@ -249,6 +249,8 @@ await test('R8 wake-config 丢弃未知 triggers 键（不落盘、不回传模�
       assert.equal('another' in res.json.wakeConfig.triggers, false);
       assert.equal(st.wakeConfig.triggers.junkKey, undefined, '内存态不得被污染');
       assert.equal(st.wakeConfig.triggers.atMention, true, '已知字段仍需生效');
+      // social-v2 是合并写（250ms）：读文件前先显式落盘，别靠时序。
+      h.flushSocialV2State();
       const file = JSON.parse(fs.readFileSync(path.join(h.temp, 'data', 'social-v2.json'), 'utf8'));
       assert.equal(file.conversations['group:456'].wakeConfig.triggers.junkKey, undefined, '落盘文件不得含垃圾键');
     });
