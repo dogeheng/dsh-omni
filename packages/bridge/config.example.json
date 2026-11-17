@@ -509,7 +509,13 @@
       "threadLimit": 6,
       "wakeMessageLimit": 12,
       "wakeRecentLimit": 4,
-      "wakeMaxChars": 6000
+      "wakeMaxChars": 6000,
+      "catchUp": {
+        "enabled": true,
+        "gapMs": 1800000,
+        "maxMessages": 12,
+        "maxChars": 800
+      }
     },
     "initialPromptMaxChars": 2000,
     "media": {

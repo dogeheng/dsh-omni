@@ -973,7 +973,9 @@ function loadConfig() {
         wakeMessageLimit: 12,
         wakeRecentLimit: 4,
         wakeMaxChars: 6000,
-        staleUnreadMs: 2 * 60 * 60 * 1000
+        staleUnreadMs: 2 * 60 * 60 * 1000,
+        // 补课摘要：离开超过 gapMs 后再醒来，先给一段"你不在时发生了什么"。
+        catchUp: { enabled: true, gapMs: 30 * 60 * 1000, maxMessages: 12, maxChars: 800 }
       },
       // 操作者在控制台为单个会话预写的「初始提示词」的字数上限（只在首次唤醒时注入一次）。
       // 它不是安全边界，只是防止误粘贴一篇长文把首次唤醒的 prompt 撑爆。
@@ -11213,6 +11215,7 @@ async function main() {
             replyCheckTimer: null,
             proactiveTimer: null,
             lastIncomingAt: Number(val.lastIncomingAt) || 0,
+            lastPromptAt: Number(val.lastPromptAt) || 0,
             preSleepWaitSatisfiedAt: Number(val.preSleepWaitSatisfiedAt) || 0,
             preSleepWaitObservedAt: Number(val.preSleepWaitObservedAt) || 0,
             preSleepWaitAccumMs: Number(val.preSleepWaitAccumMs) || 0,
@@ -11307,6 +11310,8 @@ async function main() {
           sendTimes: st.sendTimes.slice(-500),
           stickerCollectTimes: Array.isArray(st.stickerCollectTimes) ? st.stickerCollectTimes.slice(-500) : [],
           lastIncomingAt: st.lastIncomingAt || 0,
+          // 补课摘要的时间锚：不持久化的话重启后窗口归零，整段回忆就没了。
+          lastPromptAt: Number(st.lastPromptAt) || 0,
           preSleepWaitSatisfiedAt: st.preSleepWaitSatisfiedAt || 0,
           preSleepWaitObservedAt: st.preSleepWaitObservedAt || 0,
           preSleepWaitAccumMs: st.preSleepWaitAccumMs || 0,
@@ -12240,6 +12245,8 @@ async function main() {
       // rejected/stale deliveries must not be cleared by an old cursor.
       noteModelMessagesV2(wakeState, [...wakeSnapshot.messages, ...wakeSnapshot.recent]);
     }
+    // 补课摘要的时间锚：记在**投递成功**之后，失败/被拒的那次不算"看到过"。
+    try { getSocialV2State(key).lastPromptAt = Date.now(); } catch { /* 状态异常不影响投递 */ }
     if (accepted.result.value.command?.text && !opts.silent && currentMode !== 'reserved2') {
       if (opts.farewell) social.exitingSessions.delete(sessionId);
       await auditAndSend(key, mdToPlain(accepted.result.value.command.text));
@@ -13404,6 +13411,43 @@ async function main() {
     return '【反馈归档】最近消息像 bug/建议。如果确实是在反馈 Yuki 的问题，请优先用 qq_file_issue 总结成一句可执行的处理项（summary≤120字，kind=bug/suggestion），它会写入 macOS 提醒事项并提醒主人；如果当前工具清单里还没有 qq_file_issue，用 qq_memory_append(category="state", content="BUG: <一句话>", extra={"subjectKey":"反馈归档"}) 代替，桥接会代写提醒事项。只归档真问题，不要归档普通吐槽，也不要重复归档。';
   }
 
+  /**
+   * 补课摘要：休眠 / 掉线 / 重启之后，"你不在的时候发生了什么"。
+   *
+   * 为什么需要：超过时效（默认 2h）的未读会被剪进"背景"，重启后 lastPromptAt 又归零，
+   * 她醒来只看得到最新几条 —— 群友会觉得"她完全不记得刚才聊过什么"。
+   * 这里只做**确定性摘要**（不调模型、不多花钱）：按时间顺序取最近若干条，
+   * 有字符上限；没有足够长的离开窗口时返回空串，一个字都不多加。
+   */
+  function buildCatchUpDigestV2(st, { now = Date.now() } = {}) {
+    const opt = cfg.socialV2?.context?.catchUp ?? {};
+    if (opt.enabled === false) return '';
+    const gapMs = Math.min(24 * 60 * 60 * 1000, Math.max(60_000, Number(opt.gapMs) || 30 * 60 * 1000));
+    const since = Number(st?.lastPromptAt) || 0;
+    if (!since || now - since < gapMs) return '';
+    const maxMessages = Math.min(30, Math.max(1, Number(opt.maxMessages) || 12));
+    const maxChars = Math.min(2000, Math.max(200, Number(opt.maxChars) || 800));
+    const msgs = (Array.isArray(st.recentMessages) ? st.recentMessages : [])
+      .filter((m) => m && !m.isSelf && Number(m.time) > since);
+    if (!msgs.length) return '';
+    const lines = [];
+    let used = 0;
+    for (const msg of msgs.slice(-maxMessages)) {
+      const stamp = new Date(Number(msg.time) || now).toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit', hour12: false });
+      const who = String(msg.sender ?? '某人').replace(/\s+/g, ' ').slice(0, 12);
+      const text = String(msg.text ?? msg.plain ?? '').replace(/\s+/g, ' ').slice(0, 80);
+      if (!text) continue;
+      const line = `- ${stamp} ${who}：${text}`;
+      if (used + line.length > maxChars) break;
+      lines.push(line);
+      used += line.length;
+    }
+    if (!lines.length) return '';
+    const awayMin = Math.max(1, Math.round((now - since) / 60000));
+    const omitted = Math.max(0, msgs.length - lines.length);
+    return `【你离开期间】约 ${awayMin} 分钟里发生了这些事（只当背景：不要逐条回应，也别把几小时前的事当成刚刚发生）：\n${lines.join('\n')}${omitted ? `\n（另有 ${omitted} 条更早的消息未列出）` : ''}\n\n`;
+  }
+
   function buildWakePromptV2(key, reason) {
     const roleState = readRoleState();
     const roleLine = roleState.role ? `【当前角色】${roleState.role}（完整角色卡请调用 qq_get_prompt 查看）\n\n` : '';
@@ -13509,7 +13553,8 @@ async function main() {
     // 也不会把「省电模式关了」说成「加载不出来」。插电时这一行是空串，不多占 token。
     const powerText = powerPromptLine(cfg.power, powerMonitor?.state?.() ?? null);
     const powerLine = powerText ? `${powerText}\n\n` : '';
-    const base = roleLine + identityLine + tokenLine + personaUpdateLine + freshLine + initialPromptLine + antiAiLine + facadeLine + styleLearnLine + powerLine + proactiveLine + stickerLine + speakLine + singLine + replyLine + statusLine + freshnessLine + accountLine + wakeLine + memoryLine + participationLine + preSleepLine;
+    const catchUpLine = buildCatchUpDigestV2(st);
+    const base = roleLine + identityLine + tokenLine + personaUpdateLine + freshLine + catchUpLine + initialPromptLine + antiAiLine + facadeLine + styleLearnLine + powerLine + proactiveLine + stickerLine + speakLine + singLine + replyLine + statusLine + freshnessLine + accountLine + wakeLine + memoryLine + participationLine + preSleepLine;
     if (reason === 'bootstrap') {
       return `${base}【引导唤醒】你已接入 QQ 会话 ${key}。\n当前是二代仿真模式：你的文本输出不会自动发送到 QQ，所有发言必须通过工具完成。\n请先调用 qq_get_prompt 查看角色、推荐值、可用工具和状态；有待回应的消息先按首回复节奏处理，最后才用 qq_set_wake_config 设置你希望如何被唤醒。`;
     }
@@ -13538,7 +13583,7 @@ async function main() {
     const st = getSocialV2State(key);
     const tokenLine = `【会话令牌】${st.agentToken}（调用二代状态工具时请在参数中带上此令牌）\n\n`;
     const preSleepMs = Math.max(0, Number(cfg.socialV2?.wake?.preSleepWaitMs) || 300000);
-    return `${roleLine}${identityLine}${tokenLine}${FACADE_PROMPT_LINE}\n\n【提醒】你还没有完成回合收尾。请调用 qq_set_wake_config 设置下一次唤醒条件（例如继续潜水多久、@/名字/关键词/提问/概率/指定成员等），或者调用 qq_mark_read 表示你看过且决定不接。这是为了防止你忘记收尾后进入“永眠”。注意：设置潜水前先用 qq_wait_for_messages(timeoutMs=${preSleepMs}) 完成沉睡前观察；等待期间有人说话时查看 newMessages，判断不需要你参与即可收尾。`;
+    return `${roleLine}${identityLine}${tokenLine}${FACADE_PROMPT_LINE}\n\n【提醒】你还没有完成回合收尾。请调用 qq_set_wake_config 设置下一次唤醒条件（例如继续潜水多久、@/名字/关键词/提问/概率/指定成员等），或者调用 qq_mark_read 表示你看过且决定不接。这是为了防止你忘记收尾后进入“永眠”。注意：直接 qq_set_wake_config 提交即可，观察窗口由桥接自己跑（最近还有人说话时约 ${Math.round(preSleepMs / 60000)} 分钟后才生效，期间新消息会自动取消），不需要在回合里空等。`;
   }
 
   async function sendWakePromptV2(key, reason) {
