@@ -11489,7 +11489,11 @@ async function main() {
     // 轻量记忆（话题/想法/印象）是模型自己写的内容，进的是**系统提示词**。
     // 先压成单行再落盘：换行会让 `- ${text}` 在渲染时多出一段伪造的【】标题，
     // 而这段内容此后每一轮都会注入，重启也在。
-    const text = sanitizePromptLine(redactKnownTokensOnly(String(content ?? '')).trim(), { maxChars: 200 });
+    // 同时与 SQLite 路径走**同一道脱敏**（令牌 + 路径/凭据形态），不要再分成两套。
+    const scrubbedMemory = redactForMemory(String(content ?? ''), {
+      redactToken: (value) => redactKnownTokensOnly(value)
+    });
+    const text = sanitizePromptLine(scrubbedMemory.text.trim(), { maxChars: 200 });
     const cat = String(category || '').trim();
     // 轻量清理：过期想法移除；超过 24h 未提起的话题移除（避免无限膨胀）。
     if (Array.isArray(st.pendingThoughts)) {

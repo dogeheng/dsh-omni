@@ -292,9 +292,15 @@ export function verifyLegacyMigration(store, { legacyFile, personaId = 'default'
   const missing = [];
   const mismatched = [];
   for (const entry of plan.entries) {
+    // 必须用**入库时那份**内容算 dedupe_key：addMemory 会先脱敏再建 key，
+    // 这里若拿原文算，凡是含本机路径/凭据的条目都会查不到 —— 校验会把"已入库"
+    // 误报成"缺失"，运维看到就可能误点回滚。
+    const scrubbed = typeof store.redact === 'function'
+      ? store.redact(String(entry.content ?? ''))
+      : { text: String(entry.content ?? '') };
     const dedupeKey = store.buildDedupeKey({
       personaId, scope: entry.scope, scopeKey: entry.scopeKey, kind: entry.kind,
-      subjectId: entry.subjectId, content: entry.content
+      subjectId: entry.subjectId, content: scrubbed.text
     });
     const row = store.db.prepare("SELECT * FROM memories WHERE dedupe_key = ? AND status IN ('active','superseded','expired')")
       .get(dedupeKey);

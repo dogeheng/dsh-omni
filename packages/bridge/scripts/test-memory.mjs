@@ -1022,3 +1022,69 @@ test('29. queryStructured：带 kinds/subjectIds 时参数不错行，且仍按�
     fs.rmSync(root, { recursive: true, force: true });
   }
 });
+
+test('30. 迁移校验：内容被脱敏后仍核对得上，不能误报"缺失"', () => {
+  const root = tempRoot();
+  const dataDir = path.join(root, 'data');
+  fs.mkdirSync(dataDir, { recursive: true });
+  const legacyFile = path.join(dataDir, 'social-v2.json');
+  fs.writeFileSync(legacyFile, JSON.stringify({
+    conversations: {
+      [`group:${A_GROUP}`]: {
+        activeTopics: [
+          { text: '小明的项目在 /Users/someone/secret-app，凭据 token=abcdef123456', lastMentionAt: 1793000000000 },
+          { text: '普通的一句：周末去爬山', lastMentionAt: 1793000005000 }
+        ]
+      }
+    }
+  }, null, 2));
+
+  const m = createMemoryManager({ root, config: { enabled: true, retrieval: { mode: 'live' } } });
+  try {
+    const backupDir = path.join(root, 'data/memory/backups');
+    const migrated = runLegacyMigration(m.store(), { legacyFile, backupDir, personaId: 'default', now: 1793100000000 });
+    assert.equal(migrated.ok, true);
+    assert.ok(migrated.imported >= 2, `两条都应当入库（实际 ${migrated.imported}）`);
+
+    // 这是脱敏上线后暴露的回归：校验拿原文算 dedupe_key，而入库用的是脱敏后内容，
+    // 于是含路径/凭据的条目会被误报成"缺失"（运维看到就会误点回滚）。
+    const verify = verifyLegacyMigration(m.store(), { legacyFile, personaId: 'default' });
+    assert.equal(verify.ok, true, `脱敏条目不能被误报为缺失：${JSON.stringify(verify.missing?.map((e) => e.content))}`);
+    assert.equal(verify.missing.length, 0);
+    assert.equal(verify.mismatched.length, 0);
+
+    const rows = m.store().db.prepare('SELECT content FROM memories').all();
+    assert.ok(rows.every((row) => !row.content.includes('/Users/')), '库里不能有明文路径');
+    assert.ok(rows.every((row) => !row.content.includes('abcdef123456')), '库里不能有明文凭据');
+    assert.ok(rows.some((row) => row.content.includes('周末去爬山')), '正常内容照常入库');
+  } finally {
+    m.close();
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('31. 候选缓冲同样脱敏：候选表里不留明文路径/凭据', () => {
+  const root = tempRoot();
+  const m = makeManager(root);
+  try {
+    const s = m.store();
+    const created = s.addCandidate({
+      personaId: 'default',
+      conversationKey: `group:${A_GROUP}`,
+      scope: 'group',
+      scopeKey: A_GROUP,
+      kindHint: 'fact',
+      content: '项目在 /Users/someone/secret-app，token=abcdef123456',
+      now: Date.now()
+    });
+    assert.equal(created.created, true);
+    assert.equal(created.redacted, true, '候选写入要带 redacted 标记');
+    const row = s.db.prepare('SELECT content FROM candidates WHERE id = ?').get(created.id);
+    assert.ok(!row.content.includes('/Users/'), '候选内容不能有明文路径');
+    assert.ok(!row.content.includes('abcdef123456'), '候选内容不能有明文凭据');
+    assert.ok(row.content.includes('[已遮蔽]'));
+  } finally {
+    m.close();
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});

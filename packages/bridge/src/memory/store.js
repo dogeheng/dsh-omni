@@ -675,7 +675,10 @@ export class MemoryStore {
     confidence = 0.6,
     now = this.now()
   } = {}) {
-    const text = String(content ?? '').trim();
+    // 候选也是"写进库的原文"：控制台候选面板会直接渲染 content，
+    // 而且它有朝一日会被提升成记忆 —— 与 addMemory 走同一道脱敏。
+    const scrubbed = this.redact ? this.redact(String(content ?? '').trim()) : { text: String(content ?? '').trim(), redacted: false };
+    const text = String(scrubbed.text ?? '').trim();
     if (!text) return { id: null, created: false };
     const dedupeKey = this.buildDedupeKey({
       personaId, scope, scopeKey, kind: kindHint || 'candidate', subjectId, content: text
@@ -690,7 +693,7 @@ export class MemoryStore {
           Number.isFinite(sourceSeq) ? Number(sourceSeq) : null, String(rule || '').slice(0, 40),
           Math.min(1, Math.max(0, Number(confidence) || 0.6)), now, now);
       const id = Number(this._stmt('SELECT last_insert_rowid() AS id').get().id);
-      return { id, created: true };
+      return { id, created: true, ...(scrubbed.redacted ? { redacted: true } : {}) };
     } catch (error) {
       if (!/UNIQUE constraint failed|constraint failed/i.test(String(error?.message ?? error))) throw error;
       return { id: null, created: false, duplicate: true };

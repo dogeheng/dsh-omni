@@ -646,3 +646,16 @@ test('记忆写入脱敏：路径与凭据形态不进库，接口如实告知',
     }
   }, { config: { memory: memoryConfig() } });
 });
+
+test('轻量记忆也脱敏：social-v2 里不留明文路径', async () => {
+  await withBridge(async (h) => {
+    const key = `group:${A_GROUP}`;
+    const st = h.getSocialV2State(key);
+    h.appendMemoryV2(st, 'activeTopic', '项目在 /Users/someone/secret-app，token=abcdef123456', {});
+    const topic = st.activeTopics.at(-1);
+    assert.ok(topic, '话题应当写入');
+    assert.ok(!topic.text.includes('/Users/'), '轻量记忆不能留明文路径');
+    assert.ok(!topic.text.includes('abcdef123456'), '轻量记忆不能留明文凭据');
+    assert.ok(topic.text.includes('[已遮蔽]'), '遮蔽要留可见标记');
+  }, { config: { memory: memoryConfig() } });
+});
