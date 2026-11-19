@@ -100,7 +100,7 @@ try {
       idleRetireMs: 12 * 60 * 60 * 1000,
     });
     assert.deepEqual(config.reminders, { enabled: false, listName: 'Yuki', dueMinutes: 10, notifyOwner: true });
-    assert.deepEqual(config.context.catchUp, { enabled: true, gapMs: 30 * 60 * 1000, maxMessages: 12, maxChars: 800 });
+    assert.deepEqual(config.context.catchUp, { enabled: true, gapMs: 30 * 60 * 1000, maxAgeMs: 6 * 60 * 60 * 1000, maxMessages: 12, maxChars: 800 });
     assert.equal(config.alerts.enabled, false);
     assert.deepEqual(config.alerts.channels, ['macos']);
     assert.deepEqual(config.alerts.events, {
@@ -215,7 +215,7 @@ try {
       hotReloadPersona: false, freshEveryTurn: true, retireWhenIdle: false, idleRetireMs: 3 * 60 * 60 * 1000,
     });
     assert.deepEqual(config.reminders, { enabled: true, listName: '工作提醒', dueMinutes: 15, notifyOwner: false });
-    assert.deepEqual(config.context.catchUp, { enabled: false, gapMs: 60_000, maxMessages: 1, maxChars: 200 });
+    assert.deepEqual(config.context.catchUp, { enabled: false, gapMs: 60_000, maxAgeMs: 6 * 60 * 60 * 1000, maxMessages: 1, maxChars: 200 });
     assert.equal(config.initialPromptMaxChars, 100);
     assert.equal(config.alerts.enabled, true);
     assert.deepEqual(config.alerts.channels, ['macos']);

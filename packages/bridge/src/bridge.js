@@ -976,7 +976,7 @@ function loadConfig() {
         wakeMaxChars: 6000,
         staleUnreadMs: 2 * 60 * 60 * 1000,
         // 补课摘要：离开超过 gapMs 后再醒来，先给一段"你不在时发生了什么"。
-        catchUp: { enabled: true, gapMs: 30 * 60 * 1000, maxMessages: 12, maxChars: 800 }
+        catchUp: { enabled: true, gapMs: 30 * 60 * 1000, maxAgeMs: 6 * 60 * 60 * 1000, maxMessages: 12, maxChars: 800 }
       },
       // 操作者在控制台为单个会话预写的「初始提示词」的字数上限（只在首次唤醒时注入一次）。
       // 它不是安全边界，只是防止误粘贴一篇长文把首次唤醒的 prompt 撑爆。
@@ -6238,6 +6238,8 @@ async function main() {
                   catchUp: {
                     enabled: cu.enabled !== false,
                     gapMs: num(cu.gapMs, 30 * 60 * 1000, 60_000, 24 * 60 * 60 * 1000),
+                    // 补课只回看最近多久：离开一整天时不要把 20 小时前的聊天重新列出来。
+                    maxAgeMs: num(cu.maxAgeMs, 6 * 60 * 60 * 1000, 60_000, 24 * 60 * 60 * 1000),
                     maxMessages: num(cu.maxMessages, 12, 1, 30),
                     maxChars: num(cu.maxChars, 800, 200, 2000)
                   }
@@ -6659,6 +6661,7 @@ async function main() {
             merged.context.catchUp = {
               enabled: typeof nextCatchUp.enabled === 'boolean' ? nextCatchUp.enabled : curCatchUp.enabled !== false,
               gapMs: clampInt(nextCatchUp.gapMs, clampInt(curCatchUp.gapMs, 30 * 60 * 1000, 60_000, 24 * 60 * 60 * 1000), 60_000, 24 * 60 * 60 * 1000),
+              maxAgeMs: clampInt(nextCatchUp.maxAgeMs, clampInt(curCatchUp.maxAgeMs, 6 * 60 * 60 * 1000, 60_000, 24 * 60 * 60 * 1000), 60_000, 24 * 60 * 60 * 1000),
               maxMessages: clampInt(nextCatchUp.maxMessages, clampInt(curCatchUp.maxMessages, 12, 1, 30), 1, 30),
               maxChars: clampInt(nextCatchUp.maxChars, clampInt(curCatchUp.maxChars, 800, 200, 2000), 200, 2000)
             };
@@ -11973,13 +11976,18 @@ async function main() {
     return defaultMs;
   }
 
-  function formatMemoryV2(st) {
+  function formatMemoryV2(st, { topicMaxAgeMs = 24 * 60 * 60 * 1000, now = Date.now() } = {}) {
     if (!st) return '';
     // 记忆内容是**数据**，不是指令。历史数据（写入清洗之前存下的）也可能带换行，
     // 而 `- ${text}` 一旦带上换行，就能凭空多出一段【】标题。渲染时再压一次单行。
     const oneLine = (value, maxChars = 200) => sanitizePromptLine(value, { maxChars });
     const lines = [];
-    const topics = Array.isArray(st.activeTopics) ? st.activeTopics.filter((t) => t && t.text) : [];
+    // 「进行中的话题」只在它还算新鲜时才有意义：主动机会/定时唤醒里带几小时前、
+    // 早就没人接的话题，模型就会拿它当话头去"追问上次没聊完的事"。
+    const topics = Array.isArray(st.activeTopics)
+      ? st.activeTopics.filter((t) => t && t.text
+        && (topicMaxAgeMs <= 0 || !t.lastMentionAt || now - Number(t.lastMentionAt) < topicMaxAgeMs))
+      : [];
     if (topics.length) {
       lines.push('【进行中的话题】');
       for (const t of topics.slice(-10)) {
@@ -12622,7 +12630,9 @@ async function main() {
       wakeState = getSocialV2State(key);
       wakeToken = wakeState.agentToken;
       promptText = buildWakePromptV2(key, opts.wakeReason);
-      wakeSnapshot = buildWakeSnapshotV2(key);
+      // 主动机会/定时唤醒：只带最近 30 分钟的消息与话题，别把几小时前的背景当成刚发生的事。
+      const staleWake = opts.wakeReason === 'proactiveCheck' || opts.wakeReason === 'timeout';
+      wakeSnapshot = buildWakeSnapshotV2(key, staleWake ? { recentMaxAgeMs: 30 * 60 * 1000, skipThread: true } : {});
       if (wakeSnapshot) {
         promptText += `\n\n【本次消息快照】\n${JSON.stringify(wakeSnapshot)}\n以上消息已提供，无需重复查询；threadId 相同的消息是同一件事，thread 字段是这件事更早的上下文（可能已标读），接着这件事说，不要只按「最近几条」理解。partial=true 时用 qq_get_unread_messages(afterSeq=readThroughSeq) 继续读取。先处理当前消息；回复前如需确认后续补充，用 qq_wait_for_messages(purpose="reply") 补足短静默，已安静够久会立即返回，不要先长等。收尾只确认你已处理的 readThroughSeq（本地 seq，非 QQ messageId），传给 qq_mark_read 或 qq_set_wake_config 的 throughSeq；新到消息留待处理。`;
         // 冻结本轮发言者：异步工具调用必须认这一批消息的人，而不是稍后说话的人。
@@ -13737,7 +13747,7 @@ async function main() {
     return before - st.unread.length;
   }
 
-  function buildWakeSnapshotV2(key) {
+  function buildWakeSnapshotV2(key, { recentMaxAgeMs = 0, skipThread = false } = {}) {
     const context = cfg.socialV2?.context ?? {};
     if (context.inlineWakeMessages === false || (!v2ToolEnabled('getUnread') && !v2ToolEnabled('getRecent'))) return null;
     const st = getSocialV2State(key);
@@ -13770,13 +13780,18 @@ async function main() {
     }
     if (v2ToolEnabled('getRecent') && maxRecent > 0) {
       const unread = new Set(st.unread.map((m) => m.seq));
-      const recent = st.recentMessages.filter((m) => !Number.isSafeInteger(m.seq) || !unread.has(m.seq)).slice(-maxRecent);
+      const freshAfter = recentMaxAgeMs > 0 ? Date.now() - recentMaxAgeMs : 0;
+      const recent = st.recentMessages
+        .filter((m) => !Number.isSafeInteger(m.seq) || !unread.has(m.seq))
+        // 主动机会/定时唤醒：几小时前的"背景"会被模型当成刚发生的事，直接不带。
+        .filter((m) => !freshAfter || !m.time || Number(m.time) >= freshAfter)
+        .slice(-maxRecent);
       for (const msg of recent.reverse()) if (!tryAdd('recent', msg)) break;
       packet.recent.reverse();
     }
     // 同一件事的更早上下文：只补当前 thread 的，不重算 readThroughSeq（那些早就读过了，
     // 往里算会把水位往回推）。预算仍然受 wakeMaxChars 管：塞不下就少带几条。
-    if (context.threadEnabled !== false) {
+    if (context.threadEnabled !== false && !skipThread) {
       const shown = [...packet.messages, ...packet.recent];
       // 取"最新一条"的 thread：packet 里 messages 在前、recent 在后，数组顺序不等于时间顺序，
       // 直接 reverse() 会拿到最近一条**其它人的**消息，把上下文带偏到别人的话题上。
@@ -13859,10 +13874,14 @@ async function main() {
     const gapMs = Math.min(24 * 60 * 60 * 1000, Math.max(60_000, Number(opt.gapMs) || 30 * 60 * 1000));
     const since = Number(st?.lastPromptAt) || 0;
     if (!since || now - since < gapMs) return '';
+    // 只回看最近 6 小时：离开一整天后再回来，把 20 小时前的聊天重新列出来只会让她
+    // 拿旧事当新事说（"怎么突然提起很久之前的话"就是这么来的）。
+    const maxAgeMs = Math.min(24 * 60 * 60 * 1000, Math.max(gapMs, Number(opt.maxAgeMs) || 6 * 60 * 60 * 1000));
+    const floor = Math.max(since, now - maxAgeMs);
     const maxMessages = Math.min(30, Math.max(1, Number(opt.maxMessages) || 12));
     const maxChars = Math.min(2000, Math.max(200, Number(opt.maxChars) || 800));
     const msgs = (Array.isArray(st.recentMessages) ? st.recentMessages : [])
-      .filter((m) => m && !m.isSelf && Number(m.time) > since);
+      .filter((m) => m && !m.isSelf && Number(m.time) > floor);
     if (!msgs.length) return '';
     const lines = [];
     let used = 0;
@@ -13877,7 +13896,7 @@ async function main() {
       used += line.length;
     }
     if (!lines.length) return '';
-    const awayMin = Math.max(1, Math.round((now - since) / 60000));
+    const awayMin = Math.max(1, Math.round((now - floor) / 60000));
     const omitted = Math.max(0, msgs.length - lines.length);
     return `【你离开期间】约 ${awayMin} 分钟里发生了这些事（只当背景：不要逐条回应，也别把几小时前的事当成刚刚发生）：\n${lines.join('\n')}${omitted ? `\n（另有 ${omitted} 条更早的消息未列出）` : ''}\n\n`;
   }
@@ -13912,7 +13931,9 @@ async function main() {
         log(`[persona] 会话 ${key} 注入最新${needRole ? '人格' : ''}${needPreset ? '仿真提示词' : ''}（${personaUpdateLine.length} 字符）`);
       }
     }
-    const memoryText = formatMemoryV2(st);
+    const staleReason = reason === 'proactiveCheck' || reason === 'timeout';
+    // 主动机会/定时唤醒只带 1 小时内被提起过的话题（人类不会在死群里翻昨天的旧账）。
+    const memoryText = formatMemoryV2(st, { topicMaxAgeMs: staleReason ? 60 * 60 * 1000 : 24 * 60 * 60 * 1000 });
     const memoryLine = memoryText ? `${memoryText}\n\n` : '';
     // 注意：黑话表不在这里注入，deliverPromptNow 的 withSlangContext 会统一注入，
     // 避免唤醒 prompt 出现两份黑话表。
@@ -13949,7 +13970,9 @@ async function main() {
     if (lastMsg) statusBits.push(`最近一条来自 ${String(lastMsg.sender || '未知')}：${String(lastMsg.text || lastMsg.plain || '').slice(0, 30)}`);
     if (lastMsg && looksLikeUnfinished(String(lastMsg.tail || lastMsg.plain || lastMsg.text || ''))) statusBits.push('对方可能没说完');
     if (lastAiMin != null) statusBits.push(`你上次发言 ${lastAiMin} 分钟前`);
-    if (staleSkipped) statusBits.push(`已跳过 ${staleSkipped} 条超过 ${Math.round((Number(cfg.socialV2?.context?.staleUnreadMs ?? 7200000) / 3_600_000) * 10) / 10}h 的旧未读`);
+    if (staleSkipped) statusBits.push(`已跳过 ${staleSkipped} 条超过 ${Math.round((Number(cfg.socialV2?.context?.staleUnreadMs ?? 7200000) / 3_600_000) * 10) / 10}h 的旧未读（都是旧事，别拿来开新话题）`);
+    const lastMsgAgeMin = lastMsg?.time ? Math.max(0, Math.round((Date.now() - Number(lastMsg.time)) / 60000)) : null;
+    if (lastMsgAgeMin != null) statusBits.push(`最近一条消息在 ${lastMsgAgeMin} 分钟前`);
     const statusLine = `【此刻状态】${statusBits.join('；')}\n\n`;
     const freshnessLine = (st.unread?.length || staleSkipped)
       ? '【时效】只回应最新一条/触发这次唤醒的消息；未读里的旧消息只当背景，不要把几小时前的事当成刚刚发生。\n\n'
@@ -13987,7 +14010,10 @@ async function main() {
     // 也不会把「省电模式关了」说成「加载不出来」。插电时这一行是空串，不多占 token。
     const powerText = powerPromptLine(cfg.power, powerMonitor?.state?.() ?? null);
     const powerLine = powerText ? `${powerText}\n\n` : '';
-    const catchUpLine = buildCatchUpDigestV2(st);
+    // 补课摘要只给"被消息触发"的唤醒：主动冒泡/定时醒来时补一段旧消息，等于教她翻旧账。
+    const catchUpLine = (reason === 'proactiveCheck' || reason === 'timeout' || reason === 'bootstrap')
+      ? ''
+      : buildCatchUpDigestV2(st);
     const base = roleLine + identityLine + tokenLine + personaUpdateLine + freshLine + catchUpLine + initialPromptLine + antiAiLine + facadeLine + styleLearnLine + powerLine + proactiveLine + stickerLine + speakLine + singLine + replyLine + statusLine + freshnessLine + accountLine + wakeLine + memoryLine + participationLine + preSleepLine;
     if (reason === 'bootstrap') {
       return `${base}【引导唤醒】你已接入 QQ 会话 ${key}。\n当前是二代仿真模式：你的文本输出不会自动发送到 QQ，所有发言必须通过工具完成。\n请先调用 qq_get_prompt 查看角色、推荐值、可用工具和状态；有待回应的消息先按首回复节奏处理，最后才用 qq_set_wake_config 设置你希望如何被唤醒。`;
@@ -13999,7 +14025,7 @@ async function main() {
       return `${base}【回复检查】${key}\n原因：你刚刚发送过消息，现在回来检查是否有人回复。\n已有回复时先看消息，需要短静默就用 qq_wait_for_messages(purpose="reply") 判断对方是否说完；如果没人回你，不用硬补一句，但也不要立刻潜水——先调用 qq_wait_for_messages(timeoutMs=${preSleepMs}) 完成沉睡前观察：没人说话可收尾；有人说话则查看 newMessages，不需要你参与也可直接收尾（qq_mark_read 或 qq_set_wake_config）。`;
     }
     if (reason === 'proactiveCheck') {
-      return `${base}【主动机会】${key}\n原因：群里已经安静了一段时间，这是一次你可以主动冒泡的机会。\n优先主动开个话题、追问上次没聊完的事、分享一个刚想到的想法；如果一时想不到，可以用 mcp__web-search-safe__web_search 搜一下当前热点/时事/网络热梗，再结合记忆里的群友兴趣挑一个自然角度。只要内容自然，就大胆开口；如果实在没话想说，再安静收尾（qq_mark_read 或 qq_set_wake_config）。`;
+      return `${base}【主动机会】${key}\n原因：群里已经安静了一段时间，这是一次你可以主动冒泡的机会。\n**只聊现在**：最近 30 分钟内没人说话，就说明那个话题已经过去了 —— 不要提起几小时前/几天前的消息，不要追问上次没聊完的事，也不要把被时效剪掉的旧未读拿来重启话题（没人接的话就让它过去）。\n想开口就开一个**新的、当下能聊**的话题：可以结合群友兴趣，或用 mcp__web-search-safe__web_search 搜一下当前热点/网络热梗。长期记忆只用来判断称呼和兴趣，不要主动提具体旧事（"上次你说过…"）。只要内容自然就大胆开口；实在没话可说就安静收尾（qq_mark_read 或 qq_set_wake_config）。宁可不说，也不要翻旧账。`;
     }
     if (reason === 'media') {
       return `${base}【唤醒】${key}\n原因：群里有人发了图片/表情，可能是梗图。\n先判断值不值得接：看得懂、有想吐的槽就回一句短的（一条就够，不解释图）；没感觉、不好笑或看不懂就安静收尾（qq_mark_read 或 qq_set_wake_config），不要用“哈哈哈”“笑死”凑数，也不要对同一张图反复回。需要看清内容时按快照里的【图片/表情】提示调用 qq_get_message_images。`;

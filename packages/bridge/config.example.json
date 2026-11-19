@@ -516,7 +516,8 @@
         "enabled": true,
         "gapMs": 1800000,
         "maxMessages": 12,
-        "maxChars": 800
+        "maxChars": 800,
+        "maxAgeMs": 21600000
       }
     },
     "initialPromptMaxChars": 2000,
