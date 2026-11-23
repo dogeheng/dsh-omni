@@ -2550,12 +2550,17 @@ button:active:not(:disabled) {
         <summary>在线音源（qqmusic / netease / 第三方解析）</summary>
         <div class="settings-content">
           <div class="meta" style="margin-bottom:8px">
-            从在线平台取授权音源（QQ 音乐 / 自建网易云 API / 第三方解析）；需要对应服务先就绪。
+            从在线平台取授权音源（QQ 音乐 / 酷我 / 哔哩哔哩 / 网易云直连 / 自建网易云 API / 第三方解析）；酷我与哔哩哔哩免登录，网易云直连只覆盖部分免费曲。
             网易云 Cookie 与解析服务地址属于凭据，不在控制台回显，需要时直接改 <code>singing.cover.online</code>。
           </div>
           <div class="row">
             <label style="flex:1">启用在线音源</label><input type="checkbox" id="v2CoverOnlineEnabled" style="width:auto">
             <label style="flex:1">启用 QQ 音乐</label><input type="checkbox" id="v2CoverOnlineQQMusic" style="width:auto">
+            <label style="flex:1">启用酷我</label><input type="checkbox" id="v2CoverOnlineKuwo" style="width:auto">
+            <label style="flex:1">启用哔哩哔哩</label><input type="checkbox" id="v2CoverOnlineBilibili" style="width:auto">
+            <label style="flex:1">网易云直连兜底</label><input type="checkbox" id="v2CoverOnlineNeteaseDirect" style="width:auto">
+          </div>
+          <div class="row">
             <label style="flex:1">网易云音质</label>
             <select id="v2CoverOnlineNeteaseLevel" style="width:120px">
               <option value="standard">standard</option>
@@ -4788,6 +4793,9 @@ function fillVoiceIoForm(a, s) {
   const covOnline = (cov.online && typeof cov.online === 'object' && !Array.isArray(cov.online)) ? cov.online : {};
   vioEl('v2CoverOnlineEnabled').checked = covOnline.enabled !== false;
   vioEl('v2CoverOnlineQQMusic').checked = covOnline.qqmusic !== false;
+  vioEl('v2CoverOnlineKuwo').checked = covOnline.kuwo !== false;
+  vioEl('v2CoverOnlineBilibili').checked = covOnline.bilibili !== false;
+  vioEl('v2CoverOnlineNeteaseDirect').checked = covOnline.neteaseDirect !== false;
   vioEl('v2CoverOnlineNeteaseLevel').value = ['standard', 'higher', 'exhigh', 'lossless', 'hires'].includes(covOnline.neteaseLevel) ? covOnline.neteaseLevel : 'standard';
   vioEl('v2CoverOnlineAllowPaid').checked = covOnline.allowPaidMedia === true;
   vioEl('v2CoverOnlinePreviewFallback').checked = covOnline.previewFallback === true;
@@ -4920,6 +4928,9 @@ function collectVoiceIoForm() {
       online: {
         enabled: vioEl('v2CoverOnlineEnabled').checked,
         qqmusic: vioEl('v2CoverOnlineQQMusic').checked,
+        kuwo: vioEl('v2CoverOnlineKuwo').checked,
+        bilibili: vioEl('v2CoverOnlineBilibili').checked,
+        neteaseDirect: vioEl('v2CoverOnlineNeteaseDirect').checked,
         neteaseLevel: vioEl('v2CoverOnlineNeteaseLevel').value,
         allowPaidMedia: vioEl('v2CoverOnlineAllowPaid').checked,
         previewFallback: vioEl('v2CoverOnlinePreviewFallback').checked,

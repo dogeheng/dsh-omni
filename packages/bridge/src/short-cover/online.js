@@ -338,17 +338,18 @@ export async function searchOnline(query, cfg, log = () => {}) {
     const st = fs.statSync(file);
     if (Date.now() - st.mtimeMs < cfg.online.searchCacheTtlMs) return JSON.parse(fs.readFileSync(file, 'utf8'));
   } catch {}
-  const out = [];
-  if (cfg.online.qqmusic) {
-    try { out.push(...await searchQQ(query, cfg)); } catch (e) { log(`[cover] QQ 搜索失败：${e.message}`); }
-  }
-  if (cfg.online.neteaseBaseUrl) {
-    try { out.push(...await searchNetease(query, cfg)); } catch (e) { log(`[cover] 网易云搜索失败：${e.message}`); }
-  } else {
-    try { out.push(...await searchNeteaseDirect(query, cfg)); } catch (e) { log(`[cover] 网易云直连搜索失败：${e.message}`); }
-  }
-  try { out.push(...await searchKuwo(query, cfg)); } catch (e) { log(`[cover] 酷我搜索失败：${e.message}`); }
-  try { out.push(...await searchBilibili(query, cfg)); } catch (e) { log(`[cover] 哔哩哔哩搜索失败：${e.message}`); }
+  // 四个源并行搜（串行时 QQ 的 python 子进程会先拖 2~3 秒）。仍然全是按需请求，
+  // 不预热、不轮询；单个源失败只记日志，不影响别的源。
+  const jobs = [];
+  if (cfg.online.qqmusic) jobs.push(['QQ', searchQQ(query, cfg)]);
+  if (cfg.online.neteaseBaseUrl) jobs.push(['网易云', searchNetease(query, cfg)]);
+  else jobs.push(['网易云直连', searchNeteaseDirect(query, cfg)]);
+  jobs.push(['酷我', searchKuwo(query, cfg)]);
+  jobs.push(['哔哩哔哩', searchBilibili(query, cfg)]);
+  const settled = await Promise.all(jobs.map(async ([label, promise]) => {
+    try { return await promise; } catch (e) { log(`[cover] ${label}搜索失败：${e.message}`); return []; }
+  }));
+  const out = settled.flat();
   try { fs.mkdirSync(path.dirname(file), { recursive: true }); fs.writeFileSync(file, JSON.stringify(out)); } catch {}
   return out;
 }
