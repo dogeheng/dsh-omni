@@ -96,6 +96,79 @@ async function searchNetease(query, cfg) {
   return (j.result?.songs || []).map(mapNeteaseSong);
 }
 
+// ── 酷我（Kuwo）─────────────────────────────────────────────────────────────
+// 免登录就能拿到 128k 直链，华语老歌/翻唱都全；接口很轻，两个 HTTP 请求，无外部服务。
+// 搜索必须带 `pcjson=1` 这类参数才返回严格 JSON（默认返回的是单引号 JS 对象字面量）；
+// 播放地址是 anti.s 返回的一行纯文本 URL，空响应=没有版权/会员限制。
+function mapKuwoSong(item) {
+  const title = String(item?.SONGNAME ?? item?.NAME ?? '').trim();
+  const artist = String(item?.ARTIST ?? item?.SINGERNAME ?? '').trim();
+  const rid = String(item?.DC_TARGETID ?? item?.MUSICRID ?? item?.RID ?? '').replace(/^MUSIC_/i, '').trim();
+  const version = versionOf(title);
+  return {
+    source: 'kuwo',
+    id: rid,
+    title,
+    artist,
+    version,
+    tags: version ? [version] : [],
+    duration: Math.round(Number(item?.DURATION) || 0),
+    album: String(item?.ALBUM ?? '').trim(),
+    fee: 0,
+    paid: false,
+    lrc: '',
+    license: 'Kuwo platform URL (operator-authorised use only)'
+  };
+}
+
+export function parseKuwoSearch(json) {
+  const list = Array.isArray(json?.abslist) ? json.abslist : [];
+  return list.filter((item) => item && String(item.SONGNAME ?? '').trim() && String(item.DC_TARGETID ?? item.MUSICRID ?? '').trim());
+}
+
+// anti.s 正常时返回一行 http(s) 直链；版权/会员受限时返回空串或错误文本。
+export function parseKuwoPlayUrl(text) {
+  const line = String(text ?? '').trim().split(/\r?\n/).map((s) => s.trim()).find((s) => /^https?:\/\//i.test(s));
+  return line && /\/resource\/|\.(mp3|m4a|aac|flac|ogg)/i.test(line) ? line : '';
+}
+
+// 短路记忆：酷我接口在别人的网络里可能被墙/限速，失败一次就别在这次点歌里反复等超时。
+// 纯内存时间戳，不落盘、不加定时器；5 分钟后自动重试（进程重启也会重置）。
+let kuwoSearchDownUntil = 0;
+
+async function searchKuwo(query, cfg) {
+  if (cfg.online.kuwo === false) return [];
+  if (Date.now() < kuwoSearchDownUntil) return [];
+  const keyword = [query.song, query.artist, query.version].filter(Boolean).join(' ');
+  const u = new URL(cfg.online.kuwoSearchUrl);
+  const params = {
+    client: 'kt', all: keyword, pn: '0', rn: '20', uid: '0',
+    ver: 'kwplayer_ar_9.2.2.1', vipver: '1', show_copyright_off: '1', newver: '1',
+    ft: 'music', cluster: '0', strategy: '2012', encoding: 'utf8',
+    rformat: 'json', vermerge: '1', mobi: '1'
+  };
+  for (const [key, value] of Object.entries(params)) u.searchParams.set(key, value);
+  try {
+    const j = await jsonFetch(u, {}, cfg);
+    return parseKuwoSearch(j).map(mapKuwoSong);
+  } catch (error) {
+    kuwoSearchDownUntil = Date.now() + 5 * 60 * 1000;
+    throw error;
+  }
+}
+
+async function resolveKuwo(c, cfg) {
+  const u = new URL(cfg.online.kuwoPlayUrl);
+  u.searchParams.set('type', 'convert_url');
+  u.searchParams.set('rid', `MUSIC_${c.id}`);
+  u.searchParams.set('format', 'mp3');
+  u.searchParams.set('response', 'url');
+  const res = await fetchWithRetry(u, {}, cfg);
+  const url = parseKuwoPlayUrl(await res.text());
+  if (!url) throw Object.assign(new Error('酷我没有返回可播放地址（可能是版权/会员受限）'), { stage: 'no_authorized_url' });
+  return { url, isPreview: false, license: c.license };
+}
+
 export async function searchOnline(query, cfg, log = () => {}) {
   const key = cacheName(`search:${query.song}|${query.artist}|${query.version}`);
   const file = path.join(cfg.cacheDir, 'online-search', key);
@@ -110,6 +183,7 @@ export async function searchOnline(query, cfg, log = () => {}) {
   if (cfg.online.neteaseBaseUrl) {
     try { out.push(...await searchNetease(query, cfg)); } catch (e) { log(`[cover] 网易云搜索失败：${e.message}`); }
   }
+  try { out.push(...await searchKuwo(query, cfg)); } catch (e) { log(`[cover] 酷我搜索失败：${e.message}`); }
   try { fs.mkdirSync(path.dirname(file), { recursive: true }); fs.writeFileSync(file, JSON.stringify(out)); } catch {}
   return out;
 }
@@ -168,6 +242,7 @@ async function resolveCandidate(c, query, cfg) {
     const j = await runQQ({ action: 'resolve', mid: c.mid || c.id, fileType: cfg.online.qqmusicFileType, pay: c.pay || {}, allowPaidMedia: cfg.online.allowPaidMedia, previewFallback: cfg.online.previewFallback, vs: c.vs, timeoutMs: cfg.online.timeoutMs }, cfg);
     return { url: j.url, isPreview: j.isPreview === true, license: c.license };
   }
+  if (c.source === 'kuwo') return resolveKuwo(c, cfg);
   if (c.source === 'netease') {
     const u = new URL(`${cfg.online.neteaseBaseUrl}/song/url/v1`);
     u.searchParams.set('id', c.id); u.searchParams.set('level', cfg.online.neteaseLevel);
@@ -263,7 +338,18 @@ export async function resolveOnlineSource(query, cfg, log = () => {}) {
   const exact = query.version ? basedOnTitle.filter((c) => norm(c.version) === norm(query.version)) : basedOnTitle;
   const ordered = (exact.length ? exact : basedOnTitle).sort((a, b) => (paidOf(a) ? 1 : 0) - (paidOf(b) ? 1 : 0) || b.score - a.score);
   let lastError;
-  for (const c of ordered.slice(0, 5)) {
+  // 多源回退：候选按分数排序后可能被同一个源占满前 5 个（QQ 匿名播放已经关闭，
+  // 5 个 QQ 候选全失败就轮不到酷我）。这里把"确定放不了"的源标记为坏了，
+  // 下一轮优先从别的源里挑；网络抖动/超时不标记（换一首同源的还可能成功）。
+  const brokenSources = new Set();
+  const queue = [...ordered];
+  const BROKEN_STAGES = new Set(['no_authorized_url', 'online_unavailable', 'drm_protected']);
+  let attempts = 0;
+  while (queue.length && attempts < 10) {
+    const idx = queue.findIndex((c) => !brokenSources.has(c.source));
+    if (idx < 0) break;
+    const c = queue.splice(idx, 1)[0];
+    attempts += 1;
     try {
       const cached = await cachedSource(c, cfg);
       if (cached) {
@@ -280,7 +366,11 @@ export async function resolveOnlineSource(query, cfg, log = () => {}) {
       const file = await download(c, resolved, query, cfg);
       log(`[cover] 在线音源 ${c.source} ${c.title} / ${c.artist} ${file.duration.toFixed(1)}s${file.isPreview ? '（试听）' : ''}`);
       return { candidate: file, candidates };
-    } catch (e) { lastError = e; log(`[cover] 在线候选失败 ${c.source} ${c.title}：${e.message}`); }
+    } catch (e) {
+      lastError = e;
+      if (BROKEN_STAGES.has(e?.stage)) brokenSources.add(c.source);
+      log(`[cover] 在线候选失败 ${c.source} ${c.title}：${e.message}`);
+    }
   }
   const e = new Error(lastError?.message || '没有可处理的在线音源');
   e.stage = lastError?.stage || 'no_authorized_url'; throw e;

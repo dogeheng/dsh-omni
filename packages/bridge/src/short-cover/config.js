@@ -115,6 +115,10 @@ export function normalizeCoverConfig(raw = {}, root = process.cwd(), singing = {
       neteaseBaseUrl: str(r.online?.neteaseBaseUrl).trim().replace(/\/+$/, ''),
       neteaseCookie: str(r.online?.neteaseCookie).trim(),
       neteaseLevel: str(r.online?.neteaseLevel, 'standard') || 'standard',
+      // 酷我：免登录可拿 128k 直链，两个 HTTP 请求，无外部服务。
+      kuwo: r.online?.kuwo !== false,
+      kuwoSearchUrl: str(r.online?.kuwoSearchUrl).trim() || 'http://search.kuwo.cn/r.s',
+      kuwoPlayUrl: str(r.online?.kuwoPlayUrl).trim() || 'http://antiserver.kuwo.cn/anti.s',
       thirdPartyResolverUrl: str(r.online?.thirdPartyResolverUrl).trim(),
       allowPaidMedia: r.online?.allowPaidMedia === true,
       previewFallback: r.online?.previewFallback === true,
