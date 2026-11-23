@@ -133,6 +133,8 @@ export function normalizeCoverConfig(raw = {}, root = process.cwd(), singing = {
       retries: num(r.online?.retries, 1, { min: 0, max: 3, int: true }),
       searchCacheTtlMs: num(r.online?.searchCacheTtlMs, 6 * 60 * 60 * 1000, { min: 60000, max: 7 * 86400000, int: true }),
       maxBytes: num(r.online?.maxBytes, 60 * 1024 * 1024, { min: 1024 * 1024, max: 200 * 1024 * 1024, int: true }),
+      // 音源最短时长：低于它按"试听片段"拒绝（酷我给会员曲的 15s 试听会带语音提示）。
+      minSourceSeconds: num(r.online?.minSourceSeconds, 60, { min: 0, max: 300, int: true }),
     },
     _singing: sv,
   };

@@ -394,6 +394,12 @@ async function cachedSource(c, cfg) {
     if (!fs.existsSync(file) || fs.statSync(file).size < 1024) continue;
     try {
       const d = await validateAudio(file, cfg);
+      // 旧缓存里可能存过"15 秒试听"（酷我会员曲），这里也要拦：命中试听就删掉缓存重下。
+      if (isPreviewClip(d, c.duration, Math.max(0, Number(cfg.online.minSourceSeconds) || 0))) {
+        try { fs.rmSync(file, { force: true }); } catch {}
+        try { fs.rmSync(file.replace(/\.[^.]+$/, '.json'), { force: true }); } catch {}
+        return null;
+      }
       const lrcFile = file.replace(/\.[^.]+$/, '.lrc');
       let meta = {}; try { meta = JSON.parse(fs.readFileSync(path.join(dir, id + '.json'), 'utf8')); } catch {}
       return { ...c, path: file, duration: d, lrc: fs.existsSync(lrcFile) ? lrcFile : '', isPreview: meta.isPreview === true, license: meta.license || c.license, online: true, cachedSource: true };
@@ -422,6 +428,16 @@ async function resolveCandidate(c, query, cfg) {
   return resolveThirdParty(c, query, cfg);
 }
 
+// 试听片段判定：搜索接口给了全曲时长，下载回来却短一大截 —— 酷我对会员曲会返回
+// "15 秒试听 + 语音提示去 APP 听"，这种东西绝不能当翻唱源。
+export function isPreviewClip(knownDuration, expectedDuration, minSourceSeconds = 0) {
+  const actual = Number(knownDuration) || 0;
+  const expected = Number(expectedDuration) || 0;
+  if (minSourceSeconds > 0 && actual > 0 && actual < minSourceSeconds) return true;
+  if (expected > 0 && actual > 0 && actual < expected * 0.6) return true;
+  return false;
+}
+
 async function validateAudio(file, cfg) {
   const st = fs.statSync(file);
   if (st.size < 10 * 1024 || st.size > cfg.online.maxBytes) throw new Error('音频大小异常');
@@ -437,6 +453,11 @@ async function validateAudio(file, cfg) {
 }
 
 async function download(c, resolved, query, cfg) {
+  const minSourceSeconds = Math.max(0, Number(cfg.online.minSourceSeconds) || 0);
+  const rejectPreview = (seconds) => {
+    if (!isPreviewClip(seconds, c.duration, minSourceSeconds)) return;
+    throw Object.assign(new Error(`音源是试听片段（${seconds.toFixed(0)}s / 全曲 ${Number(c.duration) || '?'}s），不是完整歌曲`), { stage: 'no_authorized_url' });
+  };
   const dir = path.join(cfg.cacheDir, 'sources');
   fs.mkdirSync(dir, { recursive: true });
   const urlExt = (path.extname(new URL(resolved.url).pathname) || '.mp3').toLowerCase();
@@ -449,6 +470,7 @@ async function download(c, resolved, query, cfg) {
   if (fs.existsSync(file) && fs.statSync(file).size > 1024) {
     try {
       const d = await validateAudio(file, cfg);
+      rejectPreview(d);
       const lrcFile = file.replace(/\.[^.]+$/, '.lrc');
       return { ...c, path: file, duration: d, lrc: fs.existsSync(lrcFile) ? lrcFile : (c.lrc || ''), isPreview: resolved.isPreview, license: resolved.license, online: true };
     } catch { try { fs.rmSync(file, { force: true }); } catch {} }
@@ -462,6 +484,7 @@ async function download(c, resolved, query, cfg) {
   fs.writeFileSync(tmp, buf);
   try {
     knownDuration = await validateAudio(tmp, cfg);
+    rejectPreview(knownDuration);
     fs.renameSync(tmp, file);
   } catch (e) { try { fs.rmSync(tmp, { force: true }); } catch {} throw e; }
   let lrc = '';

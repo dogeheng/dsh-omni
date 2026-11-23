@@ -494,7 +494,8 @@
           "timeoutMs": 20000,
           "retries": 1,
           "searchCacheTtlMs": 21600000,
-          "maxBytes": 62914560
+          "maxBytes": 62914560,
+          "minSourceSeconds": 60
         }
       }
     },

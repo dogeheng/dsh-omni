@@ -7,7 +7,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { execFileSync } from 'node:child_process';
 import { normalizeCoverConfig } from '../src/short-cover/config.js';
-import { searchOnline, resolveOnlineSource, parseKuwoSearch, parseKuwoPlayUrl } from '../src/short-cover/online.js';
+import { searchOnline, resolveOnlineSource, parseKuwoSearch, parseKuwoPlayUrl, isPreviewClip } from '../src/short-cover/online.js';
 
 const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'dsh-cover-kuwo-'));
 let server;
@@ -33,7 +33,12 @@ const hits = { search: 0, play: 0, audio: 0 };
   assert.equal(parseKuwoPlayUrl('  \nhttps://x.example/a.mp3\n'), 'https://x.example/a.mp3', '要能容忍换行/空白');
   assert.equal(parseKuwoPlayUrl(''), '', '空响应=没有可播地址');
   assert.equal(parseKuwoPlayUrl('<html>error</html>'), '', '错误页不能当 URL');
-  console.log('  ✅ 解析：搜索字段/空数据/播放地址');
+  // 试听片段判定：酷我给会员曲返回 "15 秒试听 + 语音提示去 APP 听"，绝不能用
+assert.equal(isPreviewClip(11, 222), true, '11s / 全曲 222s 明显是试听');
+assert.equal(isPreviewClip(222, 222), false);
+assert.equal(isPreviewClip(30, 0, 60), true, '没有全曲时长时按最短时长兜底');
+assert.equal(isPreviewClip(90, 0, 60), false);
+console.log('  ✅ 解析：搜索字段/空数据/播放地址/试听判定');
 }
 
 // 6 秒静音 mp3（下载后要过 ffprobe 校验，必须是真的音频）
@@ -41,6 +46,9 @@ const mp3 = path.join(tmp, 'sample.mp3');
 execFileSync('ffmpeg', ['-v', 'error', '-f', 'lavfi', '-i', 'anullsrc=r=44100:cl=mono', '-t', '6', '-q:a', '9', '-y', mp3]);
 
 const AUDIO = fs.readFileSync(mp3);
+const teaserFile = path.join(tmp, 'teaser.mp3');
+execFileSync('ffmpeg', ['-v', 'error', '-f', 'lavfi', '-i', 'anullsrc=r=44100:cl=mono', '-t', '11', '-q:a', '9', '-y', teaserFile]);
+const TEASER = fs.readFileSync(teaserFile);
 server = http.createServer((req, res) => {
   const url = new URL(req.url, 'http://127.0.0.1');
   if (url.pathname === '/r.s') {
@@ -50,6 +58,7 @@ server = http.createServer((req, res) => {
       ? [
           { SONGNAME: '晴天', ARTIST: '周杰伦', DURATION: '6', DC_TARGETID: 'good' },
           { SONGNAME: '晴天不相关', ARTIST: '某人', DURATION: '6', DC_TARGETID: 'other' },
+          { SONGNAME: '晴天试听版', ARTIST: '某人', DURATION: '200', DC_TARGETID: 'teaser' },
         ]
       : [];
     res.writeHead(200, { 'content-type': 'application/json; charset=utf-8' });
@@ -60,7 +69,13 @@ server = http.createServer((req, res) => {
     hits.play += 1;
     const rid = String(url.searchParams.get('rid') || '');
     res.writeHead(200, { 'content-type': 'text/plain' });
-    res.end(rid === 'MUSIC_good' ? `http://127.0.0.1:${server.address().port}/audio.mp3` : '');
+    res.end(rid === 'MUSIC_good' ? `http://127.0.0.1:${server.address().port}/audio.mp3`
+      : rid === 'MUSIC_teaser' ? `http://127.0.0.1:${server.address().port}/teaser.mp3` : '');
+    return;
+  }
+  if (url.pathname === '/teaser.mp3') {
+    res.writeHead(200, { 'content-type': 'audio/mpeg', 'content-length': TEASER.length });
+    res.end(TEASER);
     return;
   }
   if (url.pathname === '/audio.mp3') {
@@ -95,6 +110,7 @@ const makeCfg = (extra = {}) => normalizeCoverConfig({
     timeoutMs: 5000,
     maxBytes: 4 * 1024 * 1024,
     searchCacheTtlMs: 60000,
+    minSourceSeconds: 0,
     qqmusic: false,
     neteaseBaseUrl: '',
     bilibili: false,
@@ -149,7 +165,7 @@ try {
     minDuration: 5,
     maxDuration: 20,
     online: {
-      retries: 0, timeoutMs: 5000, maxBytes: 4 * 1024 * 1024, searchCacheTtlMs: 60000,
+      retries: 0, timeoutMs: 5000, maxBytes: 4 * 1024 * 1024, searchCacheTtlMs: 60000, minSourceSeconds: 0,
       qqmusic: false, neteaseBaseUrl: `${base()}/ne`,
       bilibili: false,
       neteaseDirect: false,
@@ -161,7 +177,39 @@ try {
   assert.equal(multiGot.candidate.source, 'kuwo', '一个源整体放不了时，必须回退到其它源');
   console.log('  ✅ 多源回退：网易云候选全失败后仍能落到酷我');
 
-  // ── 5) 短路：源挂了不能拖慢每次点歌（失败后 5 分钟内直接跳过）─────────────
+  // ── 5b) 试听片段：搜索说 200s、实际只给 11s → 必须拒绝（不能当翻唱源）─────
+  {
+    const teaserCfg = normalizeCoverConfig({
+      cacheDir: path.join(tmp, 'cache-teaser'), minDuration: 5, maxDuration: 20,
+      online: {
+        retries: 0, timeoutMs: 5000, maxBytes: 4 * 1024 * 1024, searchCacheTtlMs: 60000,
+        minSourceSeconds: 0, qqmusic: false, neteaseBaseUrl: '', neteaseDirect: false, bilibili: false,
+        kuwo: true, kuwoSearchUrl: `${base()}/r.s`, kuwoPlayUrl: `${base()}/anti.s`,
+      },
+    }, tmp);
+    await assert.rejects(
+      () => resolveOnlineSource({ song: '晴天试听版' }, teaserCfg),
+      (error) => {
+        assert.match(String(error.message), /试听片段/);
+        return true;
+      },
+      '11s 试听必须被拒绝'
+    );
+    console.log('  ✅ 试听拦截：15 秒试听片段不会当翻唱源');
+  }
+
+  // ── 6) 拿不到播放地址时要给出明确 stage（供上层提示）──────────────────────
+  const bad = makeCfg({ kuwoSearchUrl: `${base()}/r.s` });
+  await assert.rejects(
+    () => resolveOnlineSource({ song: '晴天不相关' }, bad),
+    (error) => {
+      assert.match(String(error.stage || ''), /source_not_found|no_authorized_url/);
+      return true;
+    },
+    '搜不到/放不了时要抛带 stage 的错误'
+  );
+  console.log('  ✅ 失败路径：带 stage 的明确错误');
+  // ── 7) 短路：源挂了不能拖慢每次点歌（失败后 5 分钟内直接跳过）─────────────
   // 用慢接口（2s 才返回 500）模拟"接口被墙/限速"：第一次会等失败，
   // 第二次必须在毫秒级返回空，而不是再等一次超时。
   const slow = http.createServer((req, res) => {
@@ -172,7 +220,7 @@ try {
   try {
     const slowCfg = normalizeCoverConfig({
       cacheDir: path.join(tmp, 'cache-slow'),
-      online: { retries: 0, timeoutMs: 5000, kuwo: true, bilibili: false, neteaseDirect: false, qqmusic: false, neteaseBaseUrl: '', kuwoSearchUrl: `http://127.0.0.1:${slow.address().port}/slow.r.s` },
+      online: { retries: 0, timeoutMs: 5000, minSourceSeconds: 0, kuwo: true, bilibili: false, neteaseDirect: false, qqmusic: false, neteaseBaseUrl: '', kuwoSearchUrl: `http://127.0.0.1:${slow.address().port}/slow.r.s` },
     }, tmp);
     const t0 = Date.now();
     const first = await searchOnline({ song: '短路测试' }, slowCfg);
@@ -189,17 +237,6 @@ try {
     await new Promise((resolve) => slow.close(resolve));
   }
 
-  // ── 6) 拿不到播放地址时要给出明确 stage（供上层提示）──────────────────────
-  const bad = makeCfg({ kuwoSearchUrl: `${base()}/r.s` });
-  await assert.rejects(
-    () => resolveOnlineSource({ song: '晴天不相关' }, bad),
-    (error) => {
-      assert.match(String(error.stage || ''), /source_not_found|no_authorized_url/);
-      return true;
-    },
-    '搜不到/放不了时要抛带 stage 的错误'
-  );
-  console.log('  ✅ 失败路径：带 stage 的明确错误');
 } finally {
   if (server?.listening) await new Promise((resolve) => server.close(resolve));
   fs.rmSync(tmp, { recursive: true, force: true });

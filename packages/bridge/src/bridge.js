@@ -10601,6 +10601,93 @@ async function main() {
     return body.data;
   }
 
+  // 通用 OneBot HTTP 调用。目前只给"发送超时后的核对"用：不预热、不轮询。
+  async function onebotCall(action, params, { timeoutMs = 8000 } = {}) {
+    const httpUrl = String(cfg.snowluma?.httpUrl || 'http://127.0.0.1:3000').replace(/\/+$/, '');
+    const res = await fetch(`${httpUrl}/${action}`, {
+      method: 'POST',
+      headers: {
+        'content-type': 'application/json',
+        ...(cfg.snowluma?.accessToken ? { authorization: `Bearer ${cfg.snowluma.accessToken}` } : {})
+      },
+      body: JSON.stringify(params),
+      signal: AbortSignal.timeout(timeoutMs)
+    });
+    const body = await res.json().catch(() => ({}));
+    if (!res.ok || body.status !== 'ok' || body.retcode !== 0) {
+      throw new Error(`OneBot ${action} 失败: ${body.wording || body.retcode || res.status}`);
+    }
+    return body.data;
+  }
+
+  // 自己的 QQ 号：只在需要核实时取一次（get_login_info 返回 user_id）。
+  let selfQQCache = '';
+  async function selfQQ() {
+    if (selfQQCache) return selfQQCache;
+    try {
+      const info = await onebotCall('get_login_info', {}, { timeoutMs: 5000 });
+      selfQQCache = String(info?.user_id ?? '');
+    } catch { /* 取不到就退化成"只按文本+时间匹配" */ }
+    return selfQQCache;
+  }
+
+  // 从 OneBot 消息里抽纯文本（段数组或 raw_message）。
+  function onebotMessageText(message) {
+    if (Array.isArray(message)) {
+      return message.filter((seg) => seg && seg.type === 'text').map((seg) => String(seg.data?.text ?? '')).join('');
+    }
+    return String(message ?? '');
+  }
+
+  /**
+   * 发送超时后核对：OneBot 可能已经把消息发到 QQ 了，只是 HTTP 响应没等到。
+   * 拉最近 20 条群/好友消息，找"时间不早于这次发送开始、文本完全一致"的那条。
+   * 找得到 = 已送达（不再标记失败，模型也就不会再重发 → 不会重复）。
+   * 找不到/接口不可用 = 如实返回"结果未知"，由调用方决定。
+   */
+  async function findDeliveredTextsV2(key, texts, sinceMs) {
+    const want = new Set(texts.map((t) => String(t).trim()).filter(Boolean));
+    if (!want.size) return new Set();
+    try {
+      const [kind, id] = String(key).split(':');
+      const isGroup = kind === 'group';
+      const params = isGroup
+        ? { group_id: Number(id), count: 20 }
+        : { user_id: Number(id), count: 20 };
+      const data = await onebotCall(isGroup ? 'get_group_msg_history' : 'get_friend_msg_history', params);
+      const list = Array.isArray(data?.messages) ? data.messages : [];
+      const selfId = await selfQQ();
+      const sinceSec = Math.floor(sinceMs / 1000) - 2; // 容忍 2 秒时钟/写入延迟
+      const delivered = new Set();
+      for (const msg of list) {
+        const time = Number(msg?.time) || 0;
+        if (time && time < sinceSec) continue;
+        if (selfId && String(msg?.user_id ?? msg?.sender?.user_id ?? '') !== selfId) continue;
+        const text = onebotMessageText(msg?.message ?? msg?.raw_message);
+        if (want.has(String(text).trim())) delivered.add(String(text).trim());
+      }
+      return delivered;
+    } catch {
+      return new Set();
+    }
+  }
+
+  // 发送超时后"结果未知"的文本（key → 文本 → 时间）。用于挡住模型的立即重发。
+  const uncertainSends = new Map();
+  const UNCERTAIN_RESEND_WINDOW_MS = 120000;
+  function rememberUncertainSend(key, text) {
+    const now = Date.now();
+    let map = uncertainSends.get(key);
+    if (!map) { map = new Map(); uncertainSends.set(key, map); }
+    map.set(String(text).trim(), now);
+    for (const [t, at] of map) if (now - at > UNCERTAIN_RESEND_WINDOW_MS) map.delete(t);
+  }
+  function wasUncertainRecently(key, text) {
+    const map = uncertainSends.get(key);
+    const at = map?.get(String(text).trim());
+    return !!at && Date.now() - at < UNCERTAIN_RESEND_WINDOW_MS;
+  }
+
   // ── 图片/表情字节解析（供一代自动内联与二代按需工具） ────────────────────
   function mimeFromBuffer(buf) {
     if (!buf || buf.length < 12) return 'image/jpeg';
@@ -11064,17 +11151,46 @@ async function main() {
       const useAt = i === 0 ? atUserId : null;
       const gap = i < delays.length ? delays[i] : 0;
       tail = enqueueSendLane(key, async () => {
+        const attemptStart = Date.now();
         try {
           assertSendAllowed();
+          // 上一次同文本超时未核对成功时，重发前先查历史：已经送达就跳过（防重复）。
+          if (wasUncertainRecently(key, msg)) {
+            const delivered = await findDeliveredTextsV2(key, [msg], attemptStart - UNCERTAIN_RESEND_WINDOW_MS);
+            if (delivered.has(String(msg).trim())) {
+              log(`QQ 重发已取消 (${key})：同文本此前已送达`);
+              sent.push(msg);
+              results[i].ok = true;
+              results[i].duplicateBlocked = true;
+              if (gap) await sleep(gap);
+              return;
+            }
+          }
           await onebotSend(kind, id, msg, useReply, useAt);
           sent.push(msg);
           results[i].ok = true;
         } catch (error) {
           log(`QQ 发送失败 (${key}):`, error?.message ?? error);
+          const verdict = classifySendFailure(error);
+          // 超时/断连：OneBot 可能已经发出去了，只是 HTTP 响应没等到。
+          // 先查一下最近消息 —— 确认送达就当成功，避免模型重发造成重复。
+          if (verdict.uncertain) {
+            const delivered = await findDeliveredTextsV2(key, [msg], attemptStart);
+            if (delivered.has(String(msg).trim())) {
+              log(`QQ 发送超时但已确认送达 (${key})，按成功处理`);
+              sent.push(msg);
+              results[i].ok = true;
+              results[i].verifiedAfterTimeout = true;
+              if (gap) await sleep(gap);
+              return;
+            }
+          }
           failed.push(error);
           results[i].error = String(error?.message ?? error).slice(0, 160);
-          // 超时/断连和"对方明确拒绝"不是一回事：前者可能已经送达，模型不能直接重发。
-          if (classifySendFailure(error).uncertain) results[i].uncertain = true;
+          if (verdict.uncertain) {
+            results[i].uncertain = true;
+            rememberUncertainSend(key, msg);
+          }
         }
         if (gap) await sleep(gap);
       });
