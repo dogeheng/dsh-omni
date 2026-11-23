@@ -96,6 +96,54 @@ async function searchNetease(query, cfg) {
   return (j.result?.songs || []).map(mapNeteaseSong);
 }
 
+// ── 网易云（免自建服务的直连兜底）────────────────────────────────────────────
+// 配了 neteaseBaseUrl 时走自建 API（音质/会员更全）；没配时用这套**免登录直连**：
+// 搜索用 /api/search/get，播放用 /song/media/outer/url 的 302 直链。
+// 直链只对部分免费/UGC 曲目有效（会员曲会 302 到 /404 页面），拿不到就当这个候选失败。
+const neteaseWebBase = (cfg) => String(cfg.online?.neteaseWebBase || 'https://music.163.com').replace(/\/+$/, '');
+const NETEASE_WEB_HEADERS = {
+  referer: 'https://music.163.com/',
+  'user-agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0 Safari/537.36',
+  cookie: 'os=pc; appver=2.9.7'
+};
+
+// 302 到 /404 页面 = 会员/版权受限；content-type 不是音频也不能用。
+export function isNeteaseOuterUrlUsable(finalUrl, contentType) {
+  const url = String(finalUrl || '');
+  const type = String(contentType || '');
+  if (!/^https?:\/\//i.test(url)) return false;
+  if (/\/404(\?|$)/.test(url)) return false;
+  return /audio\/|octet-stream/i.test(type);
+}
+
+async function searchNeteaseDirect(query, cfg) {
+  if (cfg.online.neteaseDirect === false) return [];
+  const keyword = [query.song, query.artist, query.version].filter(Boolean).join(' ');
+  const u = new URL(`${neteaseWebBase(cfg)}/api/search/get`);
+  u.searchParams.set('s', keyword);
+  u.searchParams.set('type', '1');
+  u.searchParams.set('limit', '20');
+  u.searchParams.set('offset', '0');
+  u.searchParams.set('total', 'true');
+  const j = await jsonFetch(u, { headers: NETEASE_WEB_HEADERS }, cfg);
+  return (j.result?.songs || []).map(mapNeteaseSong).map((c) => ({ ...c, paid: false, fee: 0 }));
+}
+
+async function resolveNeteaseDirect(c, cfg) {
+  const res = await fetchWithRetry(`${neteaseWebBase(cfg)}/song/media/outer/url?id=${encodeURIComponent(c.id)}.mp3`, { headers: NETEASE_WEB_HEADERS }, cfg);
+  if (!isNeteaseOuterUrlUsable(res.url, res.headers.get('content-type'))) {
+    throw Object.assign(new Error('网易云直链没有返回可播放音频（多为会员/版权曲，需要登录态或自建 API）'), { stage: 'no_authorized_url' });
+  }
+  return { url: res.url, isPreview: false, license: c.license, headers: { referer: NETEASE_WEB_HEADERS.referer } };
+}
+
+async function lyricNeteaseDirect(id, cfg) {
+  try {
+    const j = await jsonFetch(`${neteaseWebBase(cfg)}/api/song/lyric?id=${encodeURIComponent(id)}&lv=1&tv=-1`, { headers: NETEASE_WEB_HEADERS }, cfg);
+    return String(j?.lrc?.lyric || '').trim();
+  } catch { return ''; }
+}
+
 // ── 酷我（Kuwo）─────────────────────────────────────────────────────────────
 // 免登录就能拿到 128k 直链，华语老歌/翻唱都全；接口很轻，两个 HTTP 请求，无外部服务。
 // 搜索必须带 `pcjson=1` 这类参数才返回严格 JSON（默认返回的是单引号 JS 对象字面量）；
@@ -296,6 +344,8 @@ export async function searchOnline(query, cfg, log = () => {}) {
   }
   if (cfg.online.neteaseBaseUrl) {
     try { out.push(...await searchNetease(query, cfg)); } catch (e) { log(`[cover] 网易云搜索失败：${e.message}`); }
+  } else {
+    try { out.push(...await searchNeteaseDirect(query, cfg)); } catch (e) { log(`[cover] 网易云直连搜索失败：${e.message}`); }
   }
   try { out.push(...await searchKuwo(query, cfg)); } catch (e) { log(`[cover] 酷我搜索失败：${e.message}`); }
   try { out.push(...await searchBilibili(query, cfg)); } catch (e) { log(`[cover] 哔哩哔哩搜索失败：${e.message}`); }
@@ -360,6 +410,7 @@ async function resolveCandidate(c, query, cfg) {
   if (c.source === 'kuwo') return resolveKuwo(c, cfg);
   if (c.source === 'bilibili') return resolveBilibili(c, cfg);
   if (c.source === 'netease') {
+    if (!cfg.online.neteaseBaseUrl) return resolveNeteaseDirect(c, cfg);
     const u = new URL(`${cfg.online.neteaseBaseUrl}/song/url/v1`);
     u.searchParams.set('id', c.id); u.searchParams.set('level', cfg.online.neteaseLevel);
     const j = await jsonFetch(u, { headers: cfg.online.neteaseCookie ? { cookie: cfg.online.neteaseCookie } : {} }, cfg);
@@ -415,7 +466,7 @@ async function download(c, resolved, query, cfg) {
   let lrc = '';
   try {
     if (c.source === 'qqmusic') lrc = await lyricQQ(c.mid || c.id, cfg);
-    else if (c.source === 'netease') lrc = await lyricNetease(c.id, cfg);
+    else if (c.source === 'netease') lrc = cfg.online.neteaseBaseUrl ? await lyricNetease(c.id, cfg) : await lyricNeteaseDirect(c.id, cfg);
   } catch {}
   if (lrc) fs.writeFileSync(file.replace(/\.[^.]+$/, '.lrc'), lrc);
   const meta = { source: c.source, id: c.id, title: c.title, artist: c.artist, version: c.version, duration: knownDuration, isPreview: resolved.isPreview, license: resolved.license, cacheVersion: cfg.cacheVersion, savedAt: Date.now() };
@@ -458,8 +509,13 @@ export async function resolveOnlineSource(query, cfg, log = () => {}) {
   // 5 个 QQ 候选全失败就轮不到酷我）。这里把"确定放不了"的源标记为坏了，
   // 下一轮优先从别的源里挑；网络抖动/超时不标记（换一首同源的还可能成功）。
   const brokenSources = new Set();
+  const sourceFailures = new Map();
   const queue = [...ordered];
+  // 注意：`no_authorized_url` 常常是**单曲**限制（会员曲/版权曲），不代表整个源挂了
+  // （网易云直连就是典型）。所以同一个源连续失败 2 次才判定为"这个源当前用不了"，
+  // 否则正常降级到下一首/下一个源。
   const BROKEN_STAGES = new Set(['no_authorized_url', 'online_unavailable', 'drm_protected']);
+  const BROKEN_AFTER = 2;
   let attempts = 0;
   while (queue.length && attempts < 10) {
     const idx = queue.findIndex((c) => !brokenSources.has(c.source));
@@ -484,7 +540,9 @@ export async function resolveOnlineSource(query, cfg, log = () => {}) {
       return { candidate: file, candidates };
     } catch (e) {
       lastError = e;
-      if (BROKEN_STAGES.has(e?.stage)) brokenSources.add(c.source);
+      const failures = (sourceFailures.get(c.source) || 0) + 1;
+      sourceFailures.set(c.source, failures);
+      if (BROKEN_STAGES.has(e?.stage) && failures >= BROKEN_AFTER) brokenSources.add(c.source);
       log(`[cover] 在线候选失败 ${c.source} ${c.title}：${e.message}`);
     }
   }

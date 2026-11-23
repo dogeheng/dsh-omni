@@ -90,7 +90,7 @@ const makeCfg = (extra = {}, cache = 'cache') => normalizeCoverConfig({
   maxDuration: 20,
   online: {
     retries: 0, timeoutMs: 5000, maxBytes: 4 * 1024 * 1024, searchCacheTtlMs: 60000,
-    qqmusic: false, neteaseBaseUrl: '', kuwo: false,
+    qqmusic: false, neteaseBaseUrl: '', kuwo: false, neteaseDirect: false,
     bilibili: true, bilibiliApiBase: base(),
     ...extra,
   },

@@ -480,6 +480,8 @@
           "neteaseBaseUrl": "",
           "neteaseCookie": "",
           "neteaseLevel": "standard",
+          "neteaseDirect": true,
+          "neteaseWebBase": "https://music.163.com",
           "kuwo": true,
           "kuwoSearchUrl": "http://search.kuwo.cn/r.s",
           "kuwoPlayUrl": "http://antiserver.kuwo.cn/anti.s",

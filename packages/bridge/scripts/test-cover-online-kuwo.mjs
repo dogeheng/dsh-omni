@@ -98,6 +98,7 @@ const makeCfg = (extra = {}) => normalizeCoverConfig({
     qqmusic: false,
     neteaseBaseUrl: '',
     bilibili: false,
+    neteaseDirect: false,
     kuwo: true,
     kuwoSearchUrl: `${base()}/r.s`,
     kuwoPlayUrl: `${base()}/anti.s`,
@@ -151,6 +152,7 @@ try {
       retries: 0, timeoutMs: 5000, maxBytes: 4 * 1024 * 1024, searchCacheTtlMs: 60000,
       qqmusic: false, neteaseBaseUrl: `${base()}/ne`,
       bilibili: false,
+      neteaseDirect: false,
       kuwo: true, kuwoSearchUrl: `${base()}/r.s`, kuwoPlayUrl: `${base()}/anti.s`,
     },
   }, tmp);
@@ -170,7 +172,7 @@ try {
   try {
     const slowCfg = normalizeCoverConfig({
       cacheDir: path.join(tmp, 'cache-slow'),
-      online: { retries: 0, timeoutMs: 5000, kuwo: true, bilibili: false, qqmusic: false, neteaseBaseUrl: '', kuwoSearchUrl: `http://127.0.0.1:${slow.address().port}/slow.r.s` },
+      online: { retries: 0, timeoutMs: 5000, kuwo: true, bilibili: false, neteaseDirect: false, qqmusic: false, neteaseBaseUrl: '', kuwoSearchUrl: `http://127.0.0.1:${slow.address().port}/slow.r.s` },
     }, tmp);
     const t0 = Date.now();
     const first = await searchOnline({ song: '短路测试' }, slowCfg);

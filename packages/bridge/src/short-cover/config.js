@@ -115,6 +115,9 @@ export function normalizeCoverConfig(raw = {}, root = process.cwd(), singing = {
       neteaseBaseUrl: str(r.online?.neteaseBaseUrl).trim().replace(/\/+$/, ''),
       neteaseCookie: str(r.online?.neteaseCookie).trim(),
       neteaseLevel: str(r.online?.neteaseLevel, 'standard') || 'standard',
+      // 没配 neteaseBaseUrl 时的免登录直连兜底（只对部分免费/UGC 曲目有效）。
+      neteaseDirect: r.online?.neteaseDirect !== false,
+      neteaseWebBase: str(r.online?.neteaseWebBase).trim() || 'https://music.163.com',
       // 酷我：免登录可拿 128k 直链，两个 HTTP 请求，无外部服务。
       kuwo: r.online?.kuwo !== false,
       kuwoSearchUrl: str(r.online?.kuwoSearchUrl).trim() || 'http://search.kuwo.cn/r.s',
