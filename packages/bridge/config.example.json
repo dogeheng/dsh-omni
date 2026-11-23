@@ -488,6 +488,8 @@
           "bilibili": true,
           "bilibiliApiBase": "https://api.bilibili.com",
           "bilibiliCookie": "",
+          "migu": true,
+          "miguApiBase": "https://app.c.nf.migu.cn",
           "thirdPartyResolverUrl": "",
           "allowPaidMedia": false,
           "previewFallback": false,

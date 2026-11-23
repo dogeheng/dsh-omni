@@ -14,7 +14,7 @@ fs.writeFileSync(path.join(lib, '杨丞琳 - 雨爱.mp3'), '');
 fs.writeFileSync(path.join(lib, '杨丞琳 - 雨爱 (司凤版).mp3'), '');
 fs.writeFileSync(path.join(lib, '周杰伦 - 青花瓷.mp3'), '');
 fs.writeFileSync(path.join(lib, '杨丞琳 - 雨爱.lrc'), '[00:10.00]第一句\n[00:30.00]副歌一句\n[00:45.00]副歌一句\n[01:00.00]副歌一句\n[01:20.00]结尾\n');
-const cfg = normalizeCoverConfig({ libraryDir: lib, cacheDir: path.join(tmp, 'cache'), tempDir: path.join(tmp, 'tmp'), refAudio: path.join(tmp, 'missing-ref.wav'), pythonPath: '/no/python', online: { minSourceSeconds: 0, qqmusic: false, kuwo: false, bilibili: false, neteaseDirect: false } }, tmp, {});
+const cfg = normalizeCoverConfig({ libraryDir: lib, cacheDir: path.join(tmp, 'cache'), tempDir: path.join(tmp, 'tmp'), refAudio: path.join(tmp, 'missing-ref.wav'), pythonPath: '/no/python', online: { minSourceSeconds: 0, qqmusic: false, kuwo: false, bilibili: false, migu: false, neteaseDirect: false } }, tmp, {});
 assert.equal(cfg.defaultDuration, 15);
 assert.equal(cfg.minDuration, 10);
 assert.equal(cfg.maxDuration, 20);
@@ -39,12 +39,12 @@ assert.match(window.reason, /lrc/);
 
 const empty = path.join(tmp, 'empty');
 fs.mkdirSync(empty);
-const svc = createShortCoverService({ getConfig: () => ({ cover: { libraryDir: empty, cacheDir: path.join(tmp, 'cache2'), tempDir: path.join(tmp, 'tmp2'), refAudio: path.join(tmp, 'missing-ref.wav'), online: { minSourceSeconds: 0, qqmusic: false, kuwo: false, bilibili: false, neteaseDirect: false } }, singing: {} }), root: tmp });
+const svc = createShortCoverService({ getConfig: () => ({ cover: { libraryDir: empty, cacheDir: path.join(tmp, 'cache2'), tempDir: path.join(tmp, 'tmp2'), refAudio: path.join(tmp, 'missing-ref.wav'), online: { minSourceSeconds: 0, qqmusic: false, kuwo: false, bilibili: false, migu: false, neteaseDirect: false } }, singing: {} }), root: tmp });
 await assert.rejects(() => svc.start({ song: '不存在的歌' }, 'group:1'), (e) => e.stage === 'source_not_found');
 const sends = [];
 let fakeCalls = 0;
 const asyncSvc = createShortCoverService({
-  getConfig: () => ({ cover: { enabled: true, libraryDir: lib, cacheDir: path.join(tmp, 'cache3'), tempDir: path.join(tmp, 'tmp3'), refAudio: path.join(tmp, 'missing-ref.wav'), online: { minSourceSeconds: 0, qqmusic: false, kuwo: false, bilibili: false, neteaseDirect: false } }, singing: {} }),
+  getConfig: () => ({ cover: { enabled: true, libraryDir: lib, cacheDir: path.join(tmp, 'cache3'), tempDir: path.join(tmp, 'tmp3'), refAudio: path.join(tmp, 'missing-ref.wav'), online: { minSourceSeconds: 0, qqmusic: false, kuwo: false, bilibili: false, migu: false, neteaseDirect: false } }, singing: {} }),
   root: tmp,
   pipeline: async ({ workDir }) => {
     fakeCalls++;

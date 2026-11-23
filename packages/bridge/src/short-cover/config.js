@@ -126,6 +126,9 @@ export function normalizeCoverConfig(raw = {}, root = process.cwd(), singing = {
       bilibili: r.online?.bilibili !== false,
       bilibiliApiBase: str(r.online?.bilibiliApiBase).trim() || 'https://api.bilibili.com',
       bilibiliCookie: str(r.online?.bilibiliCookie).trim(),
+      // 咪咕：免登录 App 接口，免费曲给完整音频，会员曲明确拒（「暂不提供试听地址」）。
+      migu: r.online?.migu !== false,
+      miguApiBase: str(r.online?.miguApiBase).trim() || 'https://app.c.nf.migu.cn',
       thirdPartyResolverUrl: str(r.online?.thirdPartyResolverUrl).trim(),
       allowPaidMedia: r.online?.allowPaidMedia === true,
       previewFallback: r.online?.previewFallback === true,

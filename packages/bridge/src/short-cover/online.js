@@ -331,6 +331,98 @@ async function resolveBilibili(c, cfg) {
   return { url, isPreview: false, license: c.license, headers: { referer: headers.referer, 'user-agent': headers['user-agent'] } };
 }
 
+// ── 咪咕音乐（Migu）────────────────────────────────────────────────────────
+// 免登录的 App 接口：搜索一个请求、播放地址是 listenSong.do 的 302。
+// 免费曲能拿完整音频；会员曲会返回 200 JSON「暂不提供试听地址」→ 当该候选失败。
+const miguBreaker = makeDownBreaker();
+const MIGU_HEADERS = {
+  'user-agent': 'Mozilla/5.0 (Linux; Android 13) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120 Mobile Safari/537.36',
+  referer: 'https://app.c.nf.migu.cn/',
+  channel: '014X041',
+  ua: 'Android_migu',
+  version: '5.0'
+};
+
+export function parseMiguSearch(json) {
+  const list = Array.isArray(json?.songResultData?.result) ? json.songResultData.result : [];
+  return list.filter((item) => item && item.name && item.contentId && item.copyrightId);
+}
+
+function mapMiguSong(item) {
+  const title = String(item.name || '').trim();
+  const tags = [];
+  for (const tag of Array.isArray(item.tags) ? item.tags : []) {
+    const t = String(tag || '').trim();
+    if (t && /翻唱|cover|伴奏|纯音乐/i.test(t) && !tags.includes(t)) tags.push(t);
+  }
+  const version = versionOf(title) || (tags.length ? tags[0] : '');
+  return {
+    source: 'migu',
+    id: String(item.contentId),
+    copyrightId: String(item.copyrightId),
+    title,
+    artist: (Array.isArray(item.singers) ? item.singers : []).map((x) => String(x?.name || '')).filter(Boolean).join('、'),
+    version,
+    tags: version && !tags.includes(version) ? [...tags, version] : tags,
+    duration: 0, // 搜索接口不给时长，试听片段靠 minSourceSeconds 兜底拦截
+    album: (Array.isArray(item.albums) ? item.albums : []).map((x) => String(x?.name || '')).filter(Boolean)[0] || '',
+    fee: 0,
+    paid: false,
+    lrc: '',
+    license: 'Migu platform URL (operator-authorised use only)'
+  };
+}
+
+async function searchMigu(query, cfg) {
+  if (cfg.online.migu === false) return [];
+  if (miguBreaker.down()) return [];
+  const keyword = [query.song, query.artist, query.version].filter(Boolean).join(' ');
+  const u = new URL(`${cfg.online.miguApiBase.replace(/\/+$/, '')}/MIGUM2.0/v1.0/content/search_all.do`);
+  u.searchParams.set('text', keyword);
+  u.searchParams.set('pageNo', '1');
+  u.searchParams.set('pageSize', '20');
+  u.searchParams.set('isCorrect', '1');
+  u.searchParams.set('isCopyright', '1');
+  u.searchParams.set('sort', '1');
+  u.searchParams.set('searchSwitch', JSON.stringify({ song: 1 }));
+  try {
+    const j = await jsonFetch(u, { headers: MIGU_HEADERS }, cfg);
+    return parseMiguSearch(j).map(mapMiguSong);
+  } catch (error) {
+    miguBreaker.fail();
+    throw error;
+  }
+}
+
+async function resolveMigu(c, cfg) {
+  if (!c.copyrightId) throw Object.assign(new Error('咪咕候选缺少 copyrightId'), { stage: 'no_authorized_url' });
+  const u = new URL(`${cfg.online.miguApiBase.replace(/\/+$/, '')}/MIGUM2.0/v1.0/content/sub/listenSong.do`);
+  const params = {
+    channel: 'mx', copyrightId: c.copyrightId, contentId: c.id, toneFlag: 'HQ',
+    netType: '00', userId: '1551919669717412', ua: 'Android_migu', version: '5.0', resourceType: '2'
+  };
+  for (const [k, v] of Object.entries(params)) u.searchParams.set(k, v);
+  let lastError;
+  for (let attempt = 0; attempt <= cfg.online.retries; attempt++) {
+    try {
+      // 这里必须手动处理 302：跟着重定向会直接把整首歌下下来，我们只要地址。
+      const res = await fetch(u, { headers: MIGU_HEADERS, redirect: 'manual', signal: AbortSignal.timeout(cfg.online.timeoutMs) });
+      const location = String(res.headers.get('location') || '').trim();
+      if (res.status >= 300 && res.status < 400 && /^https?:\/\//i.test(location)) {
+        return { url: location, isPreview: false, license: c.license, headers: { referer: 'https://app.c.nf.migu.cn/' } };
+      }
+      const body = await res.json().catch(() => null);
+      // 200 但「暂不提供试听地址」= 会员/版权受限
+      throw Object.assign(new Error(body?.info ? `咪咕：${body.info}` : `咪咕没有返回播放地址（HTTP ${res.status}）`), { stage: 'no_authorized_url' });
+    } catch (error) {
+      lastError = error;
+      if (error?.stage) break; // 明确的"没有地址"不值得重试
+      if (attempt < cfg.online.retries) await new Promise((r) => setTimeout(r, 500 * (attempt + 1)));
+    }
+  }
+  throw lastError;
+}
+
 export async function searchOnline(query, cfg, log = () => {}) {
   const key = cacheName(`search:${query.song}|${query.artist}|${query.version}`);
   const file = path.join(cfg.cacheDir, 'online-search', key);
@@ -346,6 +438,7 @@ export async function searchOnline(query, cfg, log = () => {}) {
   else jobs.push(['网易云直连', searchNeteaseDirect(query, cfg)]);
   jobs.push(['酷我', searchKuwo(query, cfg)]);
   jobs.push(['哔哩哔哩', searchBilibili(query, cfg)]);
+  jobs.push(['咪咕', searchMigu(query, cfg)]);
   const settled = await Promise.all(jobs.map(async ([label, promise]) => {
     try { return await promise; } catch (e) { log(`[cover] ${label}搜索失败：${e.message}`); return []; }
   }));
@@ -416,6 +509,7 @@ async function resolveCandidate(c, query, cfg) {
   }
   if (c.source === 'kuwo') return resolveKuwo(c, cfg);
   if (c.source === 'bilibili') return resolveBilibili(c, cfg);
+  if (c.source === 'migu') return resolveMigu(c, cfg);
   if (c.source === 'netease') {
     if (!cfg.online.neteaseBaseUrl) return resolveNeteaseDirect(c, cfg);
     const u = new URL(`${cfg.online.neteaseBaseUrl}/song/url/v1`);

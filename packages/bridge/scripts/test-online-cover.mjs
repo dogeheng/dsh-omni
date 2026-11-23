@@ -43,7 +43,7 @@ let s=''; process.stdin.on('data',b=>s+=b).on('end',()=>{
 });`);
 fs.chmodSync(fake, 0o755);
 process.env.FAKE_AUDIO_URL = `${base}/audio.wav`;
-const mk = (extra = {}) => normalizeCoverConfig({ cacheDir: path.join(tmp, 'cache'), tempDir: path.join(tmp, 'tmp'), refAudio: path.join(tmp, 'nope.wav'), online: { enabled: true, minSourceSeconds: 0, qqmusic: true, qqmusicPython: fake, kuwo: false, bilibili: false, neteaseDirect: false, allowPaidMedia: false, previewFallback: false, ...extra } }, tmp, {});
+const mk = (extra = {}) => normalizeCoverConfig({ cacheDir: path.join(tmp, 'cache'), tempDir: path.join(tmp, 'tmp'), refAudio: path.join(tmp, 'nope.wav'), online: { enabled: true, minSourceSeconds: 0, qqmusic: true, qqmusicPython: fake, kuwo: false, bilibili: false, migu: false, neteaseDirect: false, allowPaidMedia: false, previewFallback: false, ...extra } }, tmp, {});
 const qv = { song: '雨爱', version: '司凤版', duration: 15 };
 const cfg = mk();
 const r = await resolveOnlineSource(qv, cfg, () => {});
@@ -60,7 +60,7 @@ const paidCfg = mk({ qqmusicPython: fake });
 await assert.rejects(() => resolveOnlineSource({ song: '雨爱', version: '司凤版', duration: 15 }, paidCfg), (e) => e.stage === 'no_authorized_url');
 delete process.env.FAKE_PAID_ONLY;
 // Netease adapter against a local mock of NeteaseCloudMusicApi.
-const nd = normalizeCoverConfig({ cacheDir: path.join(tmp, 'cache2'), tempDir: path.join(tmp, 'tmp2'), refAudio: path.join(tmp, 'nope.wav'), online: { enabled: true, minSourceSeconds: 0, qqmusic: false, kuwo: false, bilibili: false, neteaseDirect: false, neteaseBaseUrl: base, neteaseCookie: '', allowPaidMedia: false } }, tmp, {});
+const nd = normalizeCoverConfig({ cacheDir: path.join(tmp, 'cache2'), tempDir: path.join(tmp, 'tmp2'), refAudio: path.join(tmp, 'nope.wav'), online: { enabled: true, minSourceSeconds: 0, qqmusic: false, kuwo: false, bilibili: false, migu: false, neteaseDirect: false, neteaseBaseUrl: base, neteaseCookie: '', allowPaidMedia: false } }, tmp, {});
 const nr = await resolveOnlineSource({ song: '雨爱', duration: 15 }, nd, () => {});
 assert.equal(nr.candidate.source, 'netease');
 assert.ok(nr.candidate.duration >= 5);
