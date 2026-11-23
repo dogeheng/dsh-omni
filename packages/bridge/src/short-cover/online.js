@@ -132,13 +132,23 @@ export function parseKuwoPlayUrl(text) {
   return line && /\/resource\/|\.(mp3|m4a|aac|flac|ogg)/i.test(line) ? line : '';
 }
 
-// 短路记忆：酷我接口在别人的网络里可能被墙/限速，失败一次就别在这次点歌里反复等超时。
-// 纯内存时间戳，不落盘、不加定时器；5 分钟后自动重试（进程重启也会重置）。
-let kuwoSearchDownUntil = 0;
+// 短路记忆：某个音源接口在别的网络里可能被墙/限速，失败一次就别在接下来几分钟里
+// 反复等超时。纯内存时间戳，不落盘、不加定时器；5 分钟后自动重试（重启也会重置）。
+const DOWN_COOLDOWN_MS = 5 * 60 * 1000;
+function makeDownBreaker() {
+  let downUntil = 0;
+  return {
+    down: () => Date.now() < downUntil,
+    fail: () => { downUntil = Date.now() + DOWN_COOLDOWN_MS; },
+    reset: () => { downUntil = 0; }
+  };
+}
+const kuwoBreaker = makeDownBreaker();
+const bilibiliBreaker = makeDownBreaker();
 
 async function searchKuwo(query, cfg) {
   if (cfg.online.kuwo === false) return [];
-  if (Date.now() < kuwoSearchDownUntil) return [];
+  if (kuwoBreaker.down()) return [];
   const keyword = [query.song, query.artist, query.version].filter(Boolean).join(' ');
   const u = new URL(cfg.online.kuwoSearchUrl);
   const params = {
@@ -152,7 +162,7 @@ async function searchKuwo(query, cfg) {
     const j = await jsonFetch(u, {}, cfg);
     return parseKuwoSearch(j).map(mapKuwoSong);
   } catch (error) {
-    kuwoSearchDownUntil = Date.now() + 5 * 60 * 1000;
+    kuwoBreaker.fail();
     throw error;
   }
 }
@@ -167,6 +177,110 @@ async function resolveKuwo(c, cfg) {
   const url = parseKuwoPlayUrl(await res.text());
   if (!url) throw Object.assign(new Error('酷我没有返回可播放地址（可能是版权/会员受限）'), { stage: 'no_authorized_url' });
   return { url, isPreview: false, license: c.license };
+}
+
+// ── 哔哩哔哩（Bilibili）────────────────────────────────────────────────────
+// 翻唱/日系/小众版本的主要来源。搜索一请求，解析再两个请求（view 拿 cid → playurl 拿
+// dash 音频流）；音频 URL 是带时效的 CDN 直链，下载时必须带 Referer，否则 403。
+const BILI_UA = 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0 Safari/537.36';
+let biliBuvid = '';
+function biliHeaders(cfg) {
+  if (!biliBuvid) biliBuvid = `${crypto.randomUUID().toUpperCase()}infoc`;
+  // 未登录也能搜/取音频；运营商给了 cookie（比如自己的账号）就用它的，音质可能更高。
+  const cookie = String(cfg.online?.bilibiliCookie || '').trim() || `buvid3=${biliBuvid}`;
+  return { referer: 'https://www.bilibili.com/', 'user-agent': BILI_UA, cookie };
+}
+
+function stripHtml(text) {
+  return String(text ?? '')
+    .replace(/<[^>]*>/g, '')
+    .replace(/&quot;/g, '"').replace(/&amp;/g, '&').replace(/&#39;/g, "'").replace(/&lt;/g, '<').replace(/&gt;/g, '>')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+// 搜索接口的 duration 有时是 "4:20"，有时是秒数；统一成秒。
+export function parseBiliDuration(value) {
+  const text = String(value ?? '').trim();
+  if (!text) return 0;
+  if (/^\d+$/.test(text)) return Number(text);
+  const parts = text.split(':').map((n) => Number(n) || 0);
+  if (!parts.length) return 0;
+  return parts.reduce((total, n) => total * 60 + n, 0);
+}
+
+export function parseBiliSearch(json) {
+  const list = Array.isArray(json?.data?.result) ? json.data.result : [];
+  return list.filter((item) => item && item.bvid && item.title && item.type === 'video');
+}
+
+function mapBiliVideo(video) {
+  const title = stripHtml(video.title);
+  const tags = [];
+  if (/翻唱|cover|翻自/i.test(title)) tags.push('翻唱');
+  const version = versionOf(title) || (tags.includes('翻唱') ? '翻唱' : '');
+  return {
+    source: 'bilibili',
+    id: String(video.bvid),
+    title,
+    artist: stripHtml(video.author || ''),
+    version,
+    tags: version && !tags.includes(version) ? [...tags, version] : tags,
+    duration: parseBiliDuration(video.duration),
+    album: '',
+    fee: 0,
+    paid: false,
+    lrc: '',
+    license: 'Bilibili platform URL (operator-authorised use only)'
+  };
+}
+
+async function searchBilibili(query, cfg) {
+  if (cfg.online.bilibili === false) return [];
+  if (bilibiliBreaker.down()) return [];
+  const keyword = [query.song, query.artist, query.version].filter(Boolean).join(' ');
+  const u = new URL(`${cfg.online.bilibiliApiBase.replace(/\/+$/, '')}/x/web-interface/search/type`);
+  u.searchParams.set('search_type', 'video');
+  u.searchParams.set('keyword', keyword);
+  u.searchParams.set('page', '1');
+  try {
+    const j = await jsonFetch(u, { headers: biliHeaders(cfg) }, cfg);
+    return parseBiliSearch(j).map(mapBiliVideo);
+  } catch (error) {
+    bilibiliBreaker.fail();
+    throw error;
+  }
+}
+
+// playurl 的 dash.audio 按带宽挑最高的一档；老接口返回的 durl 也兜一下。
+export function parseBiliAudioUrl(json) {
+  const audio = Array.isArray(json?.data?.dash?.audio) ? json.data.dash.audio : [];
+  if (audio.length) {
+    const best = [...audio].sort((a, b) => (Number(b.bandwidth) || 0) - (Number(a.bandwidth) || 0))[0];
+    const url = String(best?.baseUrl || best?.base_url || '').trim();
+    if (/^https?:\/\//i.test(url)) return url;
+  }
+  const durl = Array.isArray(json?.data?.durl) ? json.data.durl : [];
+  const fallback = String(durl[0]?.url || '').trim();
+  return /^https?:\/\//i.test(fallback) ? fallback : '';
+}
+
+async function resolveBilibili(c, cfg) {
+  const api = cfg.online.bilibiliApiBase.replace(/\/+$/, '');
+  const headers = biliHeaders(cfg);
+  const view = await jsonFetch(`${api}/x/web-interface/view?bvid=${encodeURIComponent(c.id)}`, { headers }, cfg);
+  const cid = view?.data?.cid;
+  if (!cid) throw Object.assign(new Error('哔哩哔哩没有返回 cid（视频可能已下架）'), { stage: 'no_authorized_url' });
+  const u = new URL(`${api}/x/player/playurl`);
+  u.searchParams.set('bvid', c.id);
+  u.searchParams.set('cid', String(cid));
+  u.searchParams.set('fnval', '16');
+  u.searchParams.set('fourk', '1');
+  const playurl = await jsonFetch(u, { headers }, cfg);
+  const url = parseBiliAudioUrl(playurl);
+  if (!url) throw Object.assign(new Error('哔哩哔哩没有返回可播放音频（可能是会员/地区限制）'), { stage: 'no_authorized_url' });
+  // 音频 CDN 需要 Referer，下载时一并带上。
+  return { url, isPreview: false, license: c.license, headers: { referer: headers.referer, 'user-agent': headers['user-agent'] } };
 }
 
 export async function searchOnline(query, cfg, log = () => {}) {
@@ -184,6 +298,7 @@ export async function searchOnline(query, cfg, log = () => {}) {
     try { out.push(...await searchNetease(query, cfg)); } catch (e) { log(`[cover] 网易云搜索失败：${e.message}`); }
   }
   try { out.push(...await searchKuwo(query, cfg)); } catch (e) { log(`[cover] 酷我搜索失败：${e.message}`); }
+  try { out.push(...await searchBilibili(query, cfg)); } catch (e) { log(`[cover] 哔哩哔哩搜索失败：${e.message}`); }
   try { fs.mkdirSync(path.dirname(file), { recursive: true }); fs.writeFileSync(file, JSON.stringify(out)); } catch {}
   return out;
 }
@@ -243,6 +358,7 @@ async function resolveCandidate(c, query, cfg) {
     return { url: j.url, isPreview: j.isPreview === true, license: c.license };
   }
   if (c.source === 'kuwo') return resolveKuwo(c, cfg);
+  if (c.source === 'bilibili') return resolveBilibili(c, cfg);
   if (c.source === 'netease') {
     const u = new URL(`${cfg.online.neteaseBaseUrl}/song/url/v1`);
     u.searchParams.set('id', c.id); u.searchParams.set('level', cfg.online.neteaseLevel);
@@ -285,7 +401,7 @@ async function download(c, resolved, query, cfg) {
       return { ...c, path: file, duration: d, lrc: fs.existsSync(lrcFile) ? lrcFile : (c.lrc || ''), isPreview: resolved.isPreview, license: resolved.license, online: true };
     } catch { try { fs.rmSync(file, { force: true }); } catch {} }
   }
-  const res = await fetchWithRetry(resolved.url, {}, cfg);
+  const res = await fetchWithRetry(resolved.url, resolved.headers ? { headers: resolved.headers } : {}, cfg);
   const len = Number(res.headers.get('content-length') || 0);
   if (len > cfg.online.maxBytes) throw new Error('音频超过大小限制');
   const buf = Buffer.from(await res.arrayBuffer());

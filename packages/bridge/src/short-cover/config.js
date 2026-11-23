@@ -119,6 +119,10 @@ export function normalizeCoverConfig(raw = {}, root = process.cwd(), singing = {
       kuwo: r.online?.kuwo !== false,
       kuwoSearchUrl: str(r.online?.kuwoSearchUrl).trim() || 'http://search.kuwo.cn/r.s',
       kuwoPlayUrl: str(r.online?.kuwoPlayUrl).trim() || 'http://antiserver.kuwo.cn/anti.s',
+      // 哔哩哔哩：翻唱/日系/小众版本的主要来源；不登录也能取音频（带 buvid cookie）。
+      bilibili: r.online?.bilibili !== false,
+      bilibiliApiBase: str(r.online?.bilibiliApiBase).trim() || 'https://api.bilibili.com',
+      bilibiliCookie: str(r.online?.bilibiliCookie).trim(),
       thirdPartyResolverUrl: str(r.online?.thirdPartyResolverUrl).trim(),
       allowPaidMedia: r.online?.allowPaidMedia === true,
       previewFallback: r.online?.previewFallback === true,
