@@ -106,4 +106,16 @@ test('autonomy limits and the observation escape hatch stay described', () => {
   ]) assert.ok(prefix.includes(text), `missing rule: ${text}`);
 });
 
+test('anti-鱼八股 rules stay pinned (no 盖章 / 打分 / 每句收尾)', () => {
+  // 这几条是 2026-11 反「鱼八股」的最小规则集：只拦动作，不列长词表。
+  for (const text of [
+    '【不盖章，不把话说圆】',
+    '“这条我认”“我记下了”“本鱼最喜欢的一句话”',
+    '打分、比较、报“接没接”',
+    '自己立“不是 A 而是 B”的靶子',
+    '把最后一个分句删掉再看',
+    '这句换个群、换个人还成立吗',
+  ]) assert.ok(prefix.includes(text), `missing anti-yubagu rule: ${text}`);
+});
+
 console.log(`reserved2 persona prefix: ${prefix.length} characters (not a model-token estimate)`);
