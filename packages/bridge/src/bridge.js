@@ -746,6 +746,10 @@ function loadConfig() {
       autoRestartOnStale: false,
       staleRestartMs: 180_000,
       staleRestartCooldownMs: 900_000,
+      // 连不上（OneBot 没起来 / QQ 掉登录）多久尝试重启容器：断开 5 分钟起、
+      // 最多连试 3 次；仍连不上多半要扫码，交给告警而不是无限重启。
+      disconnectedRestartMs: 300_000,
+      maxDisconnectedRestarts: 3,
       ...(file.snowluma ?? {})
     },
     // 空 => 每个会话在 data/agents/<key> 下建独立工作目录
@@ -4133,6 +4137,7 @@ async function main() {
   function maybeAutoRestartSnowluma(snap) {
     if (cfg.snowluma?.autoRestartOnStale !== true) return;
     const now = Date.now();
+    const disconnected = snap.connected !== true;
     const should = shouldAutoRestartSnowluma({
       enabled: true,
       connected: snap.connected === true,
@@ -4142,14 +4147,22 @@ async function main() {
       staleMs: Math.max(60_000, Number(cfg.snowluma?.staleRestartMs) || 180_000),
       cooldownMs: Math.max(60_000, Number(cfg.snowluma?.staleRestartCooldownMs) || 900_000),
       lastRestartAt: snowlumaHealth.lastAutoRestartAt,
-      restarting: snowlumaHealth.autoRestarting
+      restarting: snowlumaHealth.autoRestarting,
+      // 连不上（OneBot 没起来 / QQ 掉登录）也要能自愈：11-24 掉了 6 小时，
+      // 容器明明在跑，只是 OneBot 没在听，旧逻辑要 connected=true 才重启 → 一直干等。
+      disconnectedSince: snowlumaHealth.downSince,
+      disconnectedRestartMs: Math.max(60_000, Number(cfg.snowluma?.disconnectedRestartMs) || 300_000),
+      disconnectedRestarts: snowlumaHealth.disconnectedRestarts || 0,
+      maxDisconnectedRestarts: Math.max(1, Number(cfg.snowluma?.maxDisconnectedRestarts) || 3)
     });
     if (!should) return;
     const container = String(cfg.stack?.container || 'snowluma');
     snowlumaHealth.autoRestarting = true;
     snowlumaHealth.lastAutoRestartAt = now;
+    if (disconnected) snowlumaHealth.disconnectedRestarts = (snowlumaHealth.disconnectedRestarts || 0) + 1;
+    const downMin = snowlumaHealth.downSince ? Math.round((now - snowlumaHealth.downSince) / 60000) : 0;
     const silentMin = snowlumaHealth.lastPacketAt ? Math.round((now - snowlumaHealth.lastPacketAt) / 60000) : 0;
-    log(`[snowluma] 上游${snap.good === false ? '自报 hook 异常' : `已 ${silentMin} 分钟无事件`}，自动重启容器 ${container}`);
+    log(`[snowluma] 上游${snap.good === false ? '自报 hook 异常' : disconnected ? `已断开 ${downMin} 分钟（OneBot 连不上，可能 QQ 掉登录）` : `已 ${silentMin} 分钟无事件`}，自动重启容器 ${container}`);
     execFile('docker', ['restart', container], { timeout: 90_000 }, (error) => {
       snowlumaHealth.autoRestarting = false;
       if (error) log(`[snowluma] 自动重启失败：${error.message}`);
@@ -15810,6 +15823,7 @@ async function main() {
     // 用实际连接地址（自愈后可能与 config 里的初值不同，别打印过期的那个）
     const connectedUrl = bot.url ?? cfg.snowluma.wsUrl;
     snowlumaHealth.connected = true;
+    snowlumaHealth.disconnectedRestarts = 0;
     log(`SnowLuma 已连接：${connectedUrl}`);
     // 「已连接」只说明与 SnowLuma 的 WebSocket 通了，**不说明 QQ 侧收得到消息** ——
     // 这个区别见 startSnowlumaWatch 的说明。这里顺手把上游健康快照刷一次。

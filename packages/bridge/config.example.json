@@ -22,7 +22,9 @@
     "homeDir": "",
     "autoRestartOnStale": false,
     "staleRestartMs": 180000,
-    "staleRestartCooldownMs": 900000
+    "staleRestartCooldownMs": 900000,
+    "disconnectedRestartMs": 300000,
+    "maxDisconnectedRestarts": 3
   },
   "ownerQQ": null,
   "sessionCwd": "",
