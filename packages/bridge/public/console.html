@@ -2560,6 +2560,7 @@ button:active:not(:disabled) {
             <label style="flex:1">启用哔哩哔哩</label><input type="checkbox" id="v2CoverOnlineBilibili" style="width:auto">
             <label style="flex:1">网易云直连兜底</label><input type="checkbox" id="v2CoverOnlineNeteaseDirect" style="width:auto">
             <label style="flex:1">启用咪咕</label><input type="checkbox" id="v2CoverOnlineMigu" style="width:auto">
+            <label style="flex:1">启用酷狗</label><input type="checkbox" id="v2CoverOnlineKugou" style="width:auto">
           </div>
           <div class="row">
             <label style="flex:1">网易云音质</label>
@@ -4798,6 +4799,7 @@ function fillVoiceIoForm(a, s) {
   vioEl('v2CoverOnlineBilibili').checked = covOnline.bilibili !== false;
   vioEl('v2CoverOnlineNeteaseDirect').checked = covOnline.neteaseDirect !== false;
   vioEl('v2CoverOnlineMigu').checked = covOnline.migu !== false;
+  vioEl('v2CoverOnlineKugou').checked = covOnline.kugou !== false;
   vioEl('v2CoverOnlineNeteaseLevel').value = ['standard', 'higher', 'exhigh', 'lossless', 'hires'].includes(covOnline.neteaseLevel) ? covOnline.neteaseLevel : 'standard';
   vioEl('v2CoverOnlineAllowPaid').checked = covOnline.allowPaidMedia === true;
   vioEl('v2CoverOnlinePreviewFallback').checked = covOnline.previewFallback === true;
@@ -4934,6 +4936,7 @@ function collectVoiceIoForm() {
         bilibili: vioEl('v2CoverOnlineBilibili').checked,
         neteaseDirect: vioEl('v2CoverOnlineNeteaseDirect').checked,
         migu: vioEl('v2CoverOnlineMigu').checked,
+        kugou: vioEl('v2CoverOnlineKugou').checked,
         neteaseLevel: vioEl('v2CoverOnlineNeteaseLevel').value,
         allowPaidMedia: vioEl('v2CoverOnlineAllowPaid').checked,
         previewFallback: vioEl('v2CoverOnlinePreviewFallback').checked,

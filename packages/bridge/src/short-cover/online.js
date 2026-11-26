@@ -423,8 +423,98 @@ async function resolveMigu(c, cfg) {
   throw lastError;
 }
 
+// ── 酷狗音乐（Kugou）────────────────────────────────────────────────────────
+// 免登录、无签名：mobileservice 的搜索接口 + m.kugou 的 playInfo 拿 128k 直链。
+// 搜索结果的 hash 本身就是播放凭据，不需要 album_id；会员/付费曲 playInfo 返回空
+// url 和「需要付费」，按该候选失败处理（绝不拿空地址或试听片段凑数）。
+const kugouBreaker = makeDownBreaker();
+const KUGOU_UA = 'Mozilla/5.0 (iPhone; CPU iPhone OS 16_6 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/16.6 Mobile/15E148 Safari/604.1';
+const KUGOU_HEADERS = { 'user-agent': KUGOU_UA, referer: 'https://m.kugou.com/' };
+
+export function parseKugouSearch(json) {
+  const list = Array.isArray(json?.data?.info) ? json.data.info : [];
+  return list.filter((item) => item && String(item.songname ?? '').trim() && String(item.hash ?? '').trim());
+}
+
+function mapKugouSong(item) {
+  const title = String(item.songname ?? '').trim();
+  const artist = String(item.singername ?? '').trim();
+  const version = versionOf(title);
+  const payType = Number(item.pay_type) || 0;
+  return {
+    source: 'kugou',
+    id: String(item.hash).trim(),
+    hash: String(item.hash).trim(),
+    title,
+    artist,
+    version,
+    tags: version ? [version] : [],
+    duration: Math.round(Number(item.duration) || 0),
+    album: String(item.album_name ?? item.albumname ?? '').trim(),
+    fee: payType,
+    paid: payType !== 0,
+    lrc: '',
+    license: 'Kugou platform URL (operator-authorised use only)'
+  };
+}
+
+export function parseKugouPlayInfo(json) {
+  const url = String(json?.url ?? '').trim();
+  return {
+    url: /^https?:\/\//i.test(url) ? url : '',
+    duration: Math.round(Number(json?.timeLength) || 0),
+    fileSize: Number(json?.fileSize) || 0,
+    bitRate: Number(json?.bitRate) || 0,
+    extName: String(json?.extName ?? '').trim().toLowerCase(),
+    payType: Number(json?.pay_type) || 0,
+    error: String(json?.error ?? '').trim()
+  };
+}
+
+async function searchKugou(query, cfg) {
+  if (cfg.online.kugou === false) return [];
+  if (kugouBreaker.down()) return [];
+  const keyword = [query.song, query.artist, query.version].filter(Boolean).join(' ');
+  const u = new URL(cfg.online.kugouSearchUrl);
+  u.searchParams.set('keyword', keyword);
+  u.searchParams.set('format', 'json');
+  u.searchParams.set('page', '1');
+  u.searchParams.set('pagesize', '20');
+  u.searchParams.set('showtype', '1');
+  try {
+    const j = await jsonFetch(u, { headers: KUGOU_HEADERS }, cfg);
+    return parseKugouSearch(j).map(mapKugouSong);
+  } catch (error) {
+    kugouBreaker.fail();
+    throw error;
+  }
+}
+
+async function resolveKugou(c, cfg) {
+  const u = new URL(cfg.online.kugouPlayUrl);
+  u.searchParams.set('cmd', 'playInfo');
+  u.searchParams.set('hash', c.hash || c.id);
+  u.searchParams.set('format', 'json');
+  const j = await jsonFetch(u, { headers: KUGOU_HEADERS }, cfg);
+  const info = parseKugouPlayInfo(j);
+  if (!info.url) throw Object.assign(new Error(`酷狗没有返回可播放地址${info.error ? `（${info.error}）` : ''}`), { stage: 'no_authorized_url' });
+  if (/\.(mflac|mgg|kgm)$/i.test(info.url)) throw Object.assign(new Error('酷狗返回加密/DRM 音频，拒绝下载'), { stage: 'drm_protected' });
+  // 音频 CDN 只认 UA，不带 Referer，避免部分节点 403。
+  return { url: info.url, isPreview: false, license: c.license, headers: { 'user-agent': KUGOU_UA } };
+}
+
 export async function searchOnline(query, cfg, log = () => {}) {
-  const key = cacheName(`search:${query.song}|${query.artist}|${query.version}`);
+  // 缓存键带上「当前启用的音源集合」：否则新加/切换音源后，同一首歌 6 小时内还会命中
+  // 旧缓存（里面根本没有新音源的候选），表现为「加了源却搜不到」。
+  const sourceFlags = [
+    cfg.online.qqmusic ? 'qq' : '',
+    cfg.online.neteaseBaseUrl ? 'ne' : (cfg.online.neteaseDirect ? 'nd' : ''),
+    cfg.online.kuwo ? 'kw' : '',
+    cfg.online.bilibili ? 'bl' : '',
+    cfg.online.migu ? 'mg' : '',
+    cfg.online.kugou ? 'kg' : ''
+  ].filter(Boolean).join('+');
+  const key = cacheName(`search:${query.song}|${query.artist}|${query.version}|${sourceFlags}`);
   const file = path.join(cfg.cacheDir, 'online-search', key);
   try {
     const st = fs.statSync(file);
@@ -439,6 +529,7 @@ export async function searchOnline(query, cfg, log = () => {}) {
   jobs.push(['酷我', searchKuwo(query, cfg)]);
   jobs.push(['哔哩哔哩', searchBilibili(query, cfg)]);
   jobs.push(['咪咕', searchMigu(query, cfg)]);
+  jobs.push(['酷狗', searchKugou(query, cfg)]);
   const settled = await Promise.all(jobs.map(async ([label, promise]) => {
     try { return await promise; } catch (e) { log(`[cover] ${label}搜索失败：${e.message}`); return []; }
   }));
@@ -510,6 +601,7 @@ async function resolveCandidate(c, query, cfg) {
   if (c.source === 'kuwo') return resolveKuwo(c, cfg);
   if (c.source === 'bilibili') return resolveBilibili(c, cfg);
   if (c.source === 'migu') return resolveMigu(c, cfg);
+  if (c.source === 'kugou') return resolveKugou(c, cfg);
   if (c.source === 'netease') {
     if (!cfg.online.neteaseBaseUrl) return resolveNeteaseDirect(c, cfg);
     const u = new URL(`${cfg.online.neteaseBaseUrl}/song/url/v1`);

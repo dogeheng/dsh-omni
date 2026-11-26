@@ -66,7 +66,7 @@ const makeCfg = (extra = {}, cache = 'cache') => normalizeCoverConfig({
   cacheDir: path.join(tmp, cache), minDuration: 5, maxDuration: 20,
   online: {
     retries: 0, timeoutMs: 5000, maxBytes: 4 * 1024 * 1024, searchCacheTtlMs: 60000, minSourceSeconds: 0,
-    qqmusic: false, neteaseBaseUrl: '', neteaseDirect: false, kuwo: false, bilibili: false,
+    qqmusic: false, neteaseBaseUrl: '', neteaseDirect: false, kuwo: false, bilibili: false, kugou: false,
     migu: true, miguApiBase: base(),
     ...extra,
   },
@@ -96,7 +96,7 @@ try {
   console.log('  ✅ 解析：302 地址 + 会员曲「暂不提供试听地址」自动跳过');
 
   // 开关关闭：不发请求
-  const offCfg = makeCfg({ migu: false }, 'cache-off');
+  const offCfg = makeCfg({ migu: false, kugou: false }, 'cache-off');
   const offList = await searchOnline({ song: '晴天' }, offCfg);
   assert.equal(offList.length, 0);
   console.log('  ✅ 开关：关闭后不发请求');

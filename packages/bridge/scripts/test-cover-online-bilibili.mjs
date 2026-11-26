@@ -90,7 +90,7 @@ const makeCfg = (extra = {}, cache = 'cache') => normalizeCoverConfig({
   maxDuration: 20,
   online: {
     retries: 0, timeoutMs: 5000, maxBytes: 4 * 1024 * 1024, searchCacheTtlMs: 60000, minSourceSeconds: 0,
-    qqmusic: false, neteaseBaseUrl: '', kuwo: false, neteaseDirect: false, migu: false,
+    qqmusic: false, neteaseBaseUrl: '', kuwo: false, neteaseDirect: false, migu: false, kugou: false,
     bilibili: true, bilibiliApiBase: base(),
     ...extra,
   },
@@ -131,7 +131,7 @@ try {
   console.log('  ✅ 缓存：搜索与音频都不重复请求');
 
   // ── 4) 关掉开关就不请求 ────────────────────────────────────────────────────
-  const offCfg = makeCfg({ bilibili: false, migu: false }, 'cache-off');
+  const offCfg = makeCfg({ bilibili: false, migu: false, kugou: false }, 'cache-off');
   const offList = await searchOnline({ song: '晴天' }, offCfg);
   assert.equal(offList.length, 0);
   console.log('  ✅ 开关：关闭后不发请求');

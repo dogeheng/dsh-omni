@@ -129,6 +129,10 @@ export function normalizeCoverConfig(raw = {}, root = process.cwd(), singing = {
       // 咪咕：免登录 App 接口，免费曲给完整音频，会员曲明确拒（「暂不提供试听地址」）。
       migu: r.online?.migu !== false,
       miguApiBase: str(r.online?.miguApiBase).trim() || 'https://app.c.nf.migu.cn',
+      // 酷狗：免登录、无签名，mobileservice 搜索 + playInfo 拿 128k 直链；会员曲 url 为空。
+      kugou: r.online?.kugou !== false,
+      kugouSearchUrl: str(r.online?.kugouSearchUrl).trim() || 'https://mobileservice.kugou.com/api/v3/search/song',
+      kugouPlayUrl: str(r.online?.kugouPlayUrl).trim() || 'https://m.kugou.com/app/i/getSongInfo.php',
       thirdPartyResolverUrl: str(r.online?.thirdPartyResolverUrl).trim(),
       allowPaidMedia: r.online?.allowPaidMedia === true,
       previewFallback: r.online?.previewFallback === true,

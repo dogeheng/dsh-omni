@@ -113,7 +113,7 @@ const makeCfg = (extra = {}) => normalizeCoverConfig({
     minSourceSeconds: 0,
     qqmusic: false,
     neteaseBaseUrl: '',
-    bilibili: false, migu: false,
+    bilibili: false, migu: false, kugou: false,
     neteaseDirect: false,
     kuwo: true,
     kuwoSearchUrl: `${base()}/r.s`,
@@ -167,7 +167,7 @@ try {
     online: {
       retries: 0, timeoutMs: 5000, maxBytes: 4 * 1024 * 1024, searchCacheTtlMs: 60000, minSourceSeconds: 0,
       qqmusic: false, neteaseBaseUrl: `${base()}/ne`,
-      bilibili: false, migu: false,
+      bilibili: false, migu: false, kugou: false,
       neteaseDirect: false,
       kuwo: true, kuwoSearchUrl: `${base()}/r.s`, kuwoPlayUrl: `${base()}/anti.s`,
     },
@@ -183,7 +183,7 @@ try {
       cacheDir: path.join(tmp, 'cache-teaser'), minDuration: 5, maxDuration: 20,
       online: {
         retries: 0, timeoutMs: 5000, maxBytes: 4 * 1024 * 1024, searchCacheTtlMs: 60000,
-        minSourceSeconds: 0, qqmusic: false, neteaseBaseUrl: '', neteaseDirect: false, bilibili: false, migu: false,
+        minSourceSeconds: 0, qqmusic: false, neteaseBaseUrl: '', neteaseDirect: false, bilibili: false, migu: false, kugou: false,
         kuwo: true, kuwoSearchUrl: `${base()}/r.s`, kuwoPlayUrl: `${base()}/anti.s`,
       },
     }, tmp);
@@ -220,7 +220,7 @@ try {
   try {
     const slowCfg = normalizeCoverConfig({
       cacheDir: path.join(tmp, 'cache-slow'),
-      online: { retries: 0, timeoutMs: 5000, minSourceSeconds: 0, kuwo: true, bilibili: false, migu: false, neteaseDirect: false, qqmusic: false, neteaseBaseUrl: '', kuwoSearchUrl: `http://127.0.0.1:${slow.address().port}/slow.r.s` },
+      online: { retries: 0, timeoutMs: 5000, minSourceSeconds: 0, kuwo: true, bilibili: false, migu: false, kugou: false, neteaseDirect: false, qqmusic: false, neteaseBaseUrl: '', kuwoSearchUrl: `http://127.0.0.1:${slow.address().port}/slow.r.s` },
     }, tmp);
     const t0 = Date.now();
     const first = await searchOnline({ song: '短路测试' }, slowCfg);
